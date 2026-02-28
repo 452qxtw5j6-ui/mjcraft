@@ -33,6 +33,8 @@ import {
 } from '@craft-agent/session-tools-core';
 import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
+import { createSendToSessionTool, type SendToSessionFn } from './send-to-session-tool.ts';
+import { createListSessionsTool, type ListSessionsFn } from './list-sessions-tool.ts';
 
 // Re-export types for backward compatibility
 export type {
@@ -81,6 +83,16 @@ export interface SessionScopedToolCallbacks {
    * Each agent backend delegates to its onSpawnSession callback.
    */
   spawnSessionFn?: SpawnSessionFn;
+
+  /**
+   * Callback for send_to_session tool — sends a message to an existing session.
+   */
+  sendToSessionFn?: SendToSessionFn;
+
+  /**
+   * Callback for list_sessions tool — lists sessions available to this workspace.
+   */
+  listSessionsFn?: ListSessionsFn;
 }
 
 // Registry of callbacks keyed by sessionId
@@ -282,6 +294,28 @@ export function getSessionScopedTools(
       getSpawnSessionFn: () => {
         const callbacks = getSessionScopedToolCallbacks(sessionId);
         return callbacks?.spawnSessionFn;
+      },
+    }),
+  );
+
+  // Add send_to_session — backend-specific (not in registry handler)
+  tools.push(
+    createSendToSessionTool({
+      sessionId,
+      getSendToSessionFn: () => {
+        const callbacks = getSessionScopedToolCallbacks(sessionId);
+        return callbacks?.sendToSessionFn;
+      },
+    }),
+  );
+
+  // Add list_sessions — backend-specific (not in registry handler)
+  tools.push(
+    createListSessionsTool({
+      sessionId,
+      getListSessionsFn: () => {
+        const callbacks = getSessionScopedToolCallbacks(sessionId);
+        return callbacks?.listSessionsFn;
       },
     }),
   );

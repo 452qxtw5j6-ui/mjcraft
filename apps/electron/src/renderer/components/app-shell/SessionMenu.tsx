@@ -32,6 +32,7 @@ import {
   Copy,
   AppWindow,
   CloudUpload,
+  Cpu,
   RefreshCw,
   Tag,
 } from 'lucide-react'
@@ -65,6 +66,8 @@ export interface SessionMenuProps {
   onSessionStatusChange: (state: SessionStatusId) => void
   onOpenInNewWindow: () => void
   onDelete: () => void
+  /** Create a Codex sub-session delegated from this session (optional) */
+  onDelegateToCodex?: () => void
 }
 
 /**
@@ -85,6 +88,7 @@ export function SessionMenu({
   onSessionStatusChange,
   onOpenInNewWindow,
   onDelete,
+  onDelegateToCodex,
 }: SessionMenuProps) {
   // Derive display state from item
   const sessionId = item.id
@@ -221,6 +225,14 @@ export function SessionMenu({
             />
           </SubContent>
         </Sub>
+      )}
+
+      {/* Claude main → Codex sub-agent delegation */}
+      {onDelegateToCodex && (
+        <MenuItem onClick={onDelegateToCodex}>
+          <Cpu className="h-3.5 w-3.5" />
+          <span className="flex-1">Delegate to Codex</span>
+        </MenuItem>
       )}
 
       {/* Flag/Unflag */}

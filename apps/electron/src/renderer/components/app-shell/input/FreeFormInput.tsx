@@ -65,7 +65,7 @@ import { FreeFormInputContextBadge } from './FreeFormInputContextBadge'
 import type { FileAttachment, LoadedSource, LoadedSkill } from '../../../../shared/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/modes'
 import { PERMISSION_MODE_ORDER } from '@craft-agent/shared/agent/modes'
-import { type ThinkingLevel, THINKING_LEVELS, getThinkingLevelName } from '@craft-agent/shared/agent/thinking-levels'
+import { type ThinkingLevel, CLAUDE_EFFORT_LEVELS, GPT_EFFORT_LEVELS, getThinkingLevelName, normalizeThinkingLevel, DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { hasOpenOverlay } from '@/lib/overlay-detection'
 import { EscapeInterruptOverlay } from './EscapeInterruptOverlay'
@@ -125,7 +125,7 @@ export interface FreeFormInputProps {
   /** Callback when model changes (includes connection slug for proper persistence) */
   onModelChange: (model: string, connection?: string) => void
   // Thinking level (session-level setting)
-  /** Current thinking level ('off', 'think', 'max') */
+  /** Current effort level (legacy think/max aliases still supported) */
   thinkingLevel?: ThinkingLevel
   /** Callback when thinking level changes */
   onThinkingLevelChange?: (level: ThinkingLevel) => void
@@ -219,7 +219,7 @@ export function FreeFormInput({
   inputRef: externalInputRef,
   currentModel,
   onModelChange,
-  thinkingLevel = 'think',
+  thinkingLevel = DEFAULT_THINKING_LEVEL,
   onThinkingLevelChange,
   ultrathinkEnabled = false,
   onUltrathinkChange,
@@ -288,13 +288,42 @@ export function FreeFormInput({
     return connection.models || ANTHROPIC_MODELS
   }, [llmConnections, currentConnection, workspaceDefaultConnection, connectionUnavailable])
 
-  const availableThinkingLevels = THINKING_LEVELS
+  // Effective connection: canonical fallback chain (session → workspace default → global default → first)
+  const effectiveConnection = resolveEffectiveConnectionSlug(currentConnection, workspaceDefaultConnection, llmConnections)
 
-  // Disable thinking selector when the current model explicitly doesn't support it
+  // Effective connection details (with fallbacks) for model list
+  // Unlike currentConnectionDetails which is null when no explicit connection is set,
+  // this resolves to the actual connection being used (including workspace default)
+  const effectiveConnectionDetails = React.useMemo(() => {
+    if (!effectiveConnection) return null
+    return llmConnections.find(c => c.slug === effectiveConnection) ?? null
+  }, [llmConnections, effectiveConnection])
+
+  // Disable effort selector when the current model explicitly doesn't support it
   const thinkingDisabled = React.useMemo(() => {
     const model = availableModels.find(m => typeof m !== 'string' && m.id === currentModel)
     return typeof model !== 'string' && model?.supportsThinking === false
   }, [availableModels, currentModel])
+
+  // Provider-aware official effort levels
+  const availableThinkingLevels = React.useMemo(() => {
+    if (thinkingDisabled) return []
+    const providerType = effectiveConnectionDetails?.providerType
+    // Pi(OpenAI/Codex): low/medium/high/xhigh
+    if (providerType === 'pi') return GPT_EFFORT_LEVELS
+    // Anthropic/Claude: low/medium/high/max
+    return CLAUDE_EFFORT_LEVELS
+  }, [thinkingDisabled, effectiveConnectionDetails])
+
+  const effortLabel = React.useMemo(() => {
+    return effectiveConnectionDetails?.providerType === 'pi' ? 'Reasoning effort' : 'Effort'
+  }, [effectiveConnectionDetails])
+
+  const currentThinkingDisplayName = React.useMemo(() => {
+    const normalized = normalizeThinkingLevel(thinkingLevel)
+    const def = availableThinkingLevels.find((l) => l.id === normalized)
+    return def?.name ?? getThinkingLevelName(thinkingLevel)
+  }, [thinkingLevel, availableThinkingLevels])
 
   // Get display name for current model (full name, not short name)
   const currentModelDisplayName = React.useMemo(() => {
@@ -334,18 +363,6 @@ export function FreeFormInput({
     if (!currentConnection) return null
     return llmConnections.find(c => c.slug === currentConnection) ?? null
   }, [llmConnections, currentConnection])
-
-  // Effective connection: canonical fallback chain (session → workspace default → global default → first)
-  const effectiveConnection = resolveEffectiveConnectionSlug(currentConnection, workspaceDefaultConnection, llmConnections)
-
-  // Effective connection details (with fallbacks) for model list
-  // Unlike currentConnectionDetails which is null when no explicit connection is set,
-  // this resolves to the actual connection being used (including workspace default)
-  const effectiveConnectionDetails = React.useMemo(() => {
-    if (!effectiveConnection) return null
-    return llmConnections.find(c => c.slug === effectiveConnection) ?? null
-  }, [llmConnections, effectiveConnection])
-
 
   // Access sessionStatuses and onSessionStatusChange from context for the # menu state picker
   const sessionStatuses = appShellCtx?.sessionStatuses ?? []
@@ -1793,13 +1810,13 @@ Model
                   <DropdownMenuSub>
                     <StyledDropdownMenuSubTrigger disabled={thinkingDisabled} className={cn("flex items-center justify-between px-2 py-2 rounded-lg", thinkingDisabled && "opacity-50 cursor-not-allowed")}>
                       <div className="text-left flex-1">
-                        <div className="font-medium text-sm">{getThinkingLevelName(thinkingLevel)}</div>
-                        <div className="text-xs text-muted-foreground">{thinkingDisabled ? 'Not supported by this model' : 'Extended reasoning depth'}</div>
+                        <div className="font-medium text-sm">{currentThinkingDisplayName}</div>
+                        <div className="text-xs text-muted-foreground">{thinkingDisabled ? 'Not supported by this model' : effortLabel}</div>
                       </div>
                     </StyledDropdownMenuSubTrigger>
                     <StyledDropdownMenuSubContent className="min-w-[220px]">
                       {availableThinkingLevels.map(({ id, name, description }) => {
-                        const isSelected = thinkingLevel === id
+                        const isSelected = normalizeThinkingLevel(thinkingLevel) === id
                         return (
                           <StyledDropdownMenuItem
                             key={id}

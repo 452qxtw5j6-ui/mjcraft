@@ -128,6 +128,36 @@ export interface SpawnSessionHelpResult {
   };
 }
 
+export interface SendToSessionRequest {
+  targetSessionId: string;
+  message: string;
+  attachments?: Array<{ path: string; name?: string }>;
+  waitForResponse?: boolean;
+}
+
+export interface SendToSessionResult {
+  status: 'sent' | 'completed';
+  messageId: string;
+  response?: string;
+}
+
+export interface ListSessionsRequest {
+  includeArchived?: boolean;
+  limit?: number;
+}
+
+export interface ListSessionsResult {
+  sessions: Array<{
+    id: string;
+    name?: string;
+    status?: string;
+    isArchived?: boolean;
+    isProcessing?: boolean;
+    lastMessageAt?: number;
+    workspaceId?: string;
+  }>;
+}
+
 /** Tool list for mini agents - quick config edits only */
 export const MINI_AGENT_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'] as const;
 
@@ -207,6 +237,8 @@ export abstract class BaseAgent implements AgentBackend {
   onUsageUpdate: ((update: UsageUpdate) => void) | null = null;
   onBackendAuthRequired: ((reason: string) => void) | null = null;
   onSpawnSession: ((request: SpawnSessionRequest) => Promise<SpawnSessionResult>) | null = null;
+  onSendToSession: ((request: SendToSessionRequest) => Promise<SendToSessionResult>) | null = null;
+  onListSessions: ((request: ListSessionsRequest) => Promise<ListSessionsResult>) | null = null;
 
   // ============================================================
   // Constructor
@@ -1101,6 +1133,54 @@ Please continue the conversation naturally from where we left off.
         permissionMode: this.permissionManager.getPermissionMode(),
       },
     };
+  }
+
+  /**
+   * Pre-execute a send_to_session request: validate and delegate.
+   */
+  protected async preExecuteSendToSession(
+    input: Record<string, unknown>
+  ): Promise<SendToSessionResult> {
+    const targetSessionId = input.targetSessionId as string | undefined;
+    const message = input.message as string | undefined;
+
+    if (!targetSessionId?.trim()) {
+      throw new Error('targetSessionId is required.');
+    }
+    if (!message?.trim()) {
+      throw new Error('message is required.');
+    }
+
+    if (!this.onSendToSession) {
+      throw new Error('send_to_session is not available in this context.');
+    }
+
+    const request: SendToSessionRequest = {
+      targetSessionId,
+      message,
+      attachments: input.attachments as SendToSessionRequest['attachments'],
+      waitForResponse: (input.waitForResponse as boolean | undefined) ?? false,
+    };
+
+    return this.onSendToSession(request);
+  }
+
+  /**
+   * Pre-execute a list_sessions request: delegate with optional filters.
+   */
+  protected async preExecuteListSessions(
+    input: Record<string, unknown>
+  ): Promise<ListSessionsResult> {
+    if (!this.onListSessions) {
+      throw new Error('list_sessions is not available in this context.');
+    }
+
+    const request: ListSessionsRequest = {
+      includeArchived: (input.includeArchived as boolean | undefined) ?? false,
+      limit: (input.limit as number | undefined) ?? 50,
+    };
+
+    return this.onListSessions(request);
   }
 
   // ============================================================

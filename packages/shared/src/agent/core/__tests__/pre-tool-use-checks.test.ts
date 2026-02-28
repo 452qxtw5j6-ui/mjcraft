@@ -329,10 +329,10 @@ describe('runPreToolUseChecks', () => {
   });
 
   // ============================================================
-  // Step 4: call_llm interception
+  // Step 4: session tool interception
   // ============================================================
 
-  describe('step 4: call_llm interception', () => {
+  describe('step 4: session tool interception', () => {
     it('intercepts mcp__session__call_llm', () => {
       const input = { model: 'haiku', prompt: 'summarize' };
       const result = runPreToolUseChecks(createInput({
@@ -342,6 +342,45 @@ describe('runPreToolUseChecks', () => {
 
       expect(result.type).toBe('call_llm_intercept');
       if (result.type === 'call_llm_intercept') {
+        expect(result.input).toEqual(input);
+      }
+    });
+
+    it('intercepts mcp__session__spawn_session', () => {
+      const input = { prompt: 'Run this task' };
+      const result = runPreToolUseChecks(createInput({
+        toolName: 'mcp__session__spawn_session',
+        input,
+      }));
+
+      expect(result.type).toBe('spawn_session_intercept');
+      if (result.type === 'spawn_session_intercept') {
+        expect(result.input).toEqual(input);
+      }
+    });
+
+    it('intercepts mcp__session__send_to_session', () => {
+      const input = { targetSessionId: 's-1', message: 'Ping' };
+      const result = runPreToolUseChecks(createInput({
+        toolName: 'mcp__session__send_to_session',
+        input,
+      }));
+
+      expect(result.type).toBe('send_to_session_intercept');
+      if (result.type === 'send_to_session_intercept') {
+        expect(result.input).toEqual(input);
+      }
+    });
+
+    it('intercepts mcp__session__list_sessions', () => {
+      const input = { includeArchived: true, limit: 10 };
+      const result = runPreToolUseChecks(createInput({
+        toolName: 'mcp__session__list_sessions',
+        input,
+      }));
+
+      expect(result.type).toBe('list_sessions_intercept');
+      if (result.type === 'list_sessions_intercept') {
         expect(result.input).toEqual(input);
       }
     });

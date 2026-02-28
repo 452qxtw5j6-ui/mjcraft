@@ -364,6 +364,9 @@ function resolveToolDisplayMeta(
           'transform_data': 'Transform Data',
           'render_template': 'Render Template',
           'update_user_preferences': 'Update Preferences',
+          'spawn_session': 'Spawn Session',
+          'send_to_session': 'Send To Session',
+          'list_sessions': 'List Sessions',
         },
         'craft-agents-docs': {
           'SearchCraftAgents': 'Search Docs',
@@ -2537,6 +2540,121 @@ export class SessionManager {
           connection: session.llmConnection,
           model: session.model,
         }
+      }
+
+      // Wire up onSendToSession to send a message to another existing session
+      managed.agent.onSendToSession = async (request) => {
+        sessionLog.info(`Send-to-session request from ${managed.id} -> ${request.targetSessionId}`)
+
+        if (request.targetSessionId === managed.id) {
+          throw new Error('Cannot send a message to the same session.')
+        }
+
+        const target = this.sessions.get(request.targetSessionId)
+        if (!target) {
+          throw new Error(`Target session not found: ${request.targetSessionId}`)
+        }
+
+        // Enforce workspace isolation
+        if (target.workspace.id !== managed.workspace.id) {
+          throw new Error('Target session must be in the same workspace.')
+        }
+
+        await this.ensureMessagesLoaded(target)
+
+        // Build FileAttachment[] from paths (if any)
+        let fileAttachments: FileAttachment[] | undefined
+        if (request.attachments?.length) {
+          const attachments: FileAttachment[] = []
+          for (const a of request.attachments) {
+            try {
+              const safePath = await validateSpawnAttachmentPath(a.path)
+              const attachment = readFileAttachment(safePath)
+              if (attachment) {
+                if (a.name) attachment.name = a.name
+                attachments.push(attachment)
+              } else {
+                sessionLog.warn(`send_to_session: attachment not found: ${a.path}`)
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              sessionLog.warn(`send_to_session: blocked attachment path ${a.path}: ${message}`)
+            }
+          }
+          if (attachments.length > 0) fileAttachments = attachments
+        }
+
+        const beforeLen = target.messages.length
+
+        await this.sendMessage(target.id, request.message, fileAttachments)
+
+        const newUserMessage = [...target.messages.slice(beforeLen)]
+          .reverse()
+          .find(m => m.role === 'user')
+
+        if (!newUserMessage?.id) {
+          throw new Error('Failed to resolve message ID after sending to target session.')
+        }
+
+        const messageId = newUserMessage.id
+
+        if (!request.waitForResponse) {
+          return {
+            status: 'sent' as const,
+            messageId,
+          }
+        }
+
+        const timeoutMs = 120000
+        const start = Date.now()
+        let response: string | undefined
+
+        while (Date.now() - start < timeoutMs) {
+          await this.ensureMessagesLoaded(target)
+
+          const latestAssistant = [...target.messages]
+            .reverse()
+            .find(m => m.role === 'assistant' && !m.isIntermediate && (m.timestamp ?? 0) > (newUserMessage.timestamp ?? 0))
+
+          if (latestAssistant) {
+            response = latestAssistant.content
+            break
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 250))
+        }
+
+        if (response === undefined) {
+          throw new Error('Timed out waiting for target session response.')
+        }
+
+        return {
+          status: 'completed' as const,
+          messageId,
+          response,
+        }
+      }
+
+      // Wire up onListSessions so agents can discover valid target session IDs
+      managed.agent.onListSessions = async (request) => {
+        const includeArchived = request.includeArchived ?? false
+        const limit = request.limit ?? 50
+
+        const sessions = this.getSessions(managed.workspace.id)
+          .filter(s => !s.hidden)
+          .filter(s => includeArchived || !s.isArchived)
+          .slice(0, limit)
+          .map(s => ({
+            id: s.id,
+            name: s.name,
+            status: s.sessionStatus,
+            isArchived: s.isArchived,
+            isProcessing: s.isProcessing,
+            lastMessageAt: s.lastMessageAt,
+            workspaceId: s.workspaceId,
+          }))
+
+        return { sessions }
       }
 
       // Wire up onSourceActivationRequest to auto-enable sources when agent tries to use them

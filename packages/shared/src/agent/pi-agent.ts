@@ -37,6 +37,7 @@ import type { Workspace } from '../config/storage.ts';
 
 // Event adapter
 import { PiEventAdapter } from './backend/pi/event-adapter.ts';
+import { THINKING_TO_PI } from './backend/pi/constants.ts';
 import { EventQueue } from './backend/event-queue.ts';
 
 // System prompt for Craft Agent context
@@ -323,7 +324,9 @@ export class PiAgent extends BaseAgent {
       apiKey: legacyApiKey || '',
       model: this._model,
       cwd,
-      thinkingLevel: this._thinkingLevel,
+      // Normalize Craft levels to Pi/OpenAI reasoning effort levels.
+      // This keeps Ultrathink (`max`) aligned with GPT `xhigh`.
+      thinkingLevel: THINKING_TO_PI[this._thinkingLevel],
       workspaceRootPath: this.config.workspace.rootPath,
       sessionId,
       sessionPath,
@@ -828,6 +831,8 @@ export class PiAgent extends BaseAgent {
 
       case 'call_llm_intercept':
       case 'spawn_session_intercept':
+      case 'send_to_session_intercept':
+      case 'list_sessions_intercept':
         // These tools are proxy tools handled via tool_execute_request — just allow
         this.send({ type: 'pre_tool_use_response', requestId, action: 'allow' });
         return;
@@ -1016,6 +1021,28 @@ export class PiAgent extends BaseAgent {
         }
       }
 
+      // send_to_session uses the shared pre-execution pipeline from BaseAgent
+      if (toolName === 'send_to_session') {
+        try {
+          const result = await this.preExecuteSendToSession(args);
+          return { content: JSON.stringify(result, null, 2), isError: false };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return { content: `send_to_session failed: ${msg}`, isError: true };
+        }
+      }
+
+      // list_sessions uses the shared pre-execution pipeline from BaseAgent
+      if (toolName === 'list_sessions') {
+        try {
+          const result = await this.preExecuteListSessions(args);
+          return { content: JSON.stringify(result, null, 2), isError: false };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return { content: `list_sessions failed: ${msg}`, isError: true };
+        }
+      }
+
       const def = SESSION_TOOL_REGISTRY.get(toolName);
       if (!def?.handler) {
         return { content: `Unknown session tool: ${toolName}`, isError: true };
@@ -1131,6 +1158,9 @@ export class PiAgent extends BaseAgent {
         onPlanSubmitted: (planPath) => this.onPlanSubmitted?.(planPath),
         onAuthRequest: (request) => this.onAuthRequest?.(request),
         queryFn: (request) => this.queryLlm(request),
+        spawnSessionFn: (input) => this.preExecuteSpawnSession(input),
+        sendToSessionFn: (input) => this.preExecuteSendToSession(input),
+        listSessionsFn: (input) => this.preExecuteListSessions(input),
       });
     }
 

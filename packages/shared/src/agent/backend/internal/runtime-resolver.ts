@@ -102,8 +102,24 @@ function resolveCopilotCliPath(hostRuntime: BackendHostRuntimeContext): string |
 
 function resolveServerPath(hostRuntime: BackendHostRuntimeContext, serverName: string): string | undefined {
   if (hostRuntime.isPackaged) {
-    const packaged = join(hostRuntime.appRootPath, 'resources', serverName, 'index.js');
-    return existsSync(packaged) ? packaged : undefined;
+    const packagedCandidates = [
+      // Current packaging pipeline copies runtime assets into app/dist/resources.
+      join(hostRuntime.appRootPath, 'dist', 'resources', serverName, 'index.js'),
+      // Legacy fallback (older builds may place servers here).
+      join(hostRuntime.appRootPath, 'resources', serverName, 'index.js'),
+    ];
+
+    if (hostRuntime.resourcesPath) {
+      // Defensive fallbacks for hosts that pass Contents/Resources as root.
+      packagedCandidates.push(
+        join(hostRuntime.resourcesPath, 'app', 'dist', 'resources', serverName, 'index.js'),
+        join(hostRuntime.resourcesPath, 'app', 'resources', serverName, 'index.js'),
+      );
+    }
+
+    return firstExistingPath(packagedCandidates)
+      ?? resolveUpwards(hostRuntime.appRootPath, join('dist', 'resources', serverName, 'index.js'))
+      ?? resolveUpwards(hostRuntime.appRootPath, join('resources', serverName, 'index.js'));
   }
   return resolveUpwards(
     hostRuntime.appRootPath,
@@ -177,10 +193,11 @@ export function applyAnthropicRuntimeBootstrap(
   }
   setPathToClaudeCodeExecutable(paths.claudeCliPath);
 
-  if (!paths.claudeInterceptorPath) {
+  const interceptorPath = paths.interceptorBundlePath || paths.claudeInterceptorPath;
+  if (!interceptorPath) {
     throw new Error('Network interceptor not found. The app package may be corrupted.');
   }
-  setInterceptorPath(paths.claudeInterceptorPath);
+  setInterceptorPath(interceptorPath);
 
   if (hostRuntime.isPackaged) {
     if (!paths.bundledRuntimePath) {
@@ -189,4 +206,3 @@ export function applyAnthropicRuntimeBootstrap(
     setExecutable(paths.bundledRuntimePath);
   }
 }
-

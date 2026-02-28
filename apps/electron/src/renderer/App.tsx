@@ -55,6 +55,7 @@ import {
 import { useLinkInterceptor, type FilePreviewState } from '@/hooks/useLinkInterceptor'
 import { getFileManagerName } from '@/lib/platform'
 import { ActionRegistryProvider } from '@/actions'
+import { DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 
 type AppState = 'loading' | 'onboarding' | 'reauth' | 'ready'
 
@@ -393,12 +394,12 @@ export default function App() {
       for (const s of loadedSessions) {
         // Only store non-default options to keep the map lean
         const hasNonDefaultMode = s.permissionMode && s.permissionMode !== 'ask'
-        const hasNonDefaultThinking = s.thinkingLevel && s.thinkingLevel !== 'think'
+        const hasNonDefaultThinking = s.thinkingLevel && normalizeThinkingLevel(s.thinkingLevel) !== DEFAULT_THINKING_LEVEL
         if (hasNonDefaultMode || hasNonDefaultThinking) {
           optionsMap.set(s.id, {
             ultrathinkEnabled: false, // ultrathink is single-shot, never persisted
             permissionMode: s.permissionMode ?? 'ask',
-            thinkingLevel: s.thinkingLevel ?? 'think',
+            thinkingLevel: s.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
           })
         }
       }
@@ -717,14 +718,14 @@ export default function App() {
 
     // Apply session defaults to the unified sessionOptions
     const hasNonDefaultMode = session.permissionMode && session.permissionMode !== 'ask'
-    const hasNonDefaultThinking = session.thinkingLevel && session.thinkingLevel !== 'think'
+    const hasNonDefaultThinking = session.thinkingLevel && normalizeThinkingLevel(session.thinkingLevel) !== DEFAULT_THINKING_LEVEL
     if (hasNonDefaultMode || hasNonDefaultThinking) {
       setSessionOptions(prev => {
         const next = new Map(prev)
         next.set(session.id, {
           ultrathinkEnabled: false,
           permissionMode: session.permissionMode ?? 'ask',
-          thinkingLevel: session.thinkingLevel ?? 'think',
+          thinkingLevel: session.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
         })
         return next
       })

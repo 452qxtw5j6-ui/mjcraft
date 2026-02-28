@@ -1,5 +1,5 @@
-appId: com.lukilabs.craft-agent
-productName: Craft Agents
+appId: com.mjay.mjcraft
+productName: MJCraft
 copyright: Copyright © 2025 Craft Docs Ltd.
 
 electronVersion: "39.2.7"
@@ -69,10 +69,8 @@ mac:
       arch:
         - arm64
         - x64
-  hardenedRuntime: true
+  hardenedRuntime: false
   gatekeeperAssess: false
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
   extraResources:
     - from: node_modules/@anthropic-ai/claude-agent-sdk
       to: app/node_modules/@anthropic-ai/claude-agent-sdk
@@ -88,21 +86,21 @@ mac:
     - "!**/vendor/copilot/linux-*/**"
     - "!**/vendor/copilot/win32-*/**"
   # Use predictable naming for macOS packages (applies to zip; dmg uses its own config below)
-  artifactName: "Craft-Agent-${arch}.${ext}"
+  artifactName: "MJCraft-${arch}.${ext}"
   # Code signing & notarization (disabled by default for local builds)
   # To enable: set CSC_LINK, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
   # notarize:
   #   teamId: ${APPLE_TEAM_ID}
 
 dmg:
-  # Use predictable naming: Craft-Agent-arm64.dmg, Craft-Agent-x64.dmg
-  artifactName: "Craft-Agent-${arch}.dmg"
+  # Use predictable naming: MJCraft-arm64.dmg, MJCraft-x64.dmg
+  artifactName: "MJCraft-${arch}.dmg"
   # Custom background (multi-resolution TIFF with 1x+2x for retina support)
   background: resources/dmg-background.tiff
   # Use app icon as the mounted volume icon in Finder
   icon: resources/icon.icns
   iconSize: 80
-  title: "Craft Agents"
+  title: "MJCraft"
   contents:
     - x: 130
       y: 200
@@ -120,8 +118,8 @@ win:
     - target: nsis
       arch:
         - x64
-  # Use predictable naming: Craft-Agent-x64.exe
-  artifactName: "Craft-Agent-${arch}.${ext}"
+  # Use predictable naming: MJCraft-x64.exe
+  artifactName: "MJCraft-${arch}.${ext}"
   files:
     # Exclude binaries for other platforms
     - "!**/vendor/codex/darwin-*/**"
@@ -168,7 +166,7 @@ linux:
     - target: AppImage
       arch:
         - x64
-  artifactName: "Craft-Agent-${arch}.${ext}"
+  artifactName: "MJCraft-${arch}.${ext}"
   extraResources:
     - from: node_modules/@anthropic-ai/claude-agent-sdk
       to: app/node_modules/@anthropic-ai/claude-agent-sdk

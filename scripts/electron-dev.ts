@@ -250,6 +250,17 @@ async function runEsbuild(
 // Bun's bundler handles ESM→ESM bundling correctly.
 async function buildPiAgentServer(): Promise<{ success: boolean; error?: string }> {
   try {
+    const sourceEntry = join(PI_AGENT_SERVER_DIR, "src/index.ts");
+    const distEntry = join(PI_AGENT_SERVER_DIR, "dist/index.js");
+
+    // OSS fallback: if source is not present but prebuilt dist exists, reuse it.
+    if (!existsSync(sourceEntry)) {
+      if (existsSync(distEntry)) {
+        return { success: true };
+      }
+      return { success: false, error: `Missing ${sourceEntry} and fallback ${distEntry}` };
+    }
+
     const proc = spawn({
       cmd: ["bun", "build", "src/index.ts", "--outdir=dist", "--target=bun", "--format=esm"],
       cwd: PI_AGENT_SERVER_DIR,

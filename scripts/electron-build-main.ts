@@ -214,13 +214,26 @@ async function buildPiAgentServer(): Promise<void> {
     mkdirSync(distDir, { recursive: true });
   }
 
+  const piSourceEntry = join(PI_AGENT_SERVER_DIR, "src/index.ts");
+
+  // OSS fallback: some snapshots may not include pi-agent-server source.
+  // If source is missing but a prebuilt dist file exists, reuse it.
+  if (!existsSync(piSourceEntry)) {
+    if (existsSync(PI_AGENT_SERVER_OUTPUT)) {
+      console.log("ℹ️ Pi agent server source missing; using existing dist/index.js");
+      return;
+    }
+    console.error("❌ Pi agent server source missing and no dist fallback found at", PI_AGENT_SERVER_OUTPUT);
+    process.exit(1);
+  }
+
   // Use --target=bun --format=esm because the Pi SDK (@mariozechner/pi-coding-agent)
   // is ESM-only. --target=node --format=cjs leaves ESM deps as external require()
   // calls that fail at runtime since there are no node_modules relative to dist/.
   const proc = spawn({
     cmd: [
       "bun", "build",
-      join(PI_AGENT_SERVER_DIR, "src/index.ts"),
+      piSourceEntry,
       "--outfile", PI_AGENT_SERVER_OUTPUT,
       "--target", "bun",
       "--format", "esm",

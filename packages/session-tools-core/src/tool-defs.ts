@@ -142,6 +142,21 @@ export const SpawnSessionSchema = z.object({
   })).optional().describe('Files to include with the prompt'),
 });
 
+export const SendToSessionSchema = z.object({
+  targetSessionId: z.string().describe('Target session ID to receive the message'),
+  message: z.string().describe('Message to send to the target session'),
+  attachments: z.array(z.object({
+    path: z.string().describe('Absolute file path on disk'),
+    name: z.string().optional().describe('Display name (defaults to file basename)'),
+  })).optional().describe('Files to include with the message'),
+  waitForResponse: z.boolean().optional().describe('Wait for target session assistant response before returning (default: false)'),
+});
+
+export const ListSessionsSchema = z.object({
+  includeArchived: z.boolean().optional().describe('Include archived sessions in results (default: false)'),
+  limit: z.number().int().min(1).max(200).optional().describe('Maximum number of sessions to return (default: 50)'),
+});
+
 // ============================================================
 // Canonical Tool Descriptions (base — no DOC_REFS)
 // ============================================================
@@ -298,6 +313,19 @@ When spawning, the 'prompt' parameter is required.
 
 The spawned session appears in the session list and runs fire-and-forget.
 Only use 'attachments' for existing file paths on disk — the tool reads them automatically.`,
+
+  send_to_session: `Send a message to another session and optionally wait for a response.
+
+Use this when you need a different session to continue work, gather context, or answer a focused question.
+
+The target session must be in the same workspace.
+If waitForResponse=true, the call blocks until the target session returns an assistant response.`,
+
+  list_sessions: `List sessions available in the current workspace.
+
+Use this before send_to_session to discover valid targetSessionId values.
+
+Returns session metadata (id, name, status, last activity).`,
 } as const;
 
 // ============================================================
@@ -336,6 +364,8 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'render_template', description: TOOL_DESCRIPTIONS.render_template, inputSchema: RenderTemplateSchema, handler: handleRenderTemplate },
   { name: 'call_llm', description: TOOL_DESCRIPTIONS.call_llm, inputSchema: CallLlmSchema, handler: null },
   { name: 'spawn_session', description: TOOL_DESCRIPTIONS.spawn_session, inputSchema: SpawnSessionSchema, handler: null },
+  { name: 'send_to_session', description: TOOL_DESCRIPTIONS.send_to_session, inputSchema: SendToSessionSchema, handler: null },
+  { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, handler: null },
 ];
 
 // ============================================================

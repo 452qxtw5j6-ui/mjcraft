@@ -69,6 +69,8 @@ function buildBackendHostRuntimeContext() {
   }
 }
 
+const DEFAULT_AUTOMATIONS_CONFIG = '{\n  "version": 2,\n  "automations": {}\n}\n'
+
 /**
  * Validates that a file path is within allowed directories to prevent path traversal attacks.
  * Allowed directories: user's home directory and /tmp
@@ -393,7 +395,7 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
       case 'setThinkingLevel':
         // Validate thinking level before passing to session manager
         if (!isValidThinkingLevel(command.level)) {
-          throw new Error(`Invalid thinking level: ${command.level}. Valid values: 'off', 'think', 'max'`)
+          throw new Error(`Invalid thinking level: ${command.level}. Valid values: 'off', 'think', 'low', 'medium', 'high', 'max', 'xhigh'`)
         }
         return sessionManager.setSessionThinkingLevel(sessionId, command.level)
       case 'updateWorkingDirectory':
@@ -462,16 +464,25 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
 
   // Read a file (with path validation to prevent traversal attacks)
   ipcMain.handle(IPC_CHANNELS.READ_FILE, async (_event, path: string) => {
+    let safePath = path
     try {
       // Validate and normalize the path
-      const safePath = await validateFilePath(path)
+      safePath = await validateFilePath(path)
       const content = await readFile(safePath, 'utf-8')
       return content
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
+      const code = error instanceof Error && 'code' in error
+        ? (error as NodeJS.ErrnoException).code
+        : undefined
+
       // ENOENT is expected for optional config files (e.g. automations.json)
-      if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-        ipcLog.debug('readFile: file not found:', path)
+      if (code === 'ENOENT') {
+        if (basename(safePath) === 'automations.json') {
+          ipcLog.debug('readFile: optional automations config missing, returning default:', safePath)
+          return DEFAULT_AUTOMATIONS_CONFIG
+        }
+        ipcLog.debug('readFile: file not found:', safePath)
       } else {
         ipcLog.error('readFile error:', message)
       }

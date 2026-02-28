@@ -20,6 +20,12 @@ interface SessionBadgesProps {
   item: SessionMeta
 }
 
+function formatCompactTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
+  return `${value}`
+}
+
 export function SessionBadges({ item }: SessionBadgesProps) {
   const ctx = useSessionListContext()
   const permissionMode = ctx.sessionOptions?.get(item.id)?.permissionMode
@@ -65,6 +71,11 @@ export function SessionBadges({ item }: SessionBadgesProps) {
       {connectionDetails && (
         <EntityListBadge variant="icon">
           <ConnectionIcon connection={connectionDetails} size={14} showTooltip />
+        </EntityListBadge>
+      )}
+      {item.tokenUsage?.totalTokens != null && item.tokenUsage.totalTokens > 0 && (
+        <EntityListBadge colorClass="bg-foreground/5 text-foreground/70" className="tabular-nums" title={`Tokens: ${item.tokenUsage.totalTokens.toLocaleString()}${item.tokenUsage.costUsd ? ` · $${item.tokenUsage.costUsd.toFixed(4)}` : ''}`}>
+          {formatCompactTokens(item.tokenUsage.totalTokens)} tok
         </EntityListBadge>
       )}
       {permissionMode && (

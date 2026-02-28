@@ -86,7 +86,7 @@ const API_SETUP_OPTIONS: ApiSetupOption[] = [
   },
   {
     id: 'pi_chatgpt_oauth',
-    name: 'ChatGPT Plus',
+    name: 'ChatGPT Plus/Pro',
     description: 'Use your ChatGPT subscription with Craft Agents Backend.',
     icon: <Cpu className="size-4" />,
     providerType: 'pi',

@@ -507,6 +507,12 @@ export interface AgentBackend {
 
   /** Called when agent requests spawning a sub-session */
   onSpawnSession: ((request: import('../base-agent.ts').SpawnSessionRequest) => Promise<import('../base-agent.ts').SpawnSessionResult>) | null;
+
+  /** Called when agent requests sending a message to another session */
+  onSendToSession: ((request: import('../base-agent.ts').SendToSessionRequest) => Promise<import('../base-agent.ts').SendToSessionResult>) | null;
+
+  /** Called when agent requests listing sessions in the current workspace */
+  onListSessions: ((request: import('../base-agent.ts').ListSessionsRequest) => Promise<import('../base-agent.ts').ListSessionsResult>) | null;
 }
 
 /**

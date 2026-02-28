@@ -415,7 +415,9 @@ export type PreToolUseCheckResult =
       description: string; command?: string; modifiedInput?: Record<string, unknown> }
   | { type: 'source_activation_needed'; sourceSlug: string; sourceExists: boolean }
   | { type: 'call_llm_intercept'; input: Record<string, unknown> }
-  | { type: 'spawn_session_intercept'; input: Record<string, unknown> };
+  | { type: 'spawn_session_intercept'; input: Record<string, unknown> }
+  | { type: 'send_to_session_intercept'; input: Record<string, unknown> }
+  | { type: 'list_sessions_intercept'; input: Record<string, unknown> };
 
 /**
  * Input for `runPreToolUseChecks()`. Each agent builds this from its SDK-specific
@@ -572,13 +574,19 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
   }
 
   // ============================================================
-  // 4. CALL_LLM / SPAWN_SESSION INTERCEPTION
+  // 4. SESSION TOOL INTERCEPTION (backend-specific execution)
   // ============================================================
   if (toolName === 'mcp__session__call_llm') {
     return { type: 'call_llm_intercept', input };
   }
   if (toolName === 'mcp__session__spawn_session') {
     return { type: 'spawn_session_intercept', input };
+  }
+  if (toolName === 'mcp__session__send_to_session') {
+    return { type: 'send_to_session_intercept', input };
+  }
+  if (toolName === 'mcp__session__list_sessions') {
+    return { type: 'list_sessions_intercept', input };
   }
 
   // ============================================================

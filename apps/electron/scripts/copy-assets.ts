@@ -11,7 +11,7 @@
  * Run: bun scripts/copy-assets.ts
  */
 
-import { cpSync, copyFileSync, mkdirSync } from 'fs';
+import { cpSync, copyFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
 // Copy all resources (icons, themes, docs, permissions, tool-icons, etc.)
@@ -30,4 +30,22 @@ try {
 } catch (err) {
   // Only warn - PowerShell validation is optional on non-Windows platforms
   console.log('⚠ powershell-parser.ps1 copy skipped (not critical on non-Windows)');
+}
+
+// Copy Pi agent server build output into packaged runtime resources
+// Source: packages/pi-agent-server/dist/index.js
+// Destination: dist/resources/pi-agent-server/index.js
+const piServerSrc = join('..', '..', 'packages', 'pi-agent-server', 'dist', 'index.js');
+const piServerDir = join('dist', 'resources', 'pi-agent-server');
+const piServerDest = join(piServerDir, 'index.js');
+try {
+  if (existsSync(piServerSrc)) {
+    mkdirSync(piServerDir, { recursive: true });
+    copyFileSync(piServerSrc, piServerDest);
+    console.log('✓ Copied pi-agent-server → dist/resources/pi-agent-server/');
+  } else {
+    console.log('⚠ pi-agent-server copy skipped: source dist/index.js not found');
+  }
+} catch {
+  console.log('⚠ pi-agent-server copy failed (Pi sessions may not work in packaged builds)');
 }

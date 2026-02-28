@@ -11,12 +11,16 @@ import type { ThinkingLevel } from '../../thinking-levels.ts';
 /**
  * Map thinking levels to Pi thinking levels.
  * Pi supports: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
- * Craft supports: "off" | "think" | "max"
+ * Craft supports: off/low/medium/high/xhigh (+ legacy think/max aliases)
  */
 export const THINKING_TO_PI: Record<ThinkingLevel, PiThinkingLevel> = {
   off: 'off',
   think: 'medium',
-  max: 'high',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  max: 'xhigh',
+  xhigh: 'xhigh',
 };
 
 /**

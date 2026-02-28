@@ -29,7 +29,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   },
   {
     id: 'chatgpt',
-    name: 'Codex · ChatGPT Plus',
+    name: 'Codex · ChatGPT Plus/Pro',
     description: 'Use your ChatGPT Plus or Pro subscription.',
     icon: <img src={openaiIcon} alt="" className="size-5 rounded-[3px]" />,
   },
@@ -72,7 +72,7 @@ export function ProviderSelectStep({ onSelect }: ProviderSelectStepProps) {
           <CraftAgentsSymbol className="size-10 text-accent" />
         </div>
       }
-      title="Welcome to Craft Agents"
+      title="Welcome to MJCraft"
       description="How would you like to connect?"
     >
       <div className="space-y-3">

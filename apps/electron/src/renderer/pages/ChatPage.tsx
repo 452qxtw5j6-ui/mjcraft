@@ -196,11 +196,50 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     }
   }, [sessionId])
 
+  const handleDelegateToCodex = React.useCallback(async () => {
+    if (!activeWorkspaceId || !session) return
+
+    const codexConnection = llmConnections.find(c => c.slug === 'chatgpt-plus')
+      ?? llmConnections.find(c => c.providerType === 'pi')
+
+    if (!codexConnection) {
+      toast.error('Codex connection not found', { description: 'Add a ChatGPT Plus/Pro (Codex) connection in AI settings first.' })
+      return
+    }
+
+    const child = await window.electronAPI.createSubSession(activeWorkspaceId, session.id, {
+      name: `Codex Subagent · ${session.name || 'Session'}`,
+      llmConnection: codexConnection.slug,
+      model: codexConnection.defaultModel,
+      permissionMode: session.permissionMode,
+      workingDirectory: session.workingDirectory,
+      enabledSourceSlugs: session.enabledSourceSlugs,
+      labels: ['subagent', 'codex'],
+    })
+
+    toast.success('Codex subagent session created', {
+      description: child.name || child.id,
+      action: {
+        label: 'Open',
+        onClick: () => window.electronAPI.openSessionInNewWindow(activeWorkspaceId, child.id),
+      },
+    })
+  }, [activeWorkspaceId, session, llmConnections])
+
   // Check if session's locked connection has been removed
   const connectionUnavailable = React.useMemo(() =>
     isSessionConnectionUnavailable(session?.llmConnection, llmConnections),
     [session?.llmConnection, llmConnections]
   )
+
+  const effectiveConnectionSlug = React.useMemo(() => {
+    if (connectionUnavailable) return session?.llmConnection
+    return resolveEffectiveConnectionSlug(session?.llmConnection, workspaceDefaultLlmConnection, llmConnections)
+  }, [connectionUnavailable, session?.llmConnection, workspaceDefaultLlmConnection, llmConnections])
+
+  const effectiveConnectionDetails = React.useMemo(() => {
+    return effectiveConnectionSlug ? llmConnections.find(c => c.slug === effectiveConnectionSlug) ?? null : null
+  }, [effectiveConnectionSlug, llmConnections])
 
   // Effective model for this session (session-specific or global fallback)
   const effectiveModel = React.useMemo(() => {
@@ -209,13 +248,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     // When connection is unavailable, don't resolve through a different connection
     if (connectionUnavailable) return session?.model ?? ''
 
-    const connectionSlug = resolveEffectiveConnectionSlug(
-      session?.llmConnection, workspaceDefaultLlmConnection, llmConnections
-    )
-    const connection = connectionSlug ? llmConnections.find(c => c.slug === connectionSlug) : null
-
-    return connection?.defaultModel ?? ''
-  }, [session?.id, session?.model, session?.llmConnection, workspaceDefaultLlmConnection, llmConnections, connectionUnavailable])
+    return effectiveConnectionDetails?.defaultModel ?? ''
+  }, [session?.id, session?.model, session?.llmConnection, effectiveConnectionDetails, connectionUnavailable])
 
   // Working directory for this session
   const workingDirectory = session?.workingDirectory
@@ -266,6 +300,15 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   // Get display title for header - use getSessionTitle for consistent fallback logic with SessionList
   // Priority: name > first user message > preview > "New chat"
   const displayTitle = session ? getSessionTitle(session) : (sessionMeta ? getSessionTitle(sessionMeta) : 'Session')
+  const agentModeBadge = React.useMemo(() => {
+    if (!effectiveConnectionDetails) return null
+    const isClaudeMain = effectiveConnectionDetails.providerType === 'anthropic'
+    if (isClaudeMain) {
+      return <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/5 text-foreground/70">Main: Claude · Sub: Codex</span>
+    }
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/5 text-foreground/70">Single Agent</span>
+  }, [effectiveConnectionDetails])
+
   const isFlagged = session?.isFlagged || sessionMeta?.isFlagged || false
   const isArchived = session?.isArchived || sessionMeta?.isArchived || false
   const sharedUrl = session?.sharedUrl || sessionMeta?.sharedUrl || null
@@ -457,6 +500,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       onSessionStatusChange={handleSessionStatusChange}
       onOpenInNewWindow={handleOpenInNewWindow}
       onDelete={handleDelete}
+      onDelegateToCodex={handleDelegateToCodex}
     />
   ) : null, [
     sessionMeta,
@@ -472,6 +516,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     handleSessionStatusChange,
     handleOpenInNewWindow,
     handleDelete,
+    handleDelegateToCodex,
   ])
 
   // Handle missing session - loading or deleted
@@ -495,7 +540,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       return (
         <>
           <div className="h-full flex flex-col">
-            <PanelHeader  title={displayTitle} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+            <PanelHeader  title={displayTitle} badge={agentModeBadge} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
             <div className="flex-1 flex flex-col min-h-0">
               <ChatDisplay
                 ref={chatDisplayRef}
@@ -564,7 +609,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   return (
     <>
       <div className="h-full flex flex-col">
-        <PanelHeader  title={displayTitle} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+        <PanelHeader  title={displayTitle} badge={agentModeBadge} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
         <div className="flex-1 flex flex-col min-h-0">
           <ChatDisplay
             ref={chatDisplayRef}
