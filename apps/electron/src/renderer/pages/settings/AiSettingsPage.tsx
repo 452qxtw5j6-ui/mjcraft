@@ -22,7 +22,7 @@ import { useSetAtom } from 'jotai'
 import { fullscreenOverlayOpenAtom } from '@/atoms/overlay'
 import { motion, AnimatePresence } from 'motion/react'
 import type { LlmConnectionWithStatus, ThinkingLevel, WorkspaceSettings, Workspace } from '../../../shared/types'
-import { DEFAULT_THINKING_LEVEL, THINKING_LEVELS } from '@craft-agent/shared/agent/thinking-levels'
+import { THINKING_LEVELS, CLAUDE_EFFORT_LEVELS, GPT_EFFORT_LEVELS } from '@craft-agent/shared/agent/thinking-levels'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import {
   DropdownMenu,
@@ -539,8 +539,9 @@ export default function AiSettingsPage() {
   // Workspaces for override cards
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
 
-  // Default settings state (app-level)
-  const [defaultThinking, setDefaultThinking] = useState<ThinkingLevel>(DEFAULT_THINKING_LEVEL)
+  // Provider-aware thinking policy shown in Default section
+  const defaultClaudeThinking: ThinkingLevel = 'high'
+  const defaultCodexThinking: ThinkingLevel = 'xhigh'
 
   // Validation state per connection
   const [validationStates, setValidationStates] = useState<Record<string, {
@@ -800,11 +801,6 @@ export default function AiSettingsPage() {
     await refreshLlmConnections()
   }, [defaultConnection, refreshLlmConnections])
 
-  const handleDefaultThinkingChange = useCallback(async (level: ThinkingLevel) => {
-    setDefaultThinking(level)
-    // TODO: Add app-level thinking level storage
-  }, [])
-
   // Refresh callback for workspace cards
   const handleWorkspaceSettingsChange = useCallback(() => {
     // Refresh context so changes propagate immediately
@@ -852,11 +848,24 @@ export default function AiSettingsPage() {
                     options={getModelOptionsForConnection(defaultConnection)}
                   />
                   <SettingsMenuSelectRow
-                    label="Thinking"
-                    description="Reasoning depth for new chats"
-                    value={defaultThinking}
-                    onValueChange={(v) => handleDefaultThinkingChange(v as ThinkingLevel)}
-                    options={THINKING_LEVELS.map(({ id, name, description }) => ({
+                    label="Thinking (Claude)"
+                    description="Default reasoning depth for Claude-family sessions"
+                    value={defaultClaudeThinking}
+                    onValueChange={() => {}}
+                    disabled
+                    options={CLAUDE_EFFORT_LEVELS.map(({ id, name, description }) => ({
+                      value: id,
+                      label: name,
+                      description,
+                    }))}
+                  />
+                  <SettingsMenuSelectRow
+                    label="Thinking (Codex)"
+                    description="Default reasoning depth for Codex/Pi sessions"
+                    value={defaultCodexThinking}
+                    onValueChange={() => {}}
+                    disabled
+                    options={GPT_EFFORT_LEVELS.map(({ id, name, description }) => ({
                       value: id,
                       label: name,
                       description,

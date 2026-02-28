@@ -2030,7 +2030,14 @@ export class SessionManager {
       ?? globalDefaults.workspaceDefaults.permissionMode
     const configuredDefaultThinkingLevel = wsConfig?.defaults?.thinkingLevel ?? globalDefaults.workspaceDefaults.thinkingLevel
     const subSessionConnection = storedSession.llmConnection ? getLlmConnection(storedSession.llmConnection) : null
-    const defaultThinkingLevel = resolveDefaultThinkingLevel(configuredDefaultThinkingLevel, subSessionConnection)
+    const isCodexSubSession =
+      options?.labels?.includes('codex') ||
+      subSessionConnection?.piAuthProvider === 'openai-codex' ||
+      Boolean(storedSession.model?.toLowerCase().includes('codex'))
+
+    const defaultThinkingLevel = isCodexSubSession
+      ? 'xhigh'
+      : resolveDefaultThinkingLevel(configuredDefaultThinkingLevel, subSessionConnection)
 
     const managed: ManagedSession = {
       id: storedSession.id,
