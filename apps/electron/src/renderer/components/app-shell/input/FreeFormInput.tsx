@@ -325,6 +325,13 @@ export function FreeFormInput({
     return def?.name ?? getThinkingLevelName(thinkingLevel)
   }, [thinkingLevel, availableThinkingLevels])
 
+  // Always-visible reasoning/effort indicator next to model name
+  const inlineReasoningStatus = React.useMemo(() => {
+    if (connectionUnavailable || availableThinkingLevels.length === 0) return null
+    if (thinkingDisabled) return 'No thinking'
+    return currentThinkingDisplayName
+  }, [connectionUnavailable, availableThinkingLevels.length, thinkingDisabled, currentThinkingDisplayName])
+
   // Get display name for current model (full name, not short name)
   const currentModelDisplayName = React.useMemo(() => {
     const modelToDisplay = connectionDefaultModel ?? currentModel
@@ -1662,7 +1669,12 @@ export function FreeFormInput({
                     ) : (
                       <>
                         {effectiveConnectionDetails && llmConnections.length > 1 && storage.get(storage.KEYS.showConnectionIcons, true) && <ConnectionIcon connection={effectiveConnectionDetails} size={14} showTooltip />}
-                        {currentModelDisplayName}
+                        <span className="truncate max-w-[200px]">{currentModelDisplayName}</span>
+                        {inlineReasoningStatus && (
+                          <span className="text-[11px] text-muted-foreground/90 px-1 py-0.5 rounded bg-foreground/5">
+                            {inlineReasoningStatus}
+                          </span>
+                        )}
                         {!connectionDefaultModel && <ChevronDown className="h-3 w-3 opacity-50 shrink-0" />}
                       </>
                     )}

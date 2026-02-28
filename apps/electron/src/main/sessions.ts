@@ -2496,15 +2496,51 @@ export class SessionManager {
       managed.agent.onSpawnSession = async (request) => {
         sessionLog.info(`Spawn session request from session ${managed.id}:`, request.name || '(unnamed)')
 
+        const parentConnection = managed.llmConnection ? getLlmConnection(managed.llmConnection) : undefined
+        const requestedConnection = request.llmConnection ? getLlmConnection(request.llmConnection) : undefined
+
+        const resolvePreferredCodexModel = (connection?: ReturnType<typeof getLlmConnection>): string | undefined => {
+          if (!connection?.models?.length) return connection?.defaultModel
+          const modelIds = connection.models
+            .map((m) => (typeof m === 'string' ? m : m.id))
+            .filter((m): m is string => Boolean(m))
+
+          const codex53 = modelIds.find((id) => {
+            const lower = id.toLowerCase()
+            return (lower.includes('codex') && lower.includes('5.3')) || lower.includes('gpt-5.3-codex')
+          })
+          if (codex53) return codex53
+
+          return modelIds.find((id) => id.toLowerCase().includes('codex')) ?? connection.defaultModel
+        }
+
+        const isClaudeToCodexDelegation =
+          parentConnection?.providerType !== 'pi' &&
+          (
+            requestedConnection?.piAuthProvider === 'openai-codex' ||
+            request.llmConnection === 'chatgpt-plus' ||
+            request.llmConnection === 'codex' ||
+            request.labels?.includes('codex')
+          )
+
+        const forcedModel = isClaudeToCodexDelegation
+          ? (resolvePreferredCodexModel(requestedConnection) ?? request.model ?? 'gpt-5.3-codex')
+          : request.model
+
         const session = await this.createSubSession(managed.workspace.id, managed.id, {
           name: request.name,
           llmConnection: request.llmConnection,
-          model: request.model,
+          model: forcedModel,
           enabledSourceSlugs: request.enabledSourceSlugs,
           permissionMode: request.permissionMode,
           labels: request.labels,
           workingDirectory: request.workingDirectory,
         })
+
+        // Enforce Codex XHigh reasoning for Claude -> Codex sub-agent delegation
+        if (isClaudeToCodexDelegation) {
+          this.setSessionThinkingLevel(session.id, 'xhigh')
+        }
 
         // Build FileAttachment[] from paths (if any)
         let fileAttachments: FileAttachment[] | undefined

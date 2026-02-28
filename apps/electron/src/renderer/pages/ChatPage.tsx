@@ -196,6 +196,24 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     }
   }, [sessionId])
 
+  const resolvePreferredCodexModel = React.useCallback((connection: NonNullable<typeof llmConnections[number]>) => {
+    const modelIds = (connection.models ?? [])
+      .map((m) => (typeof m === 'string' ? m : m.id))
+      .filter((m): m is string => Boolean(m))
+
+    // Prefer GPT-5.3 Codex if present (supports provider-prefixed IDs too)
+    const codex53 = modelIds.find((id) => {
+      const lower = id.toLowerCase()
+      return (lower.includes('codex') && lower.includes('5.3')) || lower.includes('gpt-5.3-codex')
+    })
+
+    if (codex53) return codex53
+
+    // Fallbacks: any codex model -> connection default -> canonical ID
+    const anyCodex = modelIds.find((id) => id.toLowerCase().includes('codex'))
+    return anyCodex ?? connection.defaultModel ?? 'gpt-5.3-codex'
+  }, [])
+
   const handleDelegateToCodex = React.useCallback(async () => {
     if (!activeWorkspaceId || !session) return
 
@@ -207,24 +225,29 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       return
     }
 
+    const forcedCodexModel = resolvePreferredCodexModel(codexConnection)
+
     const child = await window.electronAPI.createSubSession(activeWorkspaceId, session.id, {
       name: `Codex Subagent · ${session.name || 'Session'}`,
       llmConnection: codexConnection.slug,
-      model: codexConnection.defaultModel,
+      model: forcedCodexModel,
       permissionMode: session.permissionMode,
       workingDirectory: session.workingDirectory,
       enabledSourceSlugs: session.enabledSourceSlugs,
       labels: ['subagent', 'codex'],
     })
 
+    // Force Codex sub-agent reasoning effort to XHigh
+    await window.electronAPI.sessionCommand(child.id, { type: 'setThinkingLevel', level: 'xhigh' })
+
     toast.success('Codex subagent session created', {
-      description: child.name || child.id,
+      description: `${child.name || child.id} · ${forcedCodexModel} · XHigh`,
       action: {
         label: 'Open',
         onClick: () => window.electronAPI.openSessionInNewWindow(activeWorkspaceId, child.id),
       },
     })
-  }, [activeWorkspaceId, session, llmConnections])
+  }, [activeWorkspaceId, session, llmConnections, resolvePreferredCodexModel])
 
   // Check if session's locked connection has been removed
   const connectionUnavailable = React.useMemo(() =>
