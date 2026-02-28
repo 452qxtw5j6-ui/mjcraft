@@ -73,7 +73,7 @@ import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/s
 import type { ToolDisplayMeta } from '@craft-agent/core/types'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
-import { type ThinkingLevel, DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
+import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
 import { listLabels } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
@@ -89,6 +89,30 @@ function buildBackendHostRuntimeContext(): BackendHostRuntimeContext {
     resourcesPath: process.resourcesPath,
     isPackaged: app.isPackaged,
   }
+}
+
+/**
+ * Provider-aware default thinking level policy.
+ * - Pi/Codex family: XHigh
+ * - Claude family: High
+ */
+function getProviderDefaultThinkingLevel(connection: ReturnType<typeof getLlmConnection> | null | undefined): ThinkingLevel {
+  if (connection?.providerType === 'pi') return 'xhigh'
+  return 'high'
+}
+
+/**
+ * Resolve effective default thinking level.
+ * If workspace/global default is still the generic medium, apply provider-aware default.
+ * If user explicitly set another value, respect it.
+ */
+function resolveDefaultThinkingLevel(
+  configuredDefault: ThinkingLevel,
+  connection: ReturnType<typeof getLlmConnection> | null | undefined,
+): ThinkingLevel {
+  return normalizeThinkingLevel(configuredDefault) === 'medium'
+    ? getProviderDefaultThinkingLevel(connection)
+    : configuredDefault
 }
 
 /**
@@ -1861,8 +1885,8 @@ export class SessionManager {
       ?? globalDefaults.workspaceDefaults.permissionMode
 
     const userDefaultWorkingDir = wsConfig?.defaults?.workingDirectory || undefined
-    // Get default thinking level from workspace config, fallback to global defaults
-    const defaultThinkingLevel = wsConfig?.defaults?.thinkingLevel ?? globalDefaults.workspaceDefaults.thinkingLevel
+    // Get configured default thinking level from workspace config, fallback to global defaults
+    const configuredDefaultThinkingLevel = wsConfig?.defaults?.thinkingLevel ?? globalDefaults.workspaceDefaults.thinkingLevel
     // Get default model from workspace config (used when no session-specific model is set)
     const defaultModel = wsConfig?.defaults?.model
     // Get default enabled sources from workspace config
@@ -1898,6 +1922,7 @@ export class SessionManager {
       managedModel: options?.model || storedSession.model || defaultModel,
     })
     const resolvedModel = resolvedContext.resolvedModel
+    const defaultThinkingLevel = resolveDefaultThinkingLevel(configuredDefaultThinkingLevel, resolvedContext.connection)
 
     // Log mini agent session creation
     if (options?.systemPromptPreset === 'mini' || options?.model) {
@@ -2003,7 +2028,9 @@ export class SessionManager {
     const defaultPermissionMode = storedSession.permissionMode
       ?? wsConfig?.defaults?.permissionMode
       ?? globalDefaults.workspaceDefaults.permissionMode
-    const defaultThinkingLevel = wsConfig?.defaults?.thinkingLevel ?? globalDefaults.workspaceDefaults.thinkingLevel
+    const configuredDefaultThinkingLevel = wsConfig?.defaults?.thinkingLevel ?? globalDefaults.workspaceDefaults.thinkingLevel
+    const subSessionConnection = storedSession.llmConnection ? getLlmConnection(storedSession.llmConnection) : null
+    const defaultThinkingLevel = resolveDefaultThinkingLevel(configuredDefaultThinkingLevel, subSessionConnection)
 
     const managed: ManagedSession = {
       id: storedSession.id,
