@@ -115,6 +115,44 @@ function resolveDefaultThinkingLevel(
     : configuredDefault
 }
 
+const SUBAGENT_RUNS_LOG_FILE = 'subagent-runs.jsonl'
+
+function resolveProviderReasoningLevel(
+  providerType: string | undefined,
+  thinkingLevel: ThinkingLevel,
+): string {
+  const normalized = normalizeThinkingLevel(thinkingLevel)
+  // Pi/OpenAI family supports xhigh; map Claude's max -> xhigh for apples-to-apples logs.
+  if (providerType === 'pi') return normalized === 'max' ? 'xhigh' : normalized
+  // Claude family supports max; map GPT xhigh -> max for comparable effort level.
+  return normalized === 'xhigh' ? 'max' : normalized
+}
+
+function parseSubagentUsage(result: string | undefined): {
+  agentId?: string
+  totalTokens?: number
+  toolUses?: number
+  durationMs?: number
+} {
+  if (!result) return {}
+
+  const parseIntMatch = (pattern: RegExp): number | undefined => {
+    const match = result.match(pattern)
+    if (!match?.[1]) return undefined
+    const value = Number.parseInt(match[1].replace(/,/g, ''), 10)
+    return Number.isFinite(value) ? value : undefined
+  }
+
+  const agentIdMatch = result.match(/agentId:\s*([a-zA-Z0-9_-]+)/i)
+
+  return {
+    agentId: agentIdMatch?.[1],
+    totalTokens: parseIntMatch(/total_tokens:\s*([0-9,]+)/i),
+    toolUses: parseIntMatch(/tool_uses:\s*([0-9,]+)/i),
+    durationMs: parseIntMatch(/duration_ms:\s*([0-9,]+)/i),
+  }
+}
+
 /**
  * Feature flags for agent behavior
  */
@@ -641,6 +679,10 @@ interface ManagedSession {
   // Sub-session hierarchy (1 level max)
   parentSessionId?: string
   siblingOrder?: number
+  // Subagent observability state (ephemeral, not persisted)
+  subagentStartTimes: Map<string, number>
+  loggedSubagentStarts: Set<string>
+  loggedSubagentResults: Set<string>
   // Token refresh manager for OAuth token refresh with rate limiting
   tokenRefreshManager: TokenRefreshManager
   // Metadata for sessions created by automations
@@ -1314,6 +1356,9 @@ export class SessionManager {
             hidden: meta.hidden,
             parentSessionId: meta.parentSessionId,
             siblingOrder: meta.siblingOrder,
+            subagentStartTimes: new Map(),
+            loggedSubagentStarts: new Set(),
+            loggedSubagentResults: new Set(),
             // Initialize TokenRefreshManager for this session
             tokenRefreshManager: new TokenRefreshManager(getSourceCredentialManager(), {
               log: (msg) => sessionLog.debug(msg),
@@ -1396,6 +1441,8 @@ export class SessionManager {
           costUsd: 0,
         },
         hidden: managed.hidden,
+        parentSessionId: managed.parentSessionId,
+        siblingOrder: managed.siblingOrder,
       }
 
       // Queue for async persistence with debouncing
@@ -1403,6 +1450,63 @@ export class SessionManager {
     } catch (error) {
       sessionLog.error(`Failed to queue session ${managed.id} for persistence:`, error)
     }
+  }
+
+  private appendSubagentRunLog(
+    managed: ManagedSession,
+    payload: {
+      event: 'start' | 'result'
+      toolUseId: string
+      parentToolUseId?: string
+      turnId?: string
+      isError?: boolean
+      subagentType?: string
+      subagentDescription?: string
+      promptChars?: number
+      durationMs?: number
+      usage?: {
+        agentId?: string
+        totalTokens?: number
+        toolUses?: number
+        durationMs?: number
+      }
+    },
+  ): void {
+    const connection = managed.llmConnection ? getLlmConnection(managed.llmConnection) : undefined
+    const model = managed.agent?.getModel() ?? managed.model
+    const thinkingLevel = managed.thinkingLevel ?? DEFAULT_THINKING_LEVEL
+    const reasoningLevel = resolveProviderReasoningLevel(connection?.providerType, thinkingLevel)
+    const sessionDir = getSessionStoragePath(managed.workspace.rootPath, managed.id)
+    const logPath = join(sessionDir, SUBAGENT_RUNS_LOG_FILE)
+
+    const entry = {
+      schema: 'subagent_run_v1',
+      timestamp: Date.now(),
+      sessionId: managed.id,
+      parentSessionId: managed.parentSessionId ?? null,
+      event: payload.event,
+      toolUseId: payload.toolUseId,
+      parentToolUseId: payload.parentToolUseId ?? null,
+      turnId: payload.turnId ?? null,
+      service: connection?.piAuthProvider ?? connection?.providerType ?? null,
+      providerType: connection?.providerType ?? null,
+      llmConnection: managed.llmConnection ?? null,
+      model: model ?? null,
+      thinkingLevel,
+      reasoningLevel,
+      isError: payload.isError ?? false,
+      subagentType: payload.subagentType ?? null,
+      subagentDescription: payload.subagentDescription ?? null,
+      promptChars: payload.promptChars,
+      durationMs: payload.durationMs,
+      usage: payload.usage,
+    }
+
+    const line = JSON.stringify(entry)
+    sessionLog.info(`[subagent-run] ${line}`)
+    void appendFile(logPath, `${line}\n`, 'utf8').catch((error) => {
+      sessionLog.warn(`[subagent-run] Failed to append log for session ${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   // Flush a specific session immediately (call on session close/switch)
@@ -1957,6 +2061,9 @@ export class SessionManager {
       enabledSourceSlugs: defaultEnabledSourceSlugs,
       messagesLoaded: true,  // New sessions don't need to load messages from disk
       hidden: options?.hidden,
+      subagentStartTimes: new Map(),
+      loggedSubagentStarts: new Set(),
+      loggedSubagentResults: new Set(),
       // Initialize TokenRefreshManager for this session (handles OAuth token refresh with rate limiting)
       tokenRefreshManager: new TokenRefreshManager(getSourceCredentialManager(), {
         log: (msg) => sessionLog.debug(msg),
@@ -2064,6 +2171,9 @@ export class SessionManager {
       messagesLoaded: true,
       parentSessionId: storedSession.parentSessionId,
       siblingOrder: storedSession.siblingOrder,
+      subagentStartTimes: new Map(),
+      loggedSubagentStarts: new Set(),
+      loggedSubagentResults: new Set(),
       // Initialize TokenRefreshManager for this session
       tokenRefreshManager: new TokenRefreshManager(getSourceCredentialManager(), {
         log: (msg) => sessionLog.debug(msg),
@@ -4750,6 +4860,28 @@ To view this task's output:
             timestamp,
           }, workspaceId)
         }
+
+        // Subagent observability: log Task subagent runtime context once per toolUseId.
+        if (event.toolName === 'Task') {
+          if (!managed.subagentStartTimes.has(event.toolUseId)) {
+            managed.subagentStartTimes.set(event.toolUseId, Date.now())
+          }
+          const hasInput = !!formattedToolInput && Object.keys(formattedToolInput).length > 0
+          const shouldLogStart = !managed.loggedSubagentStarts.has(event.toolUseId) && (!isDuplicateEvent || hasInput)
+          if (shouldLogStart) {
+            const input = (formattedToolInput ?? {}) as Record<string, unknown>
+            this.appendSubagentRunLog(managed, {
+              event: 'start',
+              toolUseId: event.toolUseId,
+              parentToolUseId,
+              turnId: event.turnId,
+              subagentType: typeof input.subagent_type === 'string' ? input.subagent_type : undefined,
+              subagentDescription: typeof input.description === 'string' ? input.description : undefined,
+              promptChars: typeof input.prompt === 'string' ? input.prompt.length : undefined,
+            })
+            managed.loggedSubagentStarts.add(event.toolUseId)
+          }
+        }
         break
       }
 
@@ -4855,6 +4987,24 @@ To view this task's output:
               parentToolUseId: event.toolUseId,
             }, workspaceId)
           }
+        }
+
+        // Subagent observability: log Task completion with runtime + usage summary.
+        if (toolName === 'Task' && !managed.loggedSubagentResults.has(event.toolUseId)) {
+          const usage = parseSubagentUsage(event.result)
+          const startAt = managed.subagentStartTimes.get(event.toolUseId)
+          const durationMs = typeof startAt === 'number' ? Math.max(0, Date.now() - startAt) : undefined
+          this.appendSubagentRunLog(managed, {
+            event: 'result',
+            toolUseId: event.toolUseId,
+            parentToolUseId,
+            turnId: event.turnId,
+            isError: event.isError,
+            durationMs,
+            usage,
+          })
+          managed.loggedSubagentResults.add(event.toolUseId)
+          managed.subagentStartTimes.delete(event.toolUseId)
         }
 
         // Persist session after tool completes to prevent data loss on quit

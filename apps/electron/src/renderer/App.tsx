@@ -570,19 +570,41 @@ export default function App() {
       if (event.type === 'session_created') {
         window.electronAPI.getSessionMessages(sessionId)
           .then((createdSession: Session | null) => {
-            if (createdSession) {
-              const existingMeta = store.get(sessionMetaMapAtom).has(sessionId)
-              if (existingMeta) {
-                updateSessionDirect(sessionId, () => createdSession)
-                const metaMap = store.get(sessionMetaMapAtom)
-                const nextMetaMap = new Map(metaMap)
-                nextMetaMap.set(sessionId, extractSessionMeta(createdSession))
-                store.set(sessionMetaMapAtom, nextMetaMap)
-              } else {
-                addSession(createdSession)
+              if (createdSession) {
+                const existingMeta = store.get(sessionMetaMapAtom).has(sessionId)
+                if (existingMeta) {
+                  updateSessionDirect(sessionId, () => createdSession)
+                  const metaMap = store.get(sessionMetaMapAtom)
+                  const nextMetaMap = new Map(metaMap)
+                  nextMetaMap.set(sessionId, extractSessionMeta(createdSession))
+                  store.set(sessionMetaMapAtom, nextMetaMap)
+                } else {
+                  addSession(createdSession)
+                }
+
+                // Keep sessionOptions in sync for sessions created outside renderer
+                // (e.g., spawn_session, delegated sub-sessions). Without this, newly
+                // created sessions may render default medium thinking in UI.
+                const hasNonDefaultMode = createdSession.permissionMode && createdSession.permissionMode !== 'ask'
+                const hasNonDefaultThinking =
+                  createdSession.thinkingLevel &&
+                  normalizeThinkingLevel(createdSession.thinkingLevel) !== DEFAULT_THINKING_LEVEL
+
+                setSessionOptions(prev => {
+                  const next = new Map(prev)
+                  if (hasNonDefaultMode || hasNonDefaultThinking) {
+                    next.set(createdSession.id, {
+                      ultrathinkEnabled: false,
+                      permissionMode: createdSession.permissionMode ?? 'ask',
+                      thinkingLevel: createdSession.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+                    })
+                  } else {
+                    next.delete(createdSession.id)
+                  }
+                  return next
+                })
+                return
               }
-              return
-            }
             return window.electronAPI.getSessions().then(initializeSessions)
           })
           .catch((error: unknown) => console.error('Failed to handle session_created event:', error))
