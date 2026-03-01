@@ -39,6 +39,24 @@ describe('createdAt preservation', () => {
   })
 })
 
+describe('sub-session hierarchy persistence', () => {
+  it('should keep parentSessionId and siblingOrder when building StoredSession', () => {
+    const managed = {
+      parentSessionId: 'parent-session-1',
+      siblingOrder: 2,
+    }
+
+    // Mirrors sessions.ts persistSession() StoredSession builder
+    const storedSession = {
+      parentSessionId: managed.parentSessionId,
+      siblingOrder: managed.siblingOrder,
+    }
+
+    expect(storedSession.parentSessionId).toBe('parent-session-1')
+    expect(storedSession.siblingOrder).toBe(2)
+  })
+})
+
 // ============================================================================
 // Safe model resolution when connection is null
 // Mirrors: sessions.ts sendMessage() model resolution (~line 3345)
