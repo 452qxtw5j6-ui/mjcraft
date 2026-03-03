@@ -28,6 +28,7 @@ const {
   isPlainUserMessage,
   toSlackMessageEvent,
   SlackBotService,
+  SLACK_PROCESSING_MESSAGES,
   stripAppMentionText,
   splitSlackMessage,
   getLatestAssistantReply,
@@ -356,6 +357,7 @@ describe('SlackBotService routing', () => {
 
       expect(createdCount).toBe(1)
       expect(sendCalls.map(call => call.sessionId)).toEqual(['session-1', 'session-1'])
+      expect(posts.every(post => SLACK_PROCESSING_MESSAGES.includes(post.text))).toBe(true)
       expect(posts[0]?.thread_ts).toBe('100')
       expect(posts[1]?.thread_ts).toBe('100')
       expect(updates.length).toBe(2)

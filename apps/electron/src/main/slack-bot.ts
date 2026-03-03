@@ -18,6 +18,13 @@ const APP_TOKEN_SOURCE_ID = 'slack-bot-app-token'
 const ENFORCED_CONNECTION_SLUG = 'chatgpt-plus'
 const ENFORCED_MODEL = 'pi/gpt-5.3-codex'
 const SLACK_TEXT_MAX_BYTES = 3000
+export const SLACK_PROCESSING_MESSAGES = [
+  '두뇌 풀가동 중 🧠💨',
+  '음... 이거 좀 생각해볼게요 🫠',
+  '허리 한번 펴고... 🙆 바로 답변할게요',
+  '읽는 중... 눈 좀 깜빡이고 올게요 👀',
+  '잠깐, 머리 좀 긁적이는 중 😅',
+]
 
 export interface SlackRuntimeConfig {
   enabled: boolean
@@ -187,6 +194,12 @@ export function getLatestAssistantReply(session: SlackSessionLike | null, previo
   }
 
   return null
+}
+
+function pickRandomProcessingMessage(fallbackText: string): string {
+  if (SLACK_PROCESSING_MESSAGES.length === 0) return fallbackText
+  const index = Math.floor(Math.random() * SLACK_PROCESSING_MESSAGES.length)
+  return SLACK_PROCESSING_MESSAGES[index] ?? fallbackText
 }
 
 function getLatestAssistantId(session: SlackSessionLike | null): string | undefined {
@@ -457,7 +470,7 @@ export class SlackBotService {
     const placeholder = await client.chat.postMessage({
       channel: event.channel,
       thread_ts: threadRootTs,
-      text: this.config.placeholderText,
+      text: pickRandomProcessingMessage(this.config.placeholderText),
     })
 
     try {
