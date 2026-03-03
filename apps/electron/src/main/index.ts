@@ -89,6 +89,7 @@ import { getPiModelsForAuthProvider, getAllPiModels } from '@craft-agent/shared/
 import { initNotificationService, clearBadgeCount, initBadgeIcon, initInstanceBadge } from './notifications'
 import { checkForUpdatesOnLaunch, setWindowManager as setAutoUpdateWindowManager, isUpdating } from './auto-update'
 import { validateGitBashPath } from './git-bash'
+import { SlackBotService } from './slack-bot'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -112,6 +113,7 @@ const DEEPLINK_SCHEME = process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'
 
 let windowManager: WindowManager | null = null
 let sessionManager: SessionManager | null = null
+let slackBotService: SlackBotService | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
@@ -354,6 +356,34 @@ app.whenReady().then(async () => {
     // Initialize auth (must happen after window creation for error reporting)
     await sessionManager.initialize()
 
+    // Initialize Slack bot service for the active workspace (Socket Mode)
+    const configuredWorkspaces = getWorkspaces()
+    const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
+    const slackWorkspace =
+      (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
+      || configuredWorkspaces[0]
+
+    if (slackWorkspace) {
+      try {
+        slackBotService = new SlackBotService({
+          workspaceId: slackWorkspace.id,
+          workspaceRootPath: slackWorkspace.rootPath,
+          sessionManager,
+        })
+        await slackBotService.start()
+      } catch (error) {
+        mainLog.error('Slack bot startup failed; continuing app startup without Slack integration:', error)
+        if (slackBotService) {
+          await slackBotService.stop().catch(stopError => {
+            mainLog.warn('Failed to stop Slack bot after startup failure:', stopError)
+          })
+        }
+        slackBotService = null
+      }
+    } else {
+      mainLog.warn('Skipping Slack bot startup: no workspace available')
+    }
+
     // Start periodic model refresh after auth is initialized
     modelRefreshService.startAll()
 
@@ -481,6 +511,13 @@ app.on('before-quit', async (event) => {
     } catch (error) {
       mainLog.error('Failed to flush sessions:', error)
     }
+
+    // Stop Slack bot service before tearing down session resources
+    if (slackBotService) {
+      await slackBotService.stop()
+      slackBotService = null
+    }
+
     // Clean up SessionManager resources (file watchers, timers, etc.)
     sessionManager.cleanup()
 
