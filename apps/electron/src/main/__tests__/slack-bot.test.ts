@@ -129,12 +129,11 @@ describe('slack-bot helpers', () => {
     expect(computeThreadRootTs({ ts: '100', threadTs: '' })).toBe('100')
   })
 
-  it('builds stable session key with user/channel/thread', () => {
+  it('builds stable session key with channel/thread', () => {
     expect(buildSlackSessionKey({
-      userId: 'U123',
       channel: 'C999',
       threadRootTs: '171234.56',
-    })).toBe('slack:U123:C999:171234.56')
+    })).toBe('slack:C999:171234.56')
   })
 
   it('strips app mention tokens and normalizes whitespace', () => {
@@ -298,8 +297,8 @@ describe('SlackBotService routing', () => {
     }
   })
 
-  it('reuses one session key for a thread root across follow-ups', async () => {
-    const workspaceRoot = await createWorkspaceRoot()
+  it('reuses one session key for a thread root across users', async () => {
+    const workspaceRoot = await createWorkspaceRoot({ testerUserIds: ['U1', 'U2'] })
     const sessions = new Map<string, TestSession>()
     const sendCalls: Array<{ sessionId: string, message: string }> = []
     let createdCount = 0
@@ -349,7 +348,7 @@ describe('SlackBotService routing', () => {
       await service.handleIncomingEvent({
         type: 'message.im',
         channel: 'D1',
-        userId: 'U1',
+        userId: 'U2',
         text: 'hello two',
         ts: '101',
         threadTs: '100',
@@ -364,7 +363,7 @@ describe('SlackBotService routing', () => {
 
       const mapRaw = await readFile(join(workspaceRoot, '.slack', 'session-map.json'), 'utf-8')
       const map = JSON.parse(mapRaw) as { mappings: Record<string, string> }
-      expect(map.mappings['slack:U1:D1:100']).toBe('session-1')
+      expect(map.mappings['slack:D1:100']).toBe('session-1')
       expect(Object.keys(map.mappings).length).toBe(1)
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true })

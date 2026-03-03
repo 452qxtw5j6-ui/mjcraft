@@ -132,11 +132,10 @@ export function computeThreadRootTs(event: Pick<SlackMessageEvent, 'threadTs' | 
 }
 
 export function buildSlackSessionKey(params: {
-  userId: string
   channel: string
   threadRootTs: string
 }): string {
-  return `slack:${params.userId}:${params.channel}:${params.threadRootTs}`
+  return `slack:${params.channel}:${params.threadRootTs}`
 }
 
 export function stripAppMentionText(text: string): string {
@@ -399,7 +398,6 @@ export class SlackBotService {
 
     const threadRootTs = computeThreadRootTs(event)
     const sessionKey = buildSlackSessionKey({
-      userId: event.userId,
       channel: event.channel,
       threadRootTs,
     })
