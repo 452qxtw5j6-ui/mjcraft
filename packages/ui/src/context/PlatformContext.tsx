@@ -78,9 +78,15 @@ export interface PlatformActions {
 
   /**
    * Read a file's contents as UTF-8 string (Electron: fs.readFile via IPC)
-   * Used by datatable/spreadsheet blocks to load data from `src` field
+   * Used by datatable/spreadsheet/html-preview blocks to load file-backed content
    */
   onReadFile?: (path: string) => Promise<string>
+
+  /**
+   * Read a file as data URL (Electron: fs.readFile via IPC + base64 encode)
+   * Used by image-preview blocks and image overlays
+   */
+  onReadFileDataUrl?: (path: string) => Promise<string>
 
   /**
    * Read a file as binary Uint8Array (Electron: fs.readFile via IPC)

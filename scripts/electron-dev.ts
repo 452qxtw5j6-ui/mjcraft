@@ -7,6 +7,7 @@ import { spawn, type Subprocess } from "bun";
 import { existsSync, rmSync, cpSync, readFileSync, statSync, mkdirSync } from "fs";
 import { join, basename } from "path";
 import * as esbuild from "esbuild";
+import { downloadUv, type Platform, type Arch } from "./build/common";
 
 const ROOT_DIR = join(import.meta.dir, "..");
 const ELECTRON_DIR = join(ROOT_DIR, "apps/electron");
@@ -24,6 +25,43 @@ const IS_WINDOWS = process.platform === "win32";
 const BIN_EXT = IS_WINDOWS ? ".exe" : "";
 const VITE_BIN = join(ROOT_DIR, `node_modules/.bin/vite${BIN_EXT}`);
 const ELECTRON_BIN = join(ROOT_DIR, `node_modules/.bin/electron${BIN_EXT}`);
+
+function resolveBuildPlatform(): Platform {
+  if (process.platform === "darwin") return "darwin";
+  if (process.platform === "win32") return "win32";
+  if (process.platform === "linux") return "linux";
+  throw new Error(`Unsupported platform for uv bootstrap: ${process.platform}`);
+}
+
+function resolveBuildArch(): Arch {
+  if (process.arch === "arm64") return "arm64";
+  if (process.arch === "x64") return "x64";
+  throw new Error(`Unsupported architecture for uv bootstrap: ${process.arch}`);
+}
+
+async function ensureBundledUvForCurrentPlatform(): Promise<void> {
+  const platform = resolveBuildPlatform();
+  const arch = resolveBuildArch();
+  const platformKey = `${platform}-${arch}`;
+  const uvBinary = platform === "win32" ? "uv.exe" : "uv";
+  const uvPath = join(ELECTRON_DIR, "resources", "bin", platformKey, uvBinary);
+
+  if (existsSync(uvPath)) {
+    console.log(`✅ Bundled uv present: ${uvPath}`);
+    return;
+  }
+
+  console.log(`⬇️  Bundled uv missing, bootstrapping ${platformKey}...`);
+  await downloadUv({
+    platform,
+    arch,
+    upload: false,
+    uploadLatest: false,
+    uploadScript: false,
+    rootDir: ROOT_DIR,
+    electronDir: ELECTRON_DIR,
+  });
+}
 
 // Multi-instance detection (matches detect-instance.sh logic)
 // Detects instance number from folder name suffix (e.g., craft-agents-1 → instance 1)
@@ -174,12 +212,17 @@ async function buildMcpServers(): Promise<void> {
 
   // Build Pi agent server with bun (not esbuild) because its Pi SDK deps are ESM-only.
   // esbuild with packages:external leaves them as require() calls which fail at runtime.
-  const piResult = await buildPiAgentServer();
-  if (!piResult.success) {
-    console.error("❌ Pi agent server build failed:", piResult.error);
-    process.exit(1);
+  // Optional: skip if package directory is missing (e.g., not synced to OSS).
+  if (existsSync(join(PI_AGENT_SERVER_DIR, "src"))) {
+    const piResult = await buildPiAgentServer();
+    if (!piResult.success) {
+      console.error("❌ Pi agent server build failed:", piResult.error);
+      process.exit(1);
+    }
+    console.log("✅ Pi agent server built");
+  } else {
+    console.log("⏭️  Pi agent server skipped (package not found)");
   }
-  console.log("✅ Pi agent server built");
 }
 
 // Get OAuth defines for esbuild API
@@ -340,6 +383,8 @@ async function main(): Promise<void> {
     mkdirSync(DIST_DIR, { recursive: true });
   }
 
+  await ensureBundledUvForCurrentPlatform();
+
   copyResources();
 
   // Build MCP servers for Codex sessions
@@ -358,13 +403,15 @@ async function main(): Promise<void> {
 
   const mainCjsPath = join(DIST_DIR, "main.cjs");
   const preloadCjsPath = join(DIST_DIR, "preload.cjs");
+  const toolbarPreloadCjsPath = join(DIST_DIR, "browser-toolbar-preload.cjs");
 
   // Remove old build files to ensure fresh build
   if (existsSync(mainCjsPath)) rmSync(mainCjsPath);
   if (existsSync(preloadCjsPath)) rmSync(preloadCjsPath);
+  if (existsSync(toolbarPreloadCjsPath)) rmSync(toolbarPreloadCjsPath);
 
-  // Build main and preload in parallel
-  const [mainResult, preloadResult] = await Promise.all([
+  // Build main and preload entries in parallel
+  const [mainResult, preloadResult, toolbarPreloadResult] = await Promise.all([
     runEsbuild(
       "apps/electron/src/main/index.ts",
       "apps/electron/dist/main.cjs",
@@ -373,6 +420,10 @@ async function main(): Promise<void> {
     runEsbuild(
       "apps/electron/src/preload/index.ts",
       "apps/electron/dist/preload.cjs"
+    ),
+    runEsbuild(
+      "apps/electron/src/preload/browser-toolbar.ts",
+      "apps/electron/dist/browser-toolbar-preload.cjs"
     ),
   ]);
 
@@ -386,23 +437,30 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (!toolbarPreloadResult.success) {
+    console.error("❌ Browser toolbar preload build failed:", toolbarPreloadResult.error);
+    process.exit(1);
+  }
+
   // Wait for files to stabilize (filesystem flush)
   console.log("⏳ Waiting for build files to stabilize...");
-  const [mainStable, preloadStable] = await Promise.all([
+  const [mainStable, preloadStable, toolbarPreloadStable] = await Promise.all([
     waitForFileStable(mainCjsPath),
     waitForFileStable(preloadCjsPath),
+    waitForFileStable(toolbarPreloadCjsPath),
   ]);
 
-  if (!mainStable || !preloadStable) {
+  if (!mainStable || !preloadStable || !toolbarPreloadStable) {
     console.error("❌ Build files did not stabilize");
     process.exit(1);
   }
 
   // Verify the built files are valid JavaScript
   console.log("🔍 Verifying build output...");
-  const [mainValid, preloadValid] = await Promise.all([
+  const [mainValid, preloadValid, toolbarPreloadValid] = await Promise.all([
     verifyJsFile(mainCjsPath),
     verifyJsFile(preloadCjsPath),
+    verifyJsFile(toolbarPreloadCjsPath),
   ]);
 
   if (!mainValid.valid) {
@@ -412,6 +470,11 @@ async function main(): Promise<void> {
 
   if (!preloadValid.valid) {
     console.error("❌ preload.cjs is invalid:", preloadValid.error);
+    process.exit(1);
+  }
+
+  if (!toolbarPreloadValid.valid) {
+    console.error("❌ browser-toolbar-preload.cjs is invalid:", toolbarPreloadValid.error);
     process.exit(1);
   }
 
@@ -465,7 +528,21 @@ async function main(): Promise<void> {
   esbuildContexts.push(preloadContext);
   console.log("👀 Watching preload...");
 
-  // 4. Start Electron (build already verified)
+  // 4. Browser toolbar preload watcher (dedicated browser window bridge)
+  const toolbarPreloadContext = await esbuild.context({
+    entryPoints: [join(ROOT_DIR, "apps/electron/src/preload/browser-toolbar.ts")],
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    outfile: join(ROOT_DIR, "apps/electron/dist/browser-toolbar-preload.cjs"),
+    external: ["electron"],
+    logLevel: "info",
+  });
+  await toolbarPreloadContext.watch();
+  esbuildContexts.push(toolbarPreloadContext);
+  console.log("👀 Watching browser toolbar preload...");
+
+  // 5. Start Electron (build already verified)
   console.log("🚀 Starting Electron...\n");
 
   const electronProc = spawn({

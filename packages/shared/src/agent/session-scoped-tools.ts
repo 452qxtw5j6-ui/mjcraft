@@ -24,8 +24,9 @@ import { basename } from 'node:path';
 
 // Import from session-tools-core: registry + schemas + base descriptions
 import {
+  SESSION_BACKEND_TOOL_NAMES,
   SESSION_TOOL_REGISTRY,
-  SESSION_TOOL_DEFS,
+  getSessionToolDefs,
   TOOL_DESCRIPTIONS as BASE_DESCRIPTIONS,
   // Types
   type ToolResult,
@@ -35,6 +36,8 @@ import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
 import { createSendToSessionTool, type SendToSessionFn } from './send-to-session-tool.ts';
 import { createListSessionsTool, type ListSessionsFn } from './list-sessions-tool.ts';
+import { createBrowserTools, type BrowserPaneFns } from './browser-tools.ts';
+import { FEATURE_FLAGS } from '../feature-flags.ts';
 
 // Re-export types for backward compatibility
 export type {
@@ -51,6 +54,9 @@ export type {
   SlackService,
   MicrosoftService,
 } from '@craft-agent/session-tools-core';
+
+// Re-export browser pane types for session manager wiring
+export type { BrowserPaneFns } from './browser-tools.ts';
 
 // ============================================================
 // Session-Scoped Tool Callbacks
@@ -79,7 +85,7 @@ export interface SessionScopedToolCallbacks {
   queryFn?: (request: LLMQueryRequest) => Promise<LLMQueryResult>;
 
   /**
-   * Callback for spawn_session tool — creates a sub-session and sends initial prompt.
+   * Callback for spawn_session tool — creates an independent session and sends initial prompt.
    * Each agent backend delegates to its onSpawnSession callback.
    */
   spawnSessionFn?: SpawnSessionFn;
@@ -93,6 +99,13 @@ export interface SessionScopedToolCallbacks {
    * Callback for list_sessions tool — lists sessions available to this workspace.
    */
   listSessionsFn?: ListSessionsFn;
+
+  /**
+   * Browser pane functions for browser_* tools.
+   * Set by the Electron session manager — wraps BrowserPaneManager
+   * with the session's bound browser instance.
+   */
+  browserPaneFns?: BrowserPaneFns;
 }
 
 // Registry of callbacks keyed by sessionId
@@ -110,6 +123,20 @@ export function registerSessionScopedToolCallbacks(
 }
 
 /**
+ * Merge additional callbacks into an existing session's callback set.
+ * Used by the Electron session manager to add browser pane functions
+ * after the agent has already registered its core callbacks.
+ */
+export function mergeSessionScopedToolCallbacks(
+  sessionId: string,
+  callbacks: Partial<SessionScopedToolCallbacks>
+): void {
+  const existing = sessionScopedToolCallbackRegistry.get(sessionId) ?? {};
+  sessionScopedToolCallbackRegistry.set(sessionId, { ...existing, ...callbacks });
+  debug('session-scoped-tools', `Merged callbacks for session ${sessionId}`);
+}
+
+/**
  * Unregister callbacks for a session
  */
 export function unregisterSessionScopedToolCallbacks(sessionId: string): void {
@@ -120,8 +147,31 @@ export function unregisterSessionScopedToolCallbacks(sessionId: string): void {
 /**
  * Get callbacks for a session
  */
-function getSessionScopedToolCallbacks(sessionId: string): SessionScopedToolCallbacks | undefined {
+export function getSessionScopedToolCallbacks(sessionId: string): SessionScopedToolCallbacks | undefined {
   return sessionScopedToolCallbackRegistry.get(sessionId);
+}
+
+/** Backend-executed session tools currently supported by the Claude adapter layer. */
+export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
+  'call_llm',
+  'spawn_session',
+  'browser_tool',
+]);
+
+/**
+ * Guardrail: ensure Claude adapter wiring stays in sync with backend-mode tools
+ * declared in session-tools-core. Fail fast during setup instead of runtime drift.
+ */
+function assertClaudeBackendSessionToolParity(): void {
+  const missing = [...SESSION_BACKEND_TOOL_NAMES].filter(
+    (name) => !CLAUDE_BACKEND_SESSION_TOOL_NAMES.has(name),
+  );
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Claude session tools missing backend adapter implementations: ${missing.join(', ')}`,
+    );
+  }
 }
 
 // ============================================================
@@ -269,8 +319,12 @@ export function getSessionScopedTools(
     });
   }
 
-  // Create tools from the canonical registry — all tools with handlers
-  const tools = SESSION_TOOL_DEFS
+  // Ensure backend-mode tool wiring is in sync with core metadata.
+  assertClaudeBackendSessionToolParity();
+
+  // Create tools from the canonical registry — all tools with handlers.
+  // Tool visibility is centrally filtered in session-tools-core to avoid backend drift.
+  const tools = getSessionToolDefs({ includeDeveloperFeedback: FEATURE_FLAGS.developerFeedback })
     .filter(def => def.handler !== null) // Skip backend-specific tools (call_llm)
     .map(def => registryTool(def.name, def.inputSchema.shape));
 
@@ -316,6 +370,17 @@ export function getSessionScopedTools(
       getListSessionsFn: () => {
         const callbacks = getSessionScopedToolCallbacks(sessionId);
         return callbacks?.listSessionsFn;
+      },
+    }),
+  );
+
+  // Add browser_* tools — backend-specific (requires BrowserPaneManager in Electron)
+  tools.push(
+    ...createBrowserTools({
+      sessionId,
+      getBrowserPaneFns: () => {
+        const callbacks = getSessionScopedToolCallbacks(sessionId);
+        return callbacks?.browserPaneFns;
       },
     }),
   );

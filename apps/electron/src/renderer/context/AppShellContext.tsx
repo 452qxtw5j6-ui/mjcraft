@@ -87,7 +87,8 @@ export interface AppShellContextType {
     sessionId: string,
     requestId: string,
     allowed: boolean,
-    alwaysAllow: boolean
+    alwaysAllow: boolean,
+    options?: import('../../shared/types').PermissionResponseOptions
   ) => void
 
   // Credential handling
@@ -128,6 +129,9 @@ export interface AppShellContextType {
 
   // Right sidebar button (for page headers)
   rightSidebarButton?: React.ReactNode
+
+  /** Whether this panel is the focused panel (for multi-panel visual differentiation) */
+  isFocusedPanel?: boolean
 
   // Session list search state (for ChatDisplay highlighting)
   /** Current search query from session list - used to highlight matches in ChatDisplay */

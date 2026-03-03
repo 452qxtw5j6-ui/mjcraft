@@ -10,6 +10,7 @@ The `pdf-preview` block renders PDF files inline in chat messages — showing th
 |--------|----------|-----------|
 | **`pdf-preview` block** | PDF documents, reports, invoices | First page inline, full navigation in fullscreen |
 | **`html-preview` block** | Emails, newsletters, styled HTML | Sandboxed iframe with full CSS |
+| **`image-preview` block** | Screenshots, captures, visual diffs | Inline fit-to-container + fullscreen viewer |
 | **`datatable`/`spreadsheet`** | Structured data, tables | Interactive sortable/filterable tables |
 
 **Key principle:** Unlike `html-preview` which needs `transform_data` to extract HTML, PDFs are already files on disk. Just reference the file path directly — no extraction step needed.

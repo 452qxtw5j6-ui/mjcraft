@@ -412,6 +412,11 @@ export function handlePermissionModeChanged(
       type: 'permission_mode_changed',
       sessionId: event.sessionId,
       permissionMode: event.permissionMode,
+      previousPermissionMode: event.previousPermissionMode,
+      transitionDisplay: event.transitionDisplay,
+      modeVersion: event.modeVersion,
+      changedAt: event.changedAt,
+      changedBy: event.changedBy,
     }],
   }
 }
@@ -445,7 +450,11 @@ export function handleConnectionChanged(
 
   return {
     state: {
-      session: { ...session, llmConnection: event.connectionSlug },
+      session: {
+        ...session,
+        llmConnection: event.connectionSlug,
+        ...(event.supportsBranching !== undefined && { supportsBranching: event.supportsBranching }),
+      },
       streaming,
     },
     effects: [],

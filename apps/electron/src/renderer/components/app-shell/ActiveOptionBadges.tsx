@@ -2,9 +2,9 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { SlashCommandMenu, DEFAULT_SLASH_COMMAND_GROUPS, type SlashCommandId } from '@/components/ui/slash-command-menu'
-import { ChevronDown, X } from 'lucide-react'
+import { ChevronDown, Info, X } from 'lucide-react'
 import { PERMISSION_MODE_CONFIG, type PermissionMode } from '@craft-agent/shared/agent/modes'
-import { ActiveTasksBar, type BackgroundTask } from './ActiveTasksBar'
+import type { BackgroundTask } from './ActiveTasksBar'
 import { LabelIcon, LabelValueTypeIcon } from '@/components/ui/label-icon'
 import { LabelValuePopover } from '@/components/ui/label-value-popover'
 import type { LabelConfig } from '@craft-agent/shared/labels'
@@ -15,6 +15,9 @@ import { useDynamicStack } from '@/hooks/useDynamicStack'
 import type { SessionStatus } from '@/config/session-status-config'
 import { getState } from '@/config/session-status-config'
 import { SessionStatusMenu } from '@/components/ui/session-status-menu'
+import { Input } from '@/components/ui/input'
+import { useAppShellContext, useSession } from '@/context/AppShellContext'
+import { SessionFilesSection } from '../right-sidebar/SessionFilesSection'
 
 // ============================================================================
 // Permission Mode Icon Component
@@ -50,6 +53,8 @@ export interface ActiveOptionBadgesProps {
   tasks?: BackgroundTask[]
   /** Session ID for opening preview windows */
   sessionId?: string
+  /** Absolute path to the session folder (for Files header actions) */
+  sessionFolderPath?: string
   /** Callback when kill button is clicked on a task */
   onKillTask?: (taskId: string) => void
   /** Callback to insert message into input field */
@@ -91,6 +96,7 @@ export function ActiveOptionBadges({
   onPermissionModeChange,
   tasks = [],
   sessionId,
+  sessionFolderPath,
   onKillTask,
   onInsertMessage,
   sessionLabels = [],
@@ -147,88 +153,99 @@ export function ActiveOptionBadges({
 
   return (
     <div className={cn("flex items-start gap-2 mb-2 px-px pt-px pb-0.5", className)}>
-      {/* Permission Mode Badge */}
-      {permissionMode && (
-        <div className="shrink-0">
-          <PermissionModeDropdown
-            permissionMode={permissionMode}
-            ultrathinkEnabled={ultrathinkEnabled}
-            onPermissionModeChange={onPermissionModeChange}
-            onUltrathinkChange={onUltrathinkChange}
-          />
-        </div>
-      )}
-
-      {/* State Badge — standalone on the left, after Mode */}
-      {hasState && resolvedState && (
-        <div className="shrink-0">
-          <StateBadge
-            state={resolvedState}
-            sessionStatuses={sessionStatuses}
-            onSessionStatusChange={onSessionStatusChange}
-          />
-        </div>
-      )}
-
-      {/* Ultrathink Badge */}
-      {ultrathinkEnabled && (
-        <button
-          type="button"
-          onClick={() => onUltrathinkChange?.(false)}
-          className="h-[30px] pl-2.5 pr-2 text-xs font-medium rounded-[8px] flex items-center gap-1.5 shrink-0 transition-all bg-gradient-to-r from-blue-600/10 via-purple-600/10 to-pink-600/10 hover:from-blue-600/15 hover:via-purple-600/15 hover:to-pink-600/15 shadow-tinted outline-none select-none"
-          style={{ '--shadow-color': '147, 51, 234' } as React.CSSProperties}
-        >
-          <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
-            Ultrathink
-          </span>
-          <X className="h-3 w-3 text-purple-500 opacity-60 hover:opacity-100 translate-y-px" />
-        </button>
-      )}
-
-      {/* Stacking container for label badges (right-aligned).
-       * useDynamicStack sets per-child marginLeft directly via ResizeObserver.
-       * overflow: clip prevents scroll container while py/-my gives shadow room. */}
-      {hasStackContent && (
-        <div
-          className="min-w-0 flex-1 py-0.5 -my-0.5"
-          style={{
-            // shadow-minimal replicated as drop-shadow (traces masked alpha, no clipping).
-            // Ring uses higher blur+opacity for visible border feel (hard 1px ring can't be replicated exactly).
-            // Blur shadows use reduced blur+opacity to stay tight (accounting for no negative spread in drop-shadow).
-            filter: 'drop-shadow(0px 0px 0.5px rgba(var(--foreground-rgb), 0.3)) drop-shadow(0px 1px 0.1px rgba(0,0,0,0.04)) drop-shadow(0px 3px 0.2px rgba(0,0,0,0.03))',
-          }}
-        >
-          <div
-            ref={stackRef}
-            className="flex items-center min-w-0 justify-end py-1 -my-1 pr-2 -mr-2"
-            style={{ overflow: 'clip' }}
-          >
-            {/* Label badges */}
-            {resolvedLabels.map(({ config, rawValue, index }) => (
-              <LabelBadge
-                key={`${config.id}-${index}`}
-                label={config}
-                value={rawValue}
-                autoOpen={config.id === autoOpenLabelId}
-                onAutoOpenConsumed={onAutoOpenConsumed}
-                onValueChange={(newValue) => {
-                  // Rebuild the sessionLabels array with the updated entry
-                  const updated = [...sessionLabels]
-                  updated[index] = formatLabelEntry(config.id, newValue)
-                  onLabelsChange?.(updated)
-                }}
-                onRemove={() => {
-                  if (onLabelsChange) {
-                    onLabelsChange(sessionLabels.filter((_, i) => i !== index))
-                  } else {
-                    onRemoveLabel?.(config.id)
-                  }
-                }}
-              />
-            ))}
+      {/* Left side: mode → state → labels stack → ultrathink */}
+      <div className="flex items-start gap-2 min-w-0">
+        {/* Permission Mode Badge */}
+        {permissionMode && (
+          <div className="shrink-0">
+            <PermissionModeDropdown
+              permissionMode={permissionMode}
+              ultrathinkEnabled={ultrathinkEnabled}
+              onPermissionModeChange={onPermissionModeChange}
+              onUltrathinkChange={onUltrathinkChange}
+            />
           </div>
-        </div>
-      )}
+        )}
+
+        {/* State Badge — standalone on the left, after Mode */}
+        {hasState && resolvedState && (
+          <div className="shrink-0">
+            <StateBadge
+              state={resolvedState}
+              sessionStatuses={sessionStatuses}
+              onSessionStatusChange={onSessionStatusChange}
+            />
+          </div>
+        )}
+
+        {/* Stacking container for label badges (left side).
+         * useDynamicStack sets per-child marginLeft directly via ResizeObserver.
+         * overflow: clip prevents scroll container while py/-my gives shadow room. */}
+        {hasStackContent && (
+          <div
+            className="min-w-0 max-w-[46vw] py-0.5 -my-0.5"
+            style={{
+              // shadow-minimal replicated as drop-shadow (traces masked alpha, no clipping).
+              // Ring uses higher blur+opacity for visible border feel (hard 1px ring can't be replicated exactly).
+              // Blur shadows use reduced blur+opacity to stay tight (accounting for no negative spread in drop-shadow).
+              filter: 'drop-shadow(0px 0px 0.5px rgba(var(--foreground-rgb), 0.3)) drop-shadow(0px 1px 0.1px rgba(0,0,0,0.04)) drop-shadow(0px 3px 0.2px rgba(0,0,0,0.03))',
+            }}
+          >
+            <div
+              ref={stackRef}
+              className="flex items-center min-w-0 py-1 -my-1"
+              style={{ overflow: 'clip' }}
+            >
+              {/* Label badges */}
+              {resolvedLabels.map(({ config, rawValue, index }) => (
+                <LabelBadge
+                  key={`${config.id}-${index}`}
+                  label={config}
+                  value={rawValue}
+                  autoOpen={config.id === autoOpenLabelId}
+                  onAutoOpenConsumed={onAutoOpenConsumed}
+                  onValueChange={(newValue) => {
+                    // Rebuild the sessionLabels array with the updated entry
+                    const updated = [...sessionLabels]
+                    updated[index] = formatLabelEntry(config.id, newValue)
+                    onLabelsChange?.(updated)
+                  }}
+                  onRemove={() => {
+                    if (onLabelsChange) {
+                      onLabelsChange(sessionLabels.filter((_, i) => i !== index))
+                    } else {
+                      onRemoveLabel?.(config.id)
+                    }
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Ultrathink Badge */}
+        {ultrathinkEnabled && (
+          <button
+            type="button"
+            onClick={() => onUltrathinkChange?.(false)}
+            className="h-[30px] pl-2.5 pr-2 text-xs font-medium rounded-[8px] flex items-center gap-1.5 shrink-0 transition-all bg-gradient-to-r from-blue-600/10 via-purple-600/10 to-pink-600/10 hover:from-blue-600/15 hover:via-purple-600/15 hover:to-pink-600/15 shadow-tinted outline-none select-none"
+            style={{ '--shadow-color': '147, 51, 234' } as React.CSSProperties}
+          >
+            <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
+              Ultrathink
+            </span>
+            <X className="h-3 w-3 text-purple-500 opacity-60 hover:opacity-100 translate-y-px" />
+          </button>
+        )}
+      </div>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Right side: Files popover button */}
+      <div className="shrink-0">
+        <FilesPopoverButton sessionId={sessionId} sessionFolderPath={sessionFolderPath} />
+      </div>
     </div>
   )
 }
@@ -414,6 +431,108 @@ function StateBadge({
   )
 }
 
+function FilesPopoverButton({ sessionId, sessionFolderPath }: { sessionId?: string; sessionFolderPath?: string }) {
+  const [open, setOpen] = React.useState(false)
+
+  if (!sessionId) return null
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "h-[30px] pl-[12px] pr-[14px] text-xs font-medium rounded-[8px] flex items-center gap-1.5 shrink-0",
+            "outline-none select-none transition-colors shadow-minimal",
+            "hover:bg-foreground/5 data-[state=open]:bg-foreground/5",
+            "bg-[color-mix(in_srgb,var(--background)_97%,var(--foreground)_3%)]",
+            "text-foreground/80",
+          )}
+        >
+          <Info className="h-3.5 w-3.5 shrink-0" />
+          <span className="whitespace-nowrap">Info</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-[360px] h-[460px] min-w-[200px] max-w-[420px] overflow-hidden rounded-[8px] bg-background text-foreground shadow-modal-small p-0"
+        side="top"
+        align="end"
+        sideOffset={6}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+        }}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault()
+          window.dispatchEvent(new CustomEvent('craft:focus-input'))
+        }}
+      >
+        <SessionInfoPopoverContent sessionId={sessionId} sessionFolderPath={sessionFolderPath} />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId: string; sessionFolderPath?: string }) {
+  const session = useSession(sessionId)
+  const { onRenameSession } = useAppShellContext()
+  const [name, setName] = React.useState('')
+  const renameTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  React.useEffect(() => {
+    setName(session?.name || '')
+  }, [session?.name])
+
+  React.useEffect(() => {
+    return () => {
+      if (renameTimeoutRef.current) {
+        clearTimeout(renameTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  const handleNameChange = React.useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const newName = e.target.value
+    setName(newName)
+
+    if (renameTimeoutRef.current) {
+      clearTimeout(renameTimeoutRef.current)
+    }
+
+    renameTimeoutRef.current = setTimeout(() => {
+      const trimmed = newName.trim()
+      if (trimmed) {
+        onRenameSession(sessionId, trimmed)
+      }
+    }, 500)
+  }, [onRenameSession, sessionId])
+
+  return (
+    <div className="h-full min-h-0 flex flex-col">
+      <div className="shrink-0 p-3 border-b border-border/50">
+        <label className="text-xs font-medium text-muted-foreground block mb-1.5 select-none">
+          Title
+        </label>
+        <div className="rounded-lg bg-foreground-2 has-[:focus]:bg-background shadow-minimal transition-colors">
+          <Input
+            value={name}
+            onChange={handleNameChange}
+            placeholder="Untitled"
+            className="h-9 py-2 text-sm border-0 shadow-none bg-transparent focus-visible:ring-0"
+          />
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <SessionFilesSection
+          sessionId={sessionId}
+          sessionFolderPath={sessionFolderPath}
+          hideHeader={false}
+          className="h-full min-h-0"
+        />
+      </div>
+    </div>
+  )
+}
+
 interface PermissionModeDropdownProps {
   permissionMode: PermissionMode
   ultrathinkEnabled?: boolean
@@ -490,11 +609,10 @@ function PermissionModeDropdown({ permissionMode, ultrathinkEnabled = false, onP
         </button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-auto p-0 bg-background/80 backdrop-blur-xl backdrop-saturate-150 border-border/50"
+        className="w-auto p-0 rounded-[8px] bg-background text-foreground shadow-modal-small"
         side="top"
         align="start"
         sideOffset={4}
-        style={{ borderRadius: '8px', boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25)' }}
         onCloseAutoFocus={(e) => {
           e.preventDefault()
           window.dispatchEvent(new CustomEvent('craft:focus-input'))

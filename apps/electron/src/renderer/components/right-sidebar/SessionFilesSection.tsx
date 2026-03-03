@@ -69,6 +69,10 @@ const itemVariants: Variants = {
 export interface SessionFilesSectionProps {
   sessionId?: string
   className?: string
+  /** Absolute session folder path for header actions (e.g. View in Finder) */
+  sessionFolderPath?: string
+  /** Hide section header when embedded inside compact containers (e.g. popovers) */
+  hideHeader?: boolean
 }
 
 /**
@@ -79,6 +83,23 @@ function formatFileSize(bytes?: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Collect all directory paths recursively so the tree can start fully expanded. */
+function collectDirectoryPaths(entries: SessionFile[]): string[] {
+  const directories: string[] = []
+  const visit = (items: SessionFile[]) => {
+    for (const item of items) {
+      if (item.type === 'directory') {
+        directories.push(item.path)
+        if (item.children && item.children.length > 0) {
+          visit(item.children)
+        }
+      }
+    }
+  }
+  visit(entries)
+  return directories
 }
 
 /**
@@ -365,19 +386,29 @@ function FileTreeItem({
 /**
  * Section displaying session files as a tree
  */
-export function SessionFilesSection({ sessionId, className }: SessionFilesSectionProps) {
+export function SessionFilesSection({ sessionId, className, sessionFolderPath, hideHeader = false }: SessionFilesSectionProps) {
   const [files, setFiles] = useState<SessionFile[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
+  const [hasSavedExpandedState, setHasSavedExpandedState] = useState(false)
   const mountedRef = useRef(true)
 
-  // Load expanded paths from storage when session changes
+  // Load expanded paths from storage when session changes.
+  // If no value exists yet, we default to "expand all" after files load.
   useEffect(() => {
     if (sessionId) {
-      const saved = storage.get<string[]>(storage.KEYS.sessionFilesExpandedFolders, [], sessionId)
-      setExpandedPaths(new Set(saved))
+      const raw = storage.getRaw(storage.KEYS.sessionFilesExpandedFolders, sessionId)
+      if (raw !== null) {
+        const saved = storage.get<string[]>(storage.KEYS.sessionFilesExpandedFolders, [], sessionId)
+        setExpandedPaths(new Set(saved))
+        setHasSavedExpandedState(true)
+      } else {
+        setExpandedPaths(new Set())
+        setHasSavedExpandedState(false)
+      }
     } else {
       setExpandedPaths(new Set())
+      setHasSavedExpandedState(false)
     }
   }, [sessionId])
 
@@ -400,6 +431,16 @@ export function SessionFilesSection({ sessionId, className }: SessionFilesSectio
       const sessionFiles = await window.electronAPI.getSessionFiles(sessionId)
       if (mountedRef.current) {
         setFiles(sessionFiles)
+
+        // Default behavior: expand the entire folder tree when there's no saved state yet.
+        if (!hasSavedExpandedState) {
+          const allDirectoryPaths = new Set(collectDirectoryPaths(sessionFiles))
+          if (allDirectoryPaths.size > 0) {
+            setExpandedPaths(allDirectoryPaths)
+            saveExpandedPaths(allDirectoryPaths)
+            setHasSavedExpandedState(true)
+          }
+        }
       }
     } catch (error) {
       console.error('Failed to load session files:', error)
@@ -411,7 +452,7 @@ export function SessionFilesSection({ sessionId, className }: SessionFilesSectio
         setIsLoading(false)
       }
     }
-  }, [sessionId])
+  }, [sessionId, hasSavedExpandedState, saveExpandedPaths])
 
   // Initial load and file watcher setup
   useEffect(() => {
@@ -444,6 +485,7 @@ export function SessionFilesSection({ sessionId, className }: SessionFilesSectio
   // Use the link interceptor (via context) so file clicks show in-app previews
   // instead of always opening in the file manager / default app.
   const { onOpenFile } = useAppShellContext()
+  const fileManagerName = getFileManagerName()
 
   // Reveal a file/folder in the system file manager
   const handleRevealInFileManager = useCallback((path: string) => {
@@ -491,9 +533,20 @@ export function SessionFilesSection({ sessionId, className }: SessionFilesSectio
   return (
     <div className={cn('flex flex-col h-full min-h-0', className)}>
       {/* Header - matches sidebar styling with select-none, extra top padding for visual balance */}
-      <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
-        <span className="text-xs font-medium text-muted-foreground">Files</span>
-      </div>
+      {!hideHeader && (
+        <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
+          <span className="text-xs font-medium text-muted-foreground">Session Files</span>
+          {sessionFolderPath && (
+            <button
+              type="button"
+              onClick={() => window.electronAPI.showInFolder(sessionFolderPath)}
+              className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
+            >
+              {`View in ${fileManagerName}`}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* File tree - px-2 is on nav to match LeftSidebar exactly (constrains grid width) */}
       {/* overflow-x-hidden prevents horizontal scroll, forcing truncation */}

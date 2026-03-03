@@ -54,6 +54,7 @@ export class WindowManager {
   private windows: Map<number, ManagedWindow> = new Map()  // webContents.id → ManagedWindow
   private focusedModeWindows: Set<number> = new Set()  // webContents.id of windows in focused mode
   private pendingCloseTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Fallback timeouts for window close
+  private isAppQuitting = false  // Skip layered close interception during app quit
 
   /**
    * Create a new window for a workspace
@@ -102,7 +103,7 @@ export class WindowManager {
       // macOS-specific: hidden title bar with inset traffic lights
       ...(isMac && {
         titleBarStyle: 'hiddenInset',
-        trafficLightPosition: { x: 18, y: 18 },
+        trafficLightPosition: { x: 18, y: 16 },
         vibrancy: 'under-window',
         visualEffectState: 'active',
       }),
@@ -130,7 +131,7 @@ export class WindowManager {
         // is disabled - the preload only exposes safe, read-only version data via IPC.
         // If sandbox is re-enabled, process.versions becomes undefined.
         sandbox: false,
-        webviewTag: true // Enable webview for browser panel
+        webviewTag: false // Browser integration uses WebContentsView, not <webview>
       }
     })
 
@@ -145,7 +146,7 @@ export class WindowManager {
       return { action: 'deny' }
     })
 
-    // Handle navigation in webviews to external URLs
+    // Handle external navigation attempts from renderer WebContents
     window.webContents.on('will-navigate', (event, url) => {
       // Allow navigation within the app (file:// in prod, localhost dev server)
       const isInternalUrl = url.startsWith('file://') ||
@@ -290,6 +291,12 @@ export class WindowManager {
     // Handle window close request (X button, Cmd+W) - intercept to allow modal closing first
     // The renderer can respond via WINDOW_CONFIRM_CLOSE to actually close the window
     window.on('close', (event) => {
+      // During app quit, bypass layered close behavior and allow native close flow.
+      // This preserves expected Cmd+Q semantics (quit app instead of closing overlays/panels first).
+      if (this.isAppQuitting) {
+        return
+      }
+
       // Check if renderer is ready (mainFrame exists) - if not, allow close directly
       if (!window.webContents.isDestroyed() && window.webContents.mainFrame) {
         event.preventDefault()
@@ -369,6 +376,14 @@ export class WindowManager {
   }
 
   /**
+   * Mark whether the app is in quit flow.
+   * When true, window close events bypass layered close interception.
+   */
+  setAppQuitting(isQuitting: boolean): void {
+    this.isAppQuitting = isQuitting
+  }
+
+  /**
    * Close window by webContents.id (triggers close event which may be intercepted)
    */
   closeWindow(webContentsId: number): void {
@@ -395,6 +410,18 @@ export class WindowManager {
       // Remove close listener temporarily to avoid infinite loop,
       // then destroy the window directly
       managed.window.destroy()
+    }
+  }
+
+  /**
+   * Cancel a pending close request (renderer handled it by closing a modal/panel).
+   * Clears the fallback timeout so the window stays open.
+   */
+  cancelPendingClose(webContentsId: number): void {
+    const timeout = this.pendingCloseTimeouts.get(webContentsId)
+    if (timeout) {
+      clearTimeout(timeout)
+      this.pendingCloseTimeouts.delete(webContentsId)
     }
   }
 
@@ -547,7 +574,7 @@ export class WindowManager {
       // setWindowButtonVisibility can reset position to default, so we need
       // to restore the custom position using the modern setWindowButtonPosition API
       if (visible) {
-        managed.window.setWindowButtonPosition({ x: 18, y: 18 })
+        managed.window.setWindowButtonPosition({ x: 18, y: 19 })
       }
     }
   }

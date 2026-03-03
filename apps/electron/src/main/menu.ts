@@ -70,6 +70,7 @@ export async function rebuildMenu(): Promise<void> {
         {
           label: 'Settings...',
           accelerator: 'CmdOrCtrl+,',
+          registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => sendToRenderer(IPC_CHANNELS.MENU_OPEN_SETTINGS)
         },
         { type: 'separator' as const },
@@ -88,11 +89,13 @@ export async function rebuildMenu(): Promise<void> {
         {
           label: 'New Chat',
           accelerator: 'CmdOrCtrl+N',
+          registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => sendToRenderer(IPC_CHANNELS.MENU_NEW_CHAT)
         },
         {
           label: 'New Window',
           accelerator: 'CmdOrCtrl+Shift+N',
+          registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => {
             const focused = BrowserWindow.getFocusedWindow()
             if (focused) {
@@ -122,8 +125,34 @@ export async function rebuildMenu(): Promise<void> {
         // Dev tools only in development
         ...(!app.isPackaged ? [
           { type: 'separator' as const },
-          { role: 'reload' as const },
-          { role: 'forceReload' as const },
+          {
+            label: 'Reload',
+            accelerator: 'CmdOrCtrl+R',
+            click: (_menuItem: Electron.MenuItem, window: Electron.BaseWindow | undefined) => {
+              const browserWindow = window instanceof BrowserWindow ? window : BrowserWindow.getFocusedWindow()
+              if (!browserWindow) return
+              const views = browserWindow.getBrowserViews()
+              if (views.length > 0) {
+                views[0].webContents.reload()
+              } else {
+                browserWindow.webContents.reload()
+              }
+            }
+          },
+          {
+            label: 'Force Reload',
+            accelerator: 'CmdOrCtrl+Shift+R',
+            click: (_menuItem: Electron.MenuItem, window: Electron.BaseWindow | undefined) => {
+              const browserWindow = window instanceof BrowserWindow ? window : BrowserWindow.getFocusedWindow()
+              if (!browserWindow) return
+              const views = browserWindow.getBrowserViews()
+              if (views.length > 0) {
+                views[0].webContents.reloadIgnoringCache()
+              } else {
+                browserWindow.webContents.reloadIgnoringCache()
+              }
+            }
+          },
           { type: 'separator' as const },
           { role: 'toggleDevTools' as const }
         ] : [])
@@ -192,6 +221,7 @@ export async function rebuildMenu(): Promise<void> {
         {
           label: 'Keyboard Shortcuts',
           accelerator: 'CmdOrCtrl+/',
+          registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => sendToRenderer(IPC_CHANNELS.MENU_KEYBOARD_SHORTCUTS)
         }
       ]
@@ -229,6 +259,7 @@ function toElectronMenuItem(item: MenuItem): Electron.MenuItemConstructorOptions
     return {
       label: item.label,
       accelerator: item.shortcut,
+      registerAccelerator: false,  // Action registry handles the keyboard shortcut
       click: () => sendToRenderer(item.ipcChannel),
     }
   }

@@ -1,6 +1,6 @@
 {
   "name": "@craft-agent/shared",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "license": "Apache-2.0",
   "description": "Shared business logic for Craft Agents - agent, auth, config, credentials, MCP integration",
   "type": "module",
@@ -48,6 +48,7 @@
     "./validation": "./src/validation/index.ts",
     "./version": "./src/version/index.ts",
     "./branding": "./src/branding.ts",
+    "./feature-flags": "./src/feature-flags.ts",
     "./interceptor": "./src/interceptor-common.ts",
     "./search": "./src/search/index.ts",
     "./tools": "./src/tools/index.ts",
@@ -61,9 +62,11 @@
     "@craft-agent/session-tools-core": "workspace:*",
     "@isaacs/ttlcache": "^2.1.4",
     "@leeoniya/ufuzzy": "^1.0.19",
+    "@mariozechner/pi-ai": "^0.53.0",
     "bash-parser": "^0.5.0",
     "croner": "^10.0.1",
     "filtrex": "^3.1.0",
+    "glob": "^11.0.3",
     "incr-regex-package": "^1.0.4",
     "shell-quote": "^1.8.3"
   },

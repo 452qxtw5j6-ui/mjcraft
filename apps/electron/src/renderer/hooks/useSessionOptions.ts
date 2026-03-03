@@ -22,6 +22,8 @@ export interface SessionOptions {
   ultrathinkEnabled: boolean
   /** Permission mode ('safe', 'ask', 'allow-all') */
   permissionMode: PermissionMode
+  /** Monotonic version from backend permission mode state (used to ignore stale events) */
+  permissionModeVersion?: number
   /** Session-level thinking level ('off', 'think', 'max') - sticky, persisted */
   thinkingLevel: ThinkingLevel
 }

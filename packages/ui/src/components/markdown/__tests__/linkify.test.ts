@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'bun:test'
-import { preprocessLinks, detectLinks } from '../linkify'
+import { preprocessLinks, detectLinks, isFilePathTarget } from '../linkify'
 
 // ============================================================================
 // preprocessLinks — existing markdown links should NOT be corrupted
@@ -50,6 +50,11 @@ describe('preprocessLinks', () => {
     it('wraps a bare URL', () => {
       const input = 'Visit https://example.com for more info'
       expect(preprocessLinks(input)).toBe('Visit [https://example.com](https://example.com) for more info')
+    })
+
+    it('wraps a bare repo-relative file path', () => {
+      const input = 'See apps/electron/resources/docs/browser-tools.md for details'
+      expect(preprocessLinks(input)).toBe('See [apps/electron/resources/docs/browser-tools.md](apps/electron/resources/docs/browser-tools.md) for details')
     })
 
     it('wraps a bare domain', () => {
@@ -106,5 +111,43 @@ describe('detectLinks', () => {
     expect(links[0]).toBeDefined()
     expect(links[0]!.type).toBe('file')
     expect(links[0]!.url).toBe('/Users/foo/bar.ts')
+  })
+
+  it('detects bare repo-relative file paths', () => {
+    const links = detectLinks('Open apps/electron/resources/docs/browser-tools.md')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toBeDefined()
+    expect(links[0]!.type).toBe('file')
+    expect(links[0]!.url).toBe('apps/electron/resources/docs/browser-tools.md')
+  })
+
+  it('detects parent-relative file paths', () => {
+    const links = detectLinks('See ../README.md for setup steps')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toBeDefined()
+    expect(links[0]!.type).toBe('file')
+    expect(links[0]!.url).toBe('../README.md')
+  })
+})
+
+describe('isFilePathTarget', () => {
+  it('accepts absolute unix image paths', () => {
+    expect(isFilePathTarget('/Users/balintorosz/.craft-agent/sessions/abc/image.jpg')).toBe(true)
+  })
+
+  it('accepts parent-relative image paths', () => {
+    expect(isFilePathTarget('../downloads/assets/screenshot.png')).toBe(true)
+  })
+
+  it('accepts repo-relative markdown paths', () => {
+    expect(isFilePathTarget('apps/electron/resources/docs/browser-tools.md')).toBe(true)
+  })
+
+  it('rejects web URLs', () => {
+    expect(isFilePathTarget('https://example.com/image.jpg')).toBe(false)
+  })
+
+  it('rejects non-file strings', () => {
+    expect(isFilePathTarget('not a link at all')).toBe(false)
   })
 })

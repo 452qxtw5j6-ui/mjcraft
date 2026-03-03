@@ -68,11 +68,21 @@ export {
 /**
  * State for a single session's permission mode
  */
+export type PermissionModeChangedBy = 'user' | 'system' | 'restore' | 'automation' | 'unknown';
+
 export interface ModeState {
   /** Session ID */
   sessionId: string;
   /** Current permission mode */
   permissionMode: PermissionMode;
+  /** Previous permission mode (if any mode transition has occurred) */
+  previousPermissionMode?: PermissionMode;
+  /** Monotonic version incremented each time the mode changes */
+  modeVersion: number;
+  /** ISO timestamp for the last mode change */
+  lastChangedAt: string;
+  /** Actor that initiated the last mode change */
+  lastChangedBy: PermissionModeChangedBy;
   /** Callback when mode state changes */
   onStateChange?: (state: ModeState) => void;
 }
@@ -163,6 +173,23 @@ class ModeManager {
   private subscribers: Map<string, Set<() => void>> = new Map();
 
   /**
+   * Hydrate persisted transition context (previous mode) without mutating current mode/version.
+   * Used on session restore so transition metadata can survive app restarts.
+   */
+  setPreviousPermissionMode(sessionId: string, previousPermissionMode?: PermissionMode): void {
+    const existing = this.getState(sessionId);
+    if (existing.previousPermissionMode === previousPermissionMode) {
+      return;
+    }
+
+    const newState: ModeState = {
+      ...existing,
+      previousPermissionMode,
+    };
+    this.states.set(sessionId, newState);
+  }
+
+  /**
    * Get or create state for a session
    */
   getState(sessionId: string): ModeState {
@@ -171,6 +198,9 @@ class ModeManager {
       state = {
         sessionId,
         permissionMode: 'ask', // Default to 'ask' until initialized
+        modeVersion: 0,
+        lastChangedAt: new Date().toISOString(),
+        lastChangedBy: 'system',
       };
       this.states.set(sessionId, state);
     }
@@ -178,14 +208,37 @@ class ModeManager {
   }
 
   /**
-   * Set permission mode for a session
+   * Set permission mode for a session.
+   * @returns true when state changed, false when mode was unchanged
    */
-  setPermissionMode(sessionId: string, mode: PermissionMode): void {
+  setPermissionMode(
+    sessionId: string,
+    mode: PermissionMode,
+    metadata?: { changedBy?: PermissionModeChangedBy; changedAt?: string }
+  ): boolean {
     const existing = this.getState(sessionId);
-    const newState = { ...existing, permissionMode: mode };
+
+    // No-op when mode is unchanged (prevents duplicate logs/events)
+    if (existing.permissionMode === mode) {
+      return false;
+    }
+
+    const changedAt = metadata?.changedAt ?? new Date().toISOString();
+    const changedBy = metadata?.changedBy ?? 'unknown';
+
+    const shouldTrackTransition = !(existing.modeVersion === 0 && changedBy === 'restore');
+
+    const newState: ModeState = {
+      ...existing,
+      previousPermissionMode: shouldTrackTransition ? existing.permissionMode : undefined,
+      permissionMode: mode,
+      modeVersion: existing.modeVersion + 1,
+      lastChangedAt: changedAt,
+      lastChangedBy: changedBy,
+    };
     this.states.set(sessionId, newState);
 
-    debug(`[Mode] Set permission mode to ${mode} for session ${sessionId}`);
+    debug(`[Mode] Set permission mode to ${mode} for session ${sessionId} (changedBy=${changedBy}, modeVersion=${newState.modeVersion})`);
 
     // Notify callbacks (for CraftAgent internal sync)
     const callbacks = this.callbacks.get(sessionId);
@@ -195,6 +248,7 @@ class ModeManager {
 
     // Notify React subscribers (for useSyncExternalStore)
     this.subscribers.get(sessionId)?.forEach(cb => cb());
+    return true;
   }
 
   /**
@@ -252,10 +306,15 @@ export function getPermissionMode(sessionId: string): PermissionMode {
 }
 
 /**
- * Set the permission mode for a session
+ * Set the permission mode for a session.
+ * @returns true when state changed, false when mode was unchanged
  */
-export function setPermissionMode(sessionId: string, mode: PermissionMode): void {
-  modeManager.setPermissionMode(sessionId, mode);
+export function setPermissionMode(
+  sessionId: string,
+  mode: PermissionMode,
+  metadata?: { changedBy?: PermissionModeChangedBy; changedAt?: string }
+): boolean {
+  return modeManager.setPermissionMode(sessionId, mode, metadata);
 }
 
 /**
@@ -276,14 +335,14 @@ export function cyclePermissionMode(
   // If current mode not in enabled list, jump to first enabled mode
   if (currentIndex === -1) {
     const nextMode = modes[0] ?? 'ask';
-    setPermissionMode(sessionId, nextMode);
+    setPermissionMode(sessionId, nextMode, { changedBy: 'user' });
     return nextMode;
   }
 
   const nextIndex = (currentIndex + 1) % modes.length;
   // Safe assertion: nextIndex is always valid due to modulo operation
   const nextMode = modes[nextIndex] as PermissionMode;
-  setPermissionMode(sessionId, nextMode);
+  setPermissionMode(sessionId, nextMode, { changedBy: 'user' });
   return nextMode;
 }
 
@@ -300,6 +359,39 @@ export function subscribeModeChanges(sessionId: string, callback: () => void): (
  */
 export function getModeState(sessionId: string): ModeState {
   return modeManager.getState(sessionId);
+}
+
+/**
+ * Hydrate persisted transition context for a session without changing current mode.
+ */
+export function hydratePreviousPermissionMode(sessionId: string, previousPermissionMode?: PermissionMode): void {
+  modeManager.setPreviousPermissionMode(sessionId, previousPermissionMode);
+}
+
+/**
+ * Lightweight diagnostics for permission denials and debugging.
+ */
+export function getPermissionModeDiagnostics(sessionId: string): {
+  permissionMode: PermissionMode;
+  previousPermissionMode?: PermissionMode;
+  transitionDisplay?: string;
+  modeVersion: number;
+  lastChangedAt: string;
+  lastChangedBy: PermissionModeChangedBy;
+} {
+  const state = modeManager.getState(sessionId);
+  const transitionDisplay = state.previousPermissionMode
+    ? `${PERMISSION_MODE_CONFIG[state.previousPermissionMode].displayName} -> ${PERMISSION_MODE_CONFIG[state.permissionMode].displayName}`
+    : undefined;
+
+  return {
+    permissionMode: state.permissionMode,
+    previousPermissionMode: state.previousPermissionMode,
+    transitionDisplay,
+    modeVersion: state.modeVersion,
+    lastChangedAt: state.lastChangedAt,
+    lastChangedBy: state.lastChangedBy,
+  };
 }
 
 /**
@@ -326,7 +418,7 @@ export function initializeModeState(
   if (callbacks) {
     modeManager.registerCallbacks(sessionId, callbacks);
   }
-  modeManager.setPermissionMode(sessionId, mode);
+  modeManager.setPermissionMode(sessionId, mode, { changedBy: 'restore' });
 }
 
 /**
@@ -1488,9 +1580,29 @@ const ALWAYS_ALLOWED_TOOLS = new Set([
   'Read', 'Glob', 'Grep',           // File reading
   'Task', 'TaskOutput',             // Agent orchestration
   'WebFetch', 'WebSearch',          // Web research
-  'TodoWrite',                       // Task tracking
+  'TodoWrite',                      // Task tracking
   'SubmitPlan',                     // Plan submission
   'LSP',                            // Language server (read-only)
+  // Browser automation tools (stateful UI interactions, no direct local file mutation)
+  'browser_open',
+  'browser_navigate',
+  'browser_snapshot',
+  'browser_click',
+  'browser_fill',
+  'browser_select',
+  'browser_screenshot',
+  'browser_screenshot_region',
+  'browser_console',
+  'browser_window_resize',
+  'browser_network',
+  'browser_wait',
+  'browser_key',
+  'browser_downloads',
+  'browser_scroll',
+  'browser_back',
+  'browser_forward',
+  'browser_evaluate',
+  'browser_tool',
 ]);
 
 /**
@@ -1743,6 +1855,26 @@ export function shouldAllowToolInMode(
         'mcp__session__transform_data',
         'mcp__session__render_template',
         'mcp__session__call_llm',
+        // Browser session tools (agent-safe browsing workflow)
+        'mcp__session__browser_open',
+        'mcp__session__browser_navigate',
+        'mcp__session__browser_snapshot',
+        'mcp__session__browser_click',
+        'mcp__session__browser_fill',
+        'mcp__session__browser_select',
+        'mcp__session__browser_screenshot',
+        'mcp__session__browser_screenshot_region',
+        'mcp__session__browser_console',
+        'mcp__session__browser_window_resize',
+        'mcp__session__browser_network',
+        'mcp__session__browser_wait',
+        'mcp__session__browser_key',
+        'mcp__session__browser_downloads',
+        'mcp__session__browser_scroll',
+        'mcp__session__browser_back',
+        'mcp__session__browser_forward',
+        'mcp__session__browser_evaluate',
+        'mcp__session__browser_tool',
       ];
       if (readOnlySessionTools.includes(toolName)) {
         return { allowed: true };
@@ -1859,11 +1991,18 @@ export function formatSessionState(
   sessionId: string,
   options?: { plansFolderPath?: string; dataFolderPath?: string }
 ): string {
-  const mode = getPermissionMode(sessionId);
+  const diagnostics = getPermissionModeDiagnostics(sessionId);
 
   // Use the display name (lowercased) so the agent sees "explore" instead of internal key "safe"
-  const modeName = PERMISSION_MODE_CONFIG[mode].displayName.toLowerCase();
+  const modeName = PERMISSION_MODE_CONFIG[diagnostics.permissionMode].displayName.toLowerCase();
   let result = `<session_state>\nsessionId: ${sessionId}\npermissionMode: ${modeName}`;
+
+  if (diagnostics.transitionDisplay) {
+    result += `\nmodeTransition: ${diagnostics.transitionDisplay}`;
+  }
+  result += `\nmodeChangedBy: ${diagnostics.lastChangedBy}`;
+  result += `\nmodeChangedAt: ${diagnostics.lastChangedAt}`;
+  result += `\nmodeVersion: ${diagnostics.modeVersion}`;
 
   // Always include plans folder path so agent knows where plans are stored
   if (options?.plansFolderPath) {

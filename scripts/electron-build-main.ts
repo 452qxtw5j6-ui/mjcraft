@@ -205,7 +205,13 @@ async function buildSessionServer(): Promise<void> {
 }
 
 // Build the Pi Agent Server (subprocess for Pi SDK sessions)
+// Optional: skips if package directory is missing (e.g., not synced to OSS).
 async function buildPiAgentServer(): Promise<void> {
+  if (!existsSync(join(PI_AGENT_SERVER_DIR, "src"))) {
+    console.log("⏭️  Pi agent server skipped (package not found)");
+    return;
+  }
+
   console.log("🥧 Building Pi Agent Server...");
 
   // Ensure dist directory exists

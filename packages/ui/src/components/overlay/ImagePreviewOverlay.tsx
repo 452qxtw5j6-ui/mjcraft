@@ -1,22 +1,35 @@
 /**
- * ImagePreviewOverlay - In-app image preview for the link interceptor.
+ * ImagePreviewOverlay - In-app image preview for the link interceptor and markdown blocks.
  *
- * Loads an image via data URL (from READ_FILE_DATA_URL IPC) and displays it
- * with fit-to-container sizing. File path badge provides "Open" and
- * "Reveal in {file manager}" via PlatformContext (dual-trigger menu).
+ * Loads image data URLs (from READ_FILE_DATA_URL IPC) and displays images with fit-to-container sizing.
+ * Supports optional multiple items with arrow/dropdown navigation in the header.
+ *
+ * File path badge provides "Open" and "Reveal in {file manager}" via PlatformContext.
  */
 
 import * as React from 'react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Image } from 'lucide-react'
 import { PreviewOverlay } from './PreviewOverlay'
 import { CopyButton } from './CopyButton'
+import { ItemNavigator } from './ItemNavigator'
+
+interface PreviewItem {
+  src: string
+  label?: string
+}
 
 export interface ImagePreviewOverlayProps {
   isOpen: boolean
   onClose: () => void
-  /** Absolute file path for the image */
+  /** Absolute file path for the image (single item / backward compatibility) */
   filePath: string
+  /** Optional multiple items for arrow navigation */
+  items?: PreviewItem[]
+  /** Initial active item index (defaults to 0) */
+  initialIndex?: number
+  /** Optional overlay title (used by markdown block previews) */
+  title?: string
   /** Async loader that returns a data URL (data:{mime};base64,...) */
   loadDataUrl: (path: string) => Promise<string>
   theme?: 'light' | 'dark'
@@ -26,26 +39,51 @@ export function ImagePreviewOverlay({
   isOpen,
   onClose,
   filePath,
+  items,
+  initialIndex = 0,
+  title,
   loadDataUrl,
   theme = 'light',
 }: ImagePreviewOverlayProps) {
-  const [dataUrl, setDataUrl] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const resolvedItems = useMemo<PreviewItem[]>(() => {
+    if (items && items.length > 0) return items
+    return [{ src: filePath }]
+  }, [items, filePath])
 
-  // Load the image data when the overlay opens or the path changes
+  const [activeIdx, setActiveIdx] = useState(initialIndex)
+
+  // Content cache: src path → data URL
+  const [contentCache, setContentCache] = useState<Record<string, string>>({})
+  const [error, setError] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+
+  const activeItem = resolvedItems[activeIdx]
+  const activeDataUrl = activeItem ? contentCache[activeItem.src] : null
+
+  // Reset active item when overlay opens
   useEffect(() => {
-    if (!isOpen || !filePath) return
+    if (isOpen) {
+      const bounded = Math.max(0, Math.min(initialIndex, resolvedItems.length - 1))
+      setActiveIdx(bounded)
+    }
+  }, [isOpen, initialIndex, resolvedItems.length])
+
+  // Load active item's image data URL when needed
+  useEffect(() => {
+    if (!isOpen || !activeItem?.src) return
+    if (contentCache[activeItem.src]) {
+      setError(null)
+      return
+    }
 
     let cancelled = false
     setIsLoading(true)
     setError(null)
-    setDataUrl(null)
 
-    loadDataUrl(filePath)
+    loadDataUrl(activeItem.src)
       .then((url) => {
         if (!cancelled) {
-          setDataUrl(url)
+          setContentCache((prev) => ({ ...prev, [activeItem.src]: url }))
           setIsLoading(false)
         }
       })
@@ -57,11 +95,14 @@ export function ImagePreviewOverlay({
       })
 
     return () => { cancelled = true }
-  }, [isOpen, filePath, loadDataUrl])
+  }, [isOpen, activeItem?.src, loadDataUrl, contentCache])
 
-  // Copy path button as header action
+  // Header actions: item navigation + copy path button
   const headerActions = (
-    <CopyButton content={filePath} title="Copy path" />
+    <div className="flex items-center gap-2">
+      <ItemNavigator items={resolvedItems} activeIndex={activeIdx} onSelect={setActiveIdx} size="md" />
+      <CopyButton content={activeItem?.src || filePath} title="Copy path" className="bg-background shadow-minimal" />
+    </div>
   )
 
   return (
@@ -74,18 +115,19 @@ export function ImagePreviewOverlay({
         label: 'Image',
         variant: 'purple',
       }}
-      filePath={filePath}
+      filePath={activeItem?.src || filePath}
+      title={title}
       error={error ? { label: 'Load Failed', message: error } : undefined}
       headerActions={headerActions}
     >
       <div className="min-h-full flex items-center justify-center p-4">
-        {isLoading && (
+        {!activeDataUrl && isLoading && (
           <div className="text-muted-foreground text-sm">Loading image...</div>
         )}
-        {dataUrl && (
+        {activeDataUrl && (
           <img
-            src={dataUrl}
-            alt={filePath.split('/').pop() ?? 'Image preview'}
+            src={activeDataUrl}
+            alt={activeItem?.label || activeItem?.src.split('/').pop() || 'Image preview'}
             className="max-w-full max-h-full object-contain rounded-sm"
             draggable={false}
           />

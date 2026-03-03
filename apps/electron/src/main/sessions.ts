@@ -2,21 +2,25 @@ import { app, nativeImage } from 'electron'
 import * as Sentry from '@sentry/electron/main'
 import { basename, join, normalize, isAbsolute, sep } from 'path'
 import { existsSync } from 'fs'
-import { appendFile, readFile, realpath } from 'fs/promises'
+import { appendFile, readFile, writeFile, mkdir, realpath } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
-import { type AgentEvent, setPermissionMode, type PermissionMode, unregisterSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest } from '@craft-agent/shared/agent'
+import { randomUUID } from 'node:crypto'
+import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns } from '@craft-agent/shared/agent'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
   resolveBackendContext,
   createBackendFromResolvedContext,
   cleanupSourceRuntimeArtifacts,
+  providerTypeToAgentProvider,
   type AgentBackend,
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
 import { getLlmConnection, getDefaultLlmConnection } from '@craft-agent/shared/config'
 import { sessionLog, isDebugMode, getLogFilePath } from './logger'
+import { PrivilegedExecutionBroker } from './privileged-execution-broker'
+import { updateBadgeCount } from './notifications'
 import { InitGate } from './init-gate'
 import type { WindowManager } from './window-manager'
 import {
@@ -47,27 +51,21 @@ import {
   getSessionAttachmentsPath,
   getSessionPath as getSessionStoragePath,
   sessionPersistenceQueue,
-  // Sub-session functions
-  createSubSession as createStoredSubSession,
-  getSessionFamily as getStoredSessionFamily,
-  updateSiblingOrder as updateStoredSiblingOrder,
-  archiveSessionCascade as archiveStoredSessionCascade,
-  deleteSessionCascade as deleteStoredSessionCascade,
-  getChildSessions as getStoredChildSessions,
   type StoredSession,
   type StoredMessage,
   type SessionMetadata,
   type SessionStatus,
+  type SessionHeader,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
 import { resolveAuthEnvVars } from '@craft-agent/shared/config'
-import { toolMetadataStore } from '@craft-agent/shared/interceptor'
+import { toolMetadataStore, getLastApiError } from '@craft-agent/shared/interceptor'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
-import { type Session, type Message, type SessionEvent, type FileAttachment, type StoredAttachment, type SendMessageOptions, IPC_CHANNELS, generateMessageId } from '../shared/types'
+import { type Session, type Message, type SessionEvent, type FileAttachment, type StoredAttachment, type SendMessageOptions, type UnreadSummary, IPC_CHANNELS, generateMessageId } from '../shared/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrl, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/shared/skills'
 import type { ToolDisplayMeta } from '@craft-agent/core/types'
@@ -81,6 +79,10 @@ import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, type AutomationSystemMetada
 
 // Import and re-export (extracted to avoid Electron dependency in tests)
 import { sanitizeForTitle } from './title-sanitizer'
+import { shouldActivateBrowserOverlay, normalizeBrowserToolName } from './browser-tool-detection'
+import { rollbackFailedBranchCreation } from './session-branch-cleanup'
+import { resizeImageForAPI } from './image-utils'
+import { releaseBrowserOwnershipOnForcedStop } from './session-browser-release'
 export { sanitizeForTitle }
 
 function buildBackendHostRuntimeContext(): BackendHostRuntimeContext {
@@ -160,6 +162,8 @@ export const AGENT_FLAGS = {
   /** Default modes enabled for new sessions */
   defaultModesEnabled: true,
 } as const
+
+const MAX_ADMIN_REMEMBER_MINUTES = 60
 
 /**
  * Validate spawn attachment path using the same safety policy as IPC attachment reads.
@@ -342,7 +346,7 @@ async function refreshOAuthTokensIfNeeded(
     const intendedSlugs = enabledSources.map(s => s.config.slug)
     await agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
 
-    // Update bridge-mcp-server config/credentials for backends that use it (Codex, Copilot)
+    // Update bridge-mcp-server config/credentials for backends that need it
     if (options?.sessionId && options?.workspaceRootPath) {
       await applyBridgeUpdates(agent, sessionPath, enabledSources, mcpServers, options.sessionId, options.workspaceRootPath, 'token refresh', options.poolServerUrl)
     }
@@ -356,7 +360,7 @@ async function refreshOAuthTokensIfNeeded(
 /**
  * Apply bridge-mcp-server updates for backends that use it.
  * Delegates to the backend's own applyBridgeUpdates() method.
- * Each backend handles its own strategy (Codex: config.toml, Copilot: bridge-config.json, others: no-op).
+ * Each backend handles its own strategy via applyBridgeUpdates().
  */
 async function applyBridgeUpdates(
   agent: AgentInstance,
@@ -396,6 +400,41 @@ function resizeIconBuffer(buffer: Buffer, targetSize: number): Buffer | undefine
   return resized.toPNG()
 }
 
+const BROWSER_TOOL_ICON_FILENAME = 'chrome.svg'
+let browserToolIconDataUrlCache: string | null | undefined
+
+function getBrowserToolIconDataUrl(): string | undefined {
+  // Cache miss sentinel: undefined means "not computed yet"
+  if (browserToolIconDataUrlCache !== undefined) {
+    return browserToolIconDataUrlCache ?? undefined
+  }
+
+  try {
+    const iconCandidates = [
+      join(getToolIconsDir(), BROWSER_TOOL_ICON_FILENAME),
+      // Dev fallback (before sync to ~/.craft-agent/tool-icons)
+      join(process.cwd(), 'apps', 'electron', 'resources', 'tool-icons', BROWSER_TOOL_ICON_FILENAME),
+      // Packaged fallback (app resources)
+      join(process.resourcesPath, 'tool-icons', BROWSER_TOOL_ICON_FILENAME),
+    ]
+
+    for (const iconPath of iconCandidates) {
+      if (!existsSync(iconPath)) continue
+      const encoded = encodeIconToDataUrl(iconPath, { resize: resizeIconBuffer })
+      if (encoded) {
+        browserToolIconDataUrlCache = encoded
+        return encoded
+      }
+    }
+
+    browserToolIconDataUrlCache = null
+  } catch {
+    browserToolIconDataUrlCache = null
+  }
+
+  return browserToolIconDataUrlCache ?? undefined
+}
+
 function resolveToolDisplayMeta(
   toolName: string,
   toolInput: Record<string, unknown> | undefined,
@@ -429,6 +468,8 @@ function resolveToolDisplayMeta(
           'spawn_session': 'Spawn Session',
           'send_to_session': 'Send To Session',
           'list_sessions': 'List Sessions',
+          'send_developer_feedback': 'Send Feedback',
+          'browser_tool': 'Browser',
         },
         'craft-agents-docs': {
           'SearchCraftAgents': 'Search Docs',
@@ -439,8 +480,10 @@ function resolveToolDisplayMeta(
       if (internalServer) {
         const displayName = internalServer[toolSlug]
         if (displayName) {
+          const normalizedBrowserTool = normalizeBrowserToolName(toolSlug)
           return {
             displayName,
+            iconDataUrl: normalizedBrowserTool ? getBrowserToolIconDataUrl() : undefined,
             category: 'native' as const,
           }
         }
@@ -523,6 +566,22 @@ function resolveToolDisplayMeta(
     }
   }
 
+  // Native browser tool names (with Chrome icon)
+  const normalizedBrowserToolName = normalizeBrowserToolName(toolName)
+  if (normalizedBrowserToolName) {
+    const browserDisplayName = normalizedBrowserToolName
+      .split('_')
+      .map((part, index) => (index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)))
+      .join(' ')
+      .replace(/^browser\s+/i, 'Browser ')
+
+    return {
+      displayName: browserDisplayName,
+      iconDataUrl: getBrowserToolIconDataUrl(),
+      category: 'native' as const,
+    }
+  }
+
   // Native tool display names (no icons - UI handles these with built-in icons)
   // This ensures toolDisplayMeta is always populated for consistent display
   const nativeToolNames: Record<string, string> = {
@@ -582,9 +641,11 @@ interface ManagedSession {
   archivedAt?: number
   /** Permission mode for this session ('safe', 'ask', 'allow-all') */
   permissionMode?: PermissionMode
+  /** Previous permission mode (preserved across restarts for session_state modeTransition context) */
+  previousPermissionMode?: PermissionMode
   /** Centralized MCP client pool for this session's source connections */
   mcpPool?: McpClientPool
-  /** HTTP MCP server exposing pool tools to external SDK subprocesses (Codex, Copilot) */
+  /** HTTP MCP server exposing pool tools to external SDK subprocesses */
   poolServer?: McpPoolServer
   // SDK session ID for conversation continuity
   sdkSessionId?: string
@@ -638,6 +699,10 @@ interface ManagedSession {
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error'
   // ID of the last final (non-intermediate) assistant message - pre-computed for unread detection
   lastFinalMessageId?: string
+  // Turn baseline: last final assistant message ID at turn start (runtime-only, not persisted)
+  turnStartFinalMessageId?: string
+  // External session metadata updates seen while processing (applied after turn stop)
+  pendingExternalMetadata?: SessionHeader
   // Whether an async operation is ongoing (sharing, updating share, revoking, title regeneration)
   // Used for shimmer effect on session title
   isAsyncOperationOngoing?: boolean
@@ -683,6 +748,11 @@ interface ManagedSession {
   subagentStartTimes: Map<string, number>
   loggedSubagentStarts: Set<string>
   loggedSubagentResults: Set<string>
+  branchFromMessageId?: string
+  // Parent session's SDK session ID (for SDK-level fork via resume + forkSession)
+  branchFromSdkSessionId?: string
+  // Parent session's storage path (for Pi SDK fork — locating parent Pi session files)
+  branchFromSessionPath?: string
   // Token refresh manager for OAuth token refresh with rate limiting
   tokenRefreshManager: TokenRefreshManager
   // Metadata for sessions created by automations
@@ -698,127 +768,99 @@ interface ManagedSession {
   wasInterrupted?: boolean
 }
 
-// Convert runtime Message to StoredMessage for persistence
-// Only excludes transient field: isStreaming
-function messageToStored(msg: Message): StoredMessage {
+/**
+ * Create a ManagedSession from any session-like source (SessionMetadata, SessionConfig, StoredSession).
+ * Spreads all matching fields from the source so new persistent fields automatically propagate.
+ * Runtime-only fields get sensible defaults.
+ */
+function createManagedSession(
+  source: { id: string } & Partial<ManagedSession>,
+  workspace: Workspace,
+  overrides?: Partial<ManagedSession>,
+): ManagedSession {
+  const s = source as Record<string, unknown>
   return {
-    id: msg.id,
-    type: msg.role,  // Message uses 'role', StoredMessage uses 'type'
-    content: msg.content,
-    timestamp: msg.timestamp,
-    // Tool fields
-    toolName: msg.toolName,
-    toolUseId: msg.toolUseId,
-    toolInput: msg.toolInput,
-    toolResult: msg.toolResult,
-    toolStatus: msg.toolStatus,
-    toolDuration: msg.toolDuration,
-    toolIntent: msg.toolIntent,
-    toolDisplayName: msg.toolDisplayName,
-    toolDisplayMeta: msg.toolDisplayMeta,  // Includes base64 icon for viewer
-    parentToolUseId: msg.parentToolUseId,
-    // Background task fields
-    taskId: msg.taskId,
-    shellId: msg.shellId,
-    elapsedSeconds: msg.elapsedSeconds,
-    isBackground: msg.isBackground,
-    isError: msg.isError,
-    attachments: msg.attachments,
-    badges: msg.badges,  // Content badges for inline display (sources, skills, context)
-    // Turn grouping
-    isIntermediate: msg.isIntermediate,
-    turnId: msg.turnId,
-    // Error display
-    errorCode: msg.errorCode,
-    errorTitle: msg.errorTitle,
-    errorDetails: msg.errorDetails,
-    errorOriginal: msg.errorOriginal,
-    errorCanRetry: msg.errorCanRetry,
-    // Ultrathink
-    ultrathink: msg.ultrathink,
-    // Plan fields
-    planPath: msg.planPath,
-    // Auth request fields
-    authRequestId: msg.authRequestId,
-    authRequestType: msg.authRequestType,
-    authSourceSlug: msg.authSourceSlug,
-    authSourceName: msg.authSourceName,
-    authStatus: msg.authStatus,
-    authCredentialMode: msg.authCredentialMode,
-    authHeaderName: msg.authHeaderName,
-    authHeaderNames: msg.authHeaderNames,
-    authLabels: msg.authLabels,
-    authDescription: msg.authDescription,
-    authHint: msg.authHint,
-    authSourceUrl: msg.authSourceUrl,
-    authPasswordRequired: msg.authPasswordRequired,
-    authError: msg.authError,
-    authEmail: msg.authEmail,
-    authWorkspace: msg.authWorkspace,
-    // Queue state (for recovery after crash)
-    isQueued: msg.isQueued,
+    // Spread all session-like fields from source (id, name, permissionMode, labels, model, etc.)
+    // This ensures new persistent fields automatically flow through without manual copying.
+    ...Object.fromEntries(
+      Object.entries(s).filter(([, v]) => v !== undefined)
+    ) as Partial<ManagedSession>,
+    // Runtime-only defaults (not persisted)
+    workspace,
+    agent: null,
+    messages: [],
+    isProcessing: false,
+    lastMessageAt: (s.lastMessageAt ?? s.lastUsedAt ?? Date.now()) as number,
+    streamingText: '',
+    processingGeneration: 0,
+    isFlagged: (s.isFlagged ?? false) as boolean,
+    messageQueue: [],
+    backgroundShellCommands: new Map(),
+    messagesLoaded: false,
+    subagentStartTimes: new Map(),
+    loggedSubagentStarts: new Set(),
+    loggedSubagentResults: new Set(),
+    tokenRefreshManager: new TokenRefreshManager(getSourceCredentialManager(), {
+      log: (msg) => sessionLog.debug(msg),
+    }),
+    // Caller overrides (permissionMode defaults, thinkingLevel, messagesLoaded, etc.)
+    ...overrides,
+  } as ManagedSession
+}
+
+/**
+ * Resolve supportsBranching for a managed session.
+ * Prefers the live agent instance; falls back to true for all backends.
+ */
+function resolveSupportsBranching(managed: ManagedSession): boolean {
+  // If agent is live, use its instance property (authoritative)
+  if (managed.agent) {
+    return managed.agent.supportsBranching
   }
+
+  return true // default: branching enabled for all backends
+}
+
+const DEFAULT_TOKEN_USAGE = {
+  inputTokens: 0, outputTokens: 0, totalTokens: 0,
+  contextTokens: 0, costUsd: 0,
+}
+
+/**
+ * Convert a ManagedSession to a renderer-side Session object.
+ * Uses pickSessionFields() for persistent fields so new fields propagate automatically.
+ */
+function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Session {
+  return {
+    ...pickSessionFields(m),
+    // Pre-computed fields from header (not in SESSION_PERSISTENT_FIELDS)
+    preview: m.preview,
+    lastMessageRole: m.lastMessageRole,
+    tokenUsage: m.tokenUsage,
+    messageCount: m.messageCount,
+    lastFinalMessageId: m.lastFinalMessageId,
+    // Runtime-only fields
+    workspaceId: m.workspace.id,
+    workspaceName: m.workspace.name,
+    messages: [],
+    isProcessing: m.isProcessing,
+    sessionFolderPath: getSessionStoragePath(m.workspace.rootPath, m.id),
+    supportsBranching: resolveSupportsBranching(m),
+    ...overrides,
+  } as Session
+}
+
+// Convert runtime Message to StoredMessage for persistence
+// All fields are shared except role↔type rename and isStreaming (transient, excluded)
+function messageToStored(msg: Message): StoredMessage {
+  const { role, isStreaming, isPending, ...rest } = msg
+  return { ...rest, type: role } as StoredMessage
 }
 
 // Convert StoredMessage to runtime Message
 function storedToMessage(stored: StoredMessage): Message {
-  return {
-    id: stored.id,
-    role: stored.type,  // StoredMessage uses 'type', Message uses 'role'
-    content: stored.content,
-    timestamp: stored.timestamp ?? Date.now(),
-    // Tool fields
-    toolName: stored.toolName,
-    toolUseId: stored.toolUseId,
-    toolInput: stored.toolInput,
-    toolResult: stored.toolResult,
-    toolStatus: stored.toolStatus,
-    toolDuration: stored.toolDuration,
-    toolIntent: stored.toolIntent,
-    toolDisplayName: stored.toolDisplayName,
-    toolDisplayMeta: stored.toolDisplayMeta,  // Includes base64 icon for viewer
-    parentToolUseId: stored.parentToolUseId,
-    // Background task fields
-    taskId: stored.taskId,
-    shellId: stored.shellId,
-    elapsedSeconds: stored.elapsedSeconds,
-    isBackground: stored.isBackground,
-    isError: stored.isError,
-    attachments: stored.attachments,
-    badges: stored.badges,  // Content badges for inline display (sources, skills, context)
-    // Turn grouping
-    isIntermediate: stored.isIntermediate,
-    turnId: stored.turnId,
-    // Error display
-    errorCode: stored.errorCode,
-    errorTitle: stored.errorTitle,
-    errorDetails: stored.errorDetails,
-    errorOriginal: stored.errorOriginal,
-    errorCanRetry: stored.errorCanRetry,
-    // Ultrathink
-    ultrathink: stored.ultrathink,
-    // Plan fields
-    planPath: stored.planPath,
-    // Auth request fields
-    authRequestId: stored.authRequestId,
-    authRequestType: stored.authRequestType,
-    authSourceSlug: stored.authSourceSlug,
-    authSourceName: stored.authSourceName,
-    authStatus: stored.authStatus,
-    authCredentialMode: stored.authCredentialMode,
-    authHeaderName: stored.authHeaderName,
-    authHeaderNames: stored.authHeaderNames,
-    authLabels: stored.authLabels,
-    authDescription: stored.authDescription,
-    authHint: stored.authHint,
-    authSourceUrl: stored.authSourceUrl,
-    authPasswordRequired: stored.authPasswordRequired,
-    authError: stored.authError,
-    authEmail: stored.authEmail,
-    authWorkspace: stored.authWorkspace,
-    // Queue state (for recovery after crash)
-    isQueued: stored.isQueued,
-  }
+  const { type, ...rest } = stored
+  return { ...rest, role: type, timestamp: stored.timestamp ?? Date.now() } as Message
 }
 
 // Performance: Batch IPC delta events to reduce renderer load
@@ -841,6 +883,20 @@ export class SessionManager {
   private automationSystems: Map<string, AutomationSystem> = new Map()
   // Pending credential request resolvers (keyed by requestId)
   private pendingCredentialResolvers: Map<string, (response: import('../shared/types').CredentialResponse) => void> = new Map()
+  // Permission request metadata tracking (keyed by requestId)
+  private pendingPermissionRequests: Map<string, {
+    sessionId: string
+    type?: 'bash' | 'file_write' | 'mcp_mutation' | 'api_mutation' | 'admin_approval'
+    commandHash?: string
+  }> = new Map()
+  // Privileged approval binding + audit logger
+  private privilegedExecutionBroker = new PrivilegedExecutionBroker()
+  // Session-local admin remember windows (exact command hash binding)
+  private adminRememberApprovals: Map<string, {
+    createdAt: number
+    expiresAt: number
+    sourceRequestId: string
+  }> = new Map()
   // Promise deduplication for lazy-loading messages (prevents race conditions)
   private messageLoadingPromises: Map<string, Promise<void>> = new Map()
   /**
@@ -860,8 +916,15 @@ export class SessionManager {
     return this.initGate.wait()
   }
 
+  private browserPaneManager: import('./browser-pane-manager').BrowserPaneManager | null = null
+
   setWindowManager(wm: WindowManager): void {
     this.windowManager = wm
+  }
+
+  setBrowserPaneManager(bpm: import('./browser-pane-manager').BrowserPaneManager): void {
+    this.browserPaneManager = bpm
+    bpm.setSessionPathResolver((sessionId) => this.getSessionPath(sessionId))
   }
 
   /** Returns a strictly increasing timestamp (ms). When Date.now() collides with
@@ -870,6 +933,135 @@ export class SessionManager {
     const now = Date.now()
     this.lastTimestamp = now > this.lastTimestamp ? now : this.lastTimestamp + 1
     return this.lastTimestamp
+  }
+
+  private getAdminRememberKey(sessionId: string, commandHash: string): string {
+    return `${sessionId}:${commandHash}`
+  }
+
+  private hasActiveAdminRememberApproval(sessionId: string, commandHash: string): boolean {
+    const key = this.getAdminRememberKey(sessionId, commandHash)
+    const entry = this.adminRememberApprovals.get(key)
+    if (!entry) {
+      return false
+    }
+
+    if (Date.now() > entry.expiresAt) {
+      this.adminRememberApprovals.delete(key)
+      this.privilegedExecutionBroker.auditEvent('privileged_remember_window_expired', {
+        sessionId,
+        commandHash,
+        sourceRequestId: entry.sourceRequestId,
+        expiresAt: entry.expiresAt,
+      })
+      return false
+    }
+
+    return true
+  }
+
+  private storeAdminRememberApproval(sessionId: string, commandHash: string, sourceRequestId: string, rememberForMinutes: number): void {
+    const boundedMinutes = Math.min(Math.max(Math.floor(rememberForMinutes), 1), MAX_ADMIN_REMEMBER_MINUTES)
+    const now = Date.now()
+    const expiresAt = now + boundedMinutes * 60 * 1000
+
+    this.adminRememberApprovals.set(this.getAdminRememberKey(sessionId, commandHash), {
+      createdAt: now,
+      expiresAt,
+      sourceRequestId,
+    })
+
+    this.privilegedExecutionBroker.auditEvent('privileged_remember_window_stored', {
+      sessionId,
+      commandHash,
+      sourceRequestId,
+      rememberForMinutes: boundedMinutes,
+      createdAt: now,
+      expiresAt,
+    })
+  }
+
+  private clearAdminRememberApprovalsForSession(sessionId: string): void {
+    const prefix = `${sessionId}:`
+    for (const key of this.adminRememberApprovals.keys()) {
+      if (key.startsWith(prefix)) {
+        this.adminRememberApprovals.delete(key)
+      }
+    }
+  }
+
+  private clearPendingPermissionRequestsForSession(sessionId: string): void {
+    for (const [requestId, metadata] of this.pendingPermissionRequests.entries()) {
+      if (metadata.sessionId === sessionId) {
+        this.pendingPermissionRequests.delete(requestId)
+      }
+    }
+  }
+
+  /**
+   * Apply external session header metadata to in-memory state and emit UI events.
+   * Returns true if any in-memory metadata field changed.
+   */
+  private applyExternalSessionMetadata(managed: ManagedSession, header: SessionHeader): boolean {
+    const sessionId = managed.id
+    let changed = false
+
+    // Labels
+    const oldLabels = JSON.stringify(managed.labels ?? [])
+    const newLabels = JSON.stringify(header.labels ?? [])
+    if (oldLabels !== newLabels) {
+      managed.labels = header.labels
+      this.sendEvent({ type: 'labels_changed', sessionId, labels: header.labels ?? [] }, managed.workspace.id)
+      changed = true
+    }
+
+    // Flagged
+    if ((managed.isFlagged ?? false) !== (header.isFlagged ?? false)) {
+      managed.isFlagged = header.isFlagged ?? false
+      this.sendEvent(
+        { type: header.isFlagged ? 'session_flagged' : 'session_unflagged', sessionId },
+        managed.workspace.id
+      )
+      changed = true
+    }
+
+    // Session status
+    if (managed.sessionStatus !== header.sessionStatus) {
+      managed.sessionStatus = header.sessionStatus
+      this.sendEvent({ type: 'session_status_changed', sessionId, sessionStatus: header.sessionStatus ?? '' }, managed.workspace.id)
+      changed = true
+    }
+
+    // Name
+    if (managed.name !== header.name) {
+      managed.name = header.name
+      this.sendEvent({ type: 'name_changed', sessionId, name: header.name }, managed.workspace.id)
+      changed = true
+    }
+
+    if (changed) {
+      sessionLog.info(`External metadata change detected for session ${sessionId}`)
+
+      // Prevent stale pending writes from reverting externally-updated metadata.
+      sessionPersistenceQueue.cancel(sessionId)
+      this.persistSession(managed)
+    }
+
+    // Update session metadata via AutomationSystem (handles diffing and event emission internally)
+    const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
+    if (automationSystem) {
+      automationSystem.updateSessionMetadata(sessionId, {
+        permissionMode: header.permissionMode,
+        labels: header.labels,
+        isFlagged: header.isFlagged,
+        sessionStatus: header.sessionStatus,
+        sessionName: header.name,
+      }).catch((error) => {
+        sessionLog.error(`[Automations] Failed to update session metadata:`, error)
+      })
+    }
+
+    return changed
   }
 
   /**
@@ -889,13 +1081,13 @@ export class SessionManager {
     const callbacks: ConfigWatcherCallbacks = {
       onSourcesListChange: async (sources: LoadedSource[]) => {
         sessionLog.info(`Sources list changed in ${workspaceRootPath} (${sources.length} sources)`)
-        this.broadcastSourcesChanged(sources)
+        this.broadcastSourcesChanged(workspaceId, sources)
         await this.reloadSourcesForWorkspace(workspaceRootPath)
       },
       onSourceChange: async (slug: string, source: LoadedSource | null) => {
         sessionLog.info(`Source '${slug}' changed:`, source ? 'updated' : 'deleted')
         const sources = loadWorkspaceSources(workspaceRootPath)
-        this.broadcastSourcesChanged(sources)
+        this.broadcastSourcesChanged(workspaceId, sources)
         await this.reloadSourcesForWorkspace(workspaceRootPath)
       },
       onSourceGuideChange: (sourceSlug: string) => {
@@ -903,7 +1095,7 @@ export class SessionManager {
         // Broadcast the updated sources list so sidebar picks up guide changes
         // Note: Guide changes don't require session source reload (no server changes)
         const sources = loadWorkspaceSources(workspaceRootPath)
-        this.broadcastSourcesChanged(sources)
+        this.broadcastSourcesChanged(workspaceId, sources)
       },
       onStatusConfigChange: () => {
         sessionLog.info(`Status config changed in ${workspaceId}`)
@@ -953,78 +1145,30 @@ export class SessionManager {
       },
       onSkillsListChange: async (skills) => {
         sessionLog.info(`Skills list changed in ${workspaceRootPath} (${skills.length} skills)`)
-        this.broadcastSkillsChanged(skills)
+        this.broadcastSkillsChanged(workspaceId, skills)
       },
       onSkillChange: async (slug, skill) => {
         sessionLog.info(`Skill '${slug}' changed:`, skill ? 'updated' : 'deleted')
         // Broadcast updated list to UI
         const { loadAllSkills } = await import('@craft-agent/shared/skills')
         const skills = loadAllSkills(workspaceRootPath)
-        this.broadcastSkillsChanged(skills)
+        this.broadcastSkillsChanged(workspaceId, skills)
       },
 
       // Session metadata changes (external edits to session.jsonl headers).
       // Detects label/flag/name/sessionStatus changes made by other instances or scripts.
-      // Compares with in-memory state and only emits events for actual differences.
+      // If a session is actively processing, defer applying metadata until processing stops.
       onSessionMetadataChange: (sessionId, header) => {
         const managed = this.sessions.get(sessionId)
         if (!managed) return
 
-        // Skip if session is currently processing — in-memory state is authoritative during streaming
-        if (managed.isProcessing) return
-
-        let changed = false
-
-        // Labels
-        const oldLabels = JSON.stringify(managed.labels ?? [])
-        const newLabels = JSON.stringify(header.labels ?? [])
-        if (oldLabels !== newLabels) {
-          managed.labels = header.labels
-          this.sendEvent({ type: 'labels_changed', sessionId, labels: header.labels ?? [] }, managed.workspace.id)
-          changed = true
+        if (managed.isProcessing) {
+          managed.pendingExternalMetadata = header
+          sessionLog.info(`Deferred external metadata update for session ${sessionId} (processing active)`)
+          return
         }
 
-        // Flagged
-        if ((managed.isFlagged ?? false) !== (header.isFlagged ?? false)) {
-          managed.isFlagged = header.isFlagged ?? false
-          this.sendEvent(
-            { type: header.isFlagged ? 'session_flagged' : 'session_unflagged', sessionId },
-            managed.workspace.id
-          )
-          changed = true
-        }
-
-        // Session status
-        if (managed.sessionStatus !== header.sessionStatus) {
-          managed.sessionStatus = header.sessionStatus
-          this.sendEvent({ type: 'session_status_changed', sessionId, sessionStatus: header.sessionStatus ?? '' }, managed.workspace.id)
-          changed = true
-        }
-
-        // Name
-        if (managed.name !== header.name) {
-          managed.name = header.name
-          this.sendEvent({ type: 'name_changed', sessionId, name: header.name }, managed.workspace.id)
-          changed = true
-        }
-
-        if (changed) {
-          sessionLog.info(`External metadata change detected for session ${sessionId}`)
-        }
-
-        // Update session metadata via AutomationSystem (handles diffing and event emission internally)
-        const automationSystem = this.automationSystems.get(workspaceRootPath)
-        if (automationSystem) {
-          automationSystem.updateSessionMetadata(sessionId, {
-            permissionMode: header.permissionMode,
-            labels: header.labels,
-            isFlagged: header.isFlagged,
-            sessionStatus: header.sessionStatus,
-            sessionName: header.name,
-          }).catch((error) => {
-            sessionLog.error(`[Automations] Failed to update session metadata:`, error)
-          })
-        }
+        this.applyExternalSessionMetadata(managed, header)
       },
     }
 
@@ -1106,10 +1250,10 @@ export class SessionManager {
   /**
    * Broadcast sources changed event to all windows
    */
-  private broadcastSourcesChanged(sources: LoadedSource[]): void {
+  private broadcastSourcesChanged(workspaceId: string, sources: LoadedSource[]): void {
     if (!this.windowManager) return
 
-    this.windowManager.broadcastToAll(IPC_CHANNELS.SOURCES_CHANGED, sources)
+    this.windowManager.broadcastToAll(IPC_CHANNELS.SOURCES_CHANGED, workspaceId, sources)
   }
 
   /**
@@ -1160,10 +1304,10 @@ export class SessionManager {
   /**
    * Broadcast skills changed event to all windows
    */
-  private broadcastSkillsChanged(skills: import('@craft-agent/shared/skills').LoadedSkill[]): void {
+  private broadcastSkillsChanged(workspaceId: string, skills: import('@craft-agent/shared/skills').LoadedSkill[]): void {
     if (!this.windowManager) return
     sessionLog.info(`Broadcasting skills changed (${skills.length} skills)`)
-    this.windowManager.broadcastToAll(IPC_CHANNELS.SKILLS_CHANGED, skills)
+    this.windowManager.broadcastToAll(IPC_CHANNELS.SKILLS_CHANGED, workspaceId, skills)
   }
 
   /**
@@ -1201,7 +1345,7 @@ export class SessionManager {
     const { mcpServers, apiServers } = await buildServersFromSources(enabledSources, sessionPath, managed.tokenRefreshManager, managed.agent?.getSummarizeCallback())
     const intendedSlugs = enabledSources.map(s => s.config.slug)
 
-    // Update bridge-mcp-server config/credentials for backends that use it (Codex, Copilot)
+    // Update bridge-mcp-server config/credentials for backends that need it
     await applyBridgeUpdates(managed.agent, sessionPath, enabledSources, mcpServers, managed.id, workspaceRootPath, 'source reload', managed.poolServer?.url)
 
     await managed.agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
@@ -1315,55 +1459,10 @@ export class SessionManager {
           // Create managed session from metadata only (messages lazy-loaded on demand)
           // This dramatically reduces memory usage at startup - messages are loaded
           // when getSession() is called for a specific session
-          const managed: ManagedSession = {
-            id: meta.id,
-            workspace,
-            agent: null,  // Lazy-load agent when needed
-            messages: [],  // Lazy-load messages when needed
-            isProcessing: false,
-            lastMessageAt: meta.lastMessageAt ?? meta.lastUsedAt,  // Fallback for sessions saved before lastMessageAt was persisted
-            streamingText: '',
-            processingGeneration: 0,
-            name: meta.name,
-            preview: meta.preview,
-            createdAt: meta.createdAt,
-            messageCount: meta.messageCount,
-            isFlagged: meta.isFlagged ?? false,
-            isArchived: meta.isArchived,
-            archivedAt: meta.archivedAt,
-            permissionMode: meta.permissionMode,
-            sdkSessionId: meta.sdkSessionId,
-            tokenUsage: meta.tokenUsage,  // From JSONL header (updated on save)
-            sessionStatus: meta.sessionStatus,
-            lastReadMessageId: meta.lastReadMessageId,  // Pre-computed for unread detection
-            lastFinalMessageId: meta.lastFinalMessageId,  // Pre-computed for unread detection
-            hasUnread: meta.hasUnread,  // Explicit unread flag for NEW badge state machine
+          const managed = createManagedSession(meta, workspace, {
             enabledSourceSlugs: undefined,  // Loaded with messages
-            labels: meta.labels,
             workingDirectory: meta.workingDirectory ?? wsDefaultWorkingDir,
-            sdkCwd: meta.sdkCwd,
-            model: meta.model,
-            llmConnection: meta.llmConnection,
-            connectionLocked: meta.connectionLocked,
-            thinkingLevel: meta.thinkingLevel,
-            lastMessageRole: meta.lastMessageRole,
-            messageQueue: [],
-            backgroundShellCommands: new Map(),
-            messagesLoaded: false,  // Mark as not loaded
-            // Shared viewer state - loaded from metadata for persistence across restarts
-            sharedUrl: meta.sharedUrl,
-            sharedId: meta.sharedId,
-            hidden: meta.hidden,
-            parentSessionId: meta.parentSessionId,
-            siblingOrder: meta.siblingOrder,
-            subagentStartTimes: new Map(),
-            loggedSubagentStarts: new Set(),
-            loggedSubagentResults: new Set(),
-            // Initialize TokenRefreshManager for this session
-            tokenRefreshManager: new TokenRefreshManager(getSourceCredentialManager(), {
-              log: (msg) => sessionLog.debug(msg),
-            }),
-          }
+          })
 
           // Migration: clear orphaned llmConnection references (e.g., after connection was deleted)
           if (managed.llmConnection) {
@@ -1373,6 +1472,13 @@ export class SessionManager {
               managed.llmConnection = undefined
               managed.connectionLocked = false
             }
+          }
+
+          // Initialize mode-manager state for restored sessions even before agent creation.
+          // This keeps diagnostics/effective mode aligned with persisted session metadata.
+          setPermissionMode(meta.id, managed.permissionMode ?? 'ask', { changedBy: 'restore' })
+          if (managed.previousPermissionMode) {
+            hydratePreviousPermissionMode(meta.id, managed.previousPermissionMode)
           }
 
           this.sessions.set(meta.id, managed)
@@ -1408,42 +1514,20 @@ export class SessionManager {
         m.role !== 'status'
       )
 
-      const workspaceRootPath = managed.workspace.rootPath
+      // If messages haven't been loaded yet (e.g., branched session not yet opened),
+      // skip persistence to avoid overwriting JSONL messages with empty array
+      if (!managed.messagesLoaded) {
+        return
+      }
+
       const storedSession: StoredSession = {
-        id: managed.id,
-        workspaceRootPath,
-        name: managed.name,
+        ...pickSessionFields(managed),
+        workspaceRootPath: managed.workspace.rootPath,
         createdAt: managed.createdAt ?? Date.now(),
         lastUsedAt: Date.now(),
-        lastMessageAt: managed.lastMessageAt,  // Preserve actual message time (not persist time)
-        sdkSessionId: managed.sdkSessionId,
-        isFlagged: managed.isFlagged,
-        isArchived: managed.isArchived,
-        archivedAt: managed.archivedAt,
-        permissionMode: managed.permissionMode,
-        sessionStatus: managed.sessionStatus,
-        lastReadMessageId: managed.lastReadMessageId,  // For unread detection
-        hasUnread: managed.hasUnread,  // Explicit unread flag for NEW badge state machine
-        enabledSourceSlugs: managed.enabledSourceSlugs,
-        labels: managed.labels,
-        workingDirectory: managed.workingDirectory,
-        sdkCwd: managed.sdkCwd,
-        model: managed.model,
-        llmConnection: managed.llmConnection,
-        connectionLocked: managed.connectionLocked,
-        thinkingLevel: managed.thinkingLevel,
         messages: persistableMessages.map(messageToStored),
-        tokenUsage: managed.tokenUsage ?? {
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-          contextTokens: 0,
-          costUsd: 0,
-        },
-        hidden: managed.hidden,
-        parentSessionId: managed.parentSessionId,
-        siblingOrder: managed.siblingOrder,
-      }
+        tokenUsage: managed.tokenUsage ?? DEFAULT_TOKEN_USAGE,
+      } as StoredSession
 
       // Queue for async persistence with debouncing
       sessionPersistenceQueue.enqueue(storedSession)
@@ -1707,7 +1791,7 @@ export class SessionManager {
     // Persist session with updated auth message and enabled sources
     this.persistSession(managed)
 
-    // Update bridge-mcp-server config/credentials for backends that use it (Codex, Copilot)
+    // Update bridge-mcp-server config/credentials for backends that need it
     if (result.success && result.sourceSlug && managed.agent) {
       const workspaceRootPath = managed.workspace.rootPath
       const sessionPath = getSessionStoragePath(workspaceRootPath, managed.id)
@@ -1839,22 +1923,76 @@ export class SessionManager {
     }
 
     return sessions
-      .map(m => ({
-        // Persistent fields (auto-included via pickSessionFields)
-        ...pickSessionFields(m),
-        // Pre-computed fields from header
-        preview: m.preview,
-        lastMessageRole: m.lastMessageRole,
-        tokenUsage: m.tokenUsage,
-        messageCount: m.messageCount,
-        lastFinalMessageId: m.lastFinalMessageId,
-        // Runtime-only fields
-        workspaceId: m.workspace.id,
-        workspaceName: m.workspace.name,
-        messages: [],  // Never send all messages - use getSession(id) for specific session
-        isProcessing: m.isProcessing,
-      }) as Session)
+      .map(m => managedToSession(m))
       .sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0))
+  }
+
+  /**
+   * Aggregate unread state across all workspaces.
+   * Excludes hidden and archived sessions from counts/indicators.
+   */
+  getUnreadSummary(): UnreadSummary {
+    const byWorkspace: Record<string, number> = {}
+    const hasUnreadByWorkspace: Record<string, boolean> = {}
+
+    for (const workspace of getWorkspaces()) {
+      byWorkspace[workspace.id] = 0
+      hasUnreadByWorkspace[workspace.id] = false
+    }
+
+    for (const session of this.sessions.values()) {
+      if (session.hidden || session.isArchived) continue
+      if (!session.hasUnread) continue
+
+      const workspaceId = session.workspace.id
+      byWorkspace[workspaceId] = (byWorkspace[workspaceId] ?? 0) + 1
+      hasUnreadByWorkspace[workspaceId] = true
+    }
+
+    const totalUnreadSessions = Object.values(byWorkspace).reduce((sum, count) => sum + count, 0)
+
+    return {
+      totalUnreadSessions,
+      byWorkspace,
+      hasUnreadByWorkspace,
+    }
+  }
+
+  /**
+   * Refresh badge count from current unread state.
+   * Called by renderer on mount — ensures badge is set even if the initial
+   * emitUnreadSummaryChanged() fired before the renderer was ready.
+   */
+  refreshBadge(): void {
+    const summary = this.getUnreadSummary()
+    updateBadgeCount(summary.totalUnreadSessions)
+  }
+
+  /**
+   * Broadcast global unread summary to all workspace windows.
+   */
+  private emitUnreadSummaryChanged(): void {
+    const summary = this.getUnreadSummary()
+
+    // Update badge directly in main process — no renderer relay needed
+    updateBadgeCount(summary.totalUnreadSessions)
+
+    if (!this.windowManager) return
+
+    // Broadcast to renderers for UI updates (session list dots, etc.)
+    const sentTo = new Set<number>()
+
+    for (const workspace of getWorkspaces()) {
+      const windows = this.windowManager.getAllWindowsForWorkspace(workspace.id)
+      for (const window of windows) {
+        const webContentsId = window.webContents.id
+        if (sentTo.has(webContentsId)) continue
+        if (window.isDestroyed() || window.webContents.isDestroyed() || !window.webContents.mainFrame) continue
+
+        window.webContents.send(IPC_CHANNELS.SESSIONS_UNREAD_SUMMARY_CHANGED, summary)
+        sentTo.add(webContentsId)
+      }
+    }
   }
 
   /**
@@ -1869,21 +2007,7 @@ export class SessionManager {
     // Lazy-load messages from disk if not yet loaded
     await this.ensureMessagesLoaded(m)
 
-    return {
-      // Persistent fields (auto-included via pickSessionFields)
-      ...pickSessionFields(m),
-      // Pre-computed fields from header
-      preview: m.preview,  // Include preview for title fallback consistency with getSessions()
-      lastMessageRole: m.lastMessageRole,
-      tokenUsage: m.tokenUsage,
-      lastFinalMessageId: m.lastFinalMessageId,
-      // Runtime-only fields
-      workspaceId: m.workspace.id,
-      workspaceName: m.workspace.name,
-      messages: m.messages,
-      isProcessing: m.isProcessing,
-      sessionFolderPath: getSessionStoragePath(m.workspace.rootPath, m.id),
-    } as Session
+    return managedToSession(m, { messages: m.messages })
   }
 
   /**
@@ -1996,6 +2120,16 @@ export class SessionManager {
     // Get default enabled sources from workspace config
     const defaultEnabledSourceSlugs = options?.enabledSourceSlugs ?? wsConfig?.defaults?.enabledSourceSlugs
 
+    // Resolve backend target early for branching policy checks.
+    const targetBackendContext = resolveBackendContext({
+      sessionConnectionSlug: options?.llmConnection,
+      workspaceDefaultConnectionSlug: wsConfig?.defaults?.defaultLlmConnection,
+      managedModel: options?.model || defaultModel,
+    })
+    const targetProviderType = targetBackendContext.connection?.providerType
+      ?? (targetBackendContext.provider === 'pi' ? 'pi' : 'anthropic')
+    const targetPiAuthProvider = targetBackendContext.connection?.piAuthProvider
+
     // Resolve working directory from options:
     // - 'user_default' or undefined: Use workspace's configured default
     // - 'none': No working directory (empty string means session folder only)
@@ -2009,8 +2143,115 @@ export class SessionManager {
       resolvedWorkingDir = options.workingDirectory
     }
 
+    // Validate branch request up-front so branch metadata is only set for valid branches.
+    // This prevents creating sessions that claim to be branched but don't have copied history.
+    let validatedBranch: {
+      sourceSessionId: string
+      sourceMessageId: string
+      sourceSession: StoredSession
+      branchIdx: number
+      branchFromSdkSessionId?: string
+      branchFromSessionPath?: string
+    } | undefined
+
+    if (options?.branchFromSessionId || options?.branchFromMessageId) {
+      if (!options.branchFromSessionId || !options.branchFromMessageId) {
+        sessionLog.warn('Branch validation failed: missing branchFromSessionId or branchFromMessageId', {
+          workspaceId,
+          branchFromSessionId: options.branchFromSessionId,
+          branchFromMessageId: options.branchFromMessageId,
+        })
+        throw new Error('Invalid branch request: both branchFromSessionId and branchFromMessageId are required')
+      }
+
+      const sourceManaged = this.sessions.get(options.branchFromSessionId)
+      if (sourceManaged) {
+        if (sourceManaged.workspace.rootPath !== workspaceRootPath) {
+          sessionLog.warn('Branch validation failed: source session belongs to different workspace', {
+            workspaceId,
+            targetWorkspaceRootPath: workspaceRootPath,
+            sourceWorkspaceRootPath: sourceManaged.workspace.rootPath,
+            branchFromSessionId: options.branchFromSessionId,
+          })
+          throw new Error('Invalid branch request: source session belongs to a different workspace')
+        }
+
+        // Flush source session to disk to ensure latest message list is available for branch copy.
+        this.persistSession(sourceManaged)
+        await sessionPersistenceQueue.flush(sourceManaged.id)
+      }
+
+      const sourceSession = loadStoredSession(workspaceRootPath, options.branchFromSessionId)
+      if (!sourceSession) {
+        sessionLog.warn('Branch validation failed: source session not found on disk', {
+          workspaceId,
+          branchFromSessionId: options.branchFromSessionId,
+        })
+        throw new Error(`Invalid branch request: source session ${options.branchFromSessionId} not found`)
+      }
+
+      const sourceBackendContext = resolveBackendContext({
+        sessionConnectionSlug: sourceManaged?.llmConnection || sourceSession.llmConnection,
+        workspaceDefaultConnectionSlug: wsConfig?.defaults?.defaultLlmConnection,
+        managedModel: sourceManaged?.model || sourceSession.model,
+      })
+      const sourceProviderType = sourceBackendContext.connection?.providerType
+        ?? (sourceBackendContext.provider === 'pi' ? 'pi' : 'anthropic')
+      const sourcePiAuthProvider = sourceBackendContext.connection?.piAuthProvider
+
+      const providerMismatch = sourceBackendContext.provider !== targetBackendContext.provider
+      const providerTypeMismatch = sourceProviderType !== targetProviderType
+      const piAuthProviderMismatch =
+        sourceBackendContext.provider === 'pi' && sourcePiAuthProvider !== targetPiAuthProvider
+
+      if (providerMismatch || providerTypeMismatch || piAuthProviderMismatch) {
+        sessionLog.warn('Branch validation failed: source and target providers are incompatible', {
+          workspaceId,
+          branchFromSessionId: options.branchFromSessionId,
+          sourceProvider: sourceBackendContext.provider,
+          sourceProviderType,
+          sourcePiAuthProvider,
+          targetProvider: targetBackendContext.provider,
+          targetProviderType,
+          targetPiAuthProvider,
+        })
+        throw new Error('Branching is only supported within the same provider/backend. Switch this panel connection and try again.')
+      }
+
+      const branchIdx = sourceSession.messages.findIndex(m => m.id === options.branchFromMessageId)
+      if (branchIdx === -1) {
+        sessionLog.warn('Branch validation failed: message not found in source session', {
+          workspaceId,
+          branchFromSessionId: options.branchFromSessionId,
+          branchFromMessageId: options.branchFromMessageId,
+        })
+        throw new Error(`Invalid branch request: message ${options.branchFromMessageId} not found in source session`)
+      }
+
+      const branchFromSdkSessionId = sourceManaged?.sdkSessionId || sourceSession.sdkSessionId
+      const branchFromSessionPath = getSessionStoragePath(workspaceRootPath, options.branchFromSessionId)
+
+      validatedBranch = {
+        sourceSessionId: options.branchFromSessionId,
+        sourceMessageId: options.branchFromMessageId,
+        sourceSession,
+        branchIdx,
+        branchFromSdkSessionId,
+        branchFromSessionPath,
+      }
+
+      sessionLog.info('Branch validation succeeded', {
+        workspaceId,
+        branchFromSessionId: validatedBranch.sourceSessionId,
+        branchFromMessageId: validatedBranch.sourceMessageId,
+        branchFromSdkSessionId: !!validatedBranch.branchFromSdkSessionId,
+        copiedMessageCount: validatedBranch.branchIdx + 1,
+      })
+    }
+
     // Use storage layer to create and persist the session
     const storedSession = await createStoredSession(workspaceRootPath, {
+      name: options?.name,
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
       hidden: options?.hidden,
@@ -2019,12 +2260,23 @@ export class SessionManager {
       isFlagged: options?.isFlagged,
     })
 
+    // Branch: copy messages from source session up to and including the branch point
+    if (validatedBranch) {
+      const branchedStored = loadStoredSession(workspaceRootPath, storedSession.id)
+      if (!branchedStored) {
+        throw new Error(`Failed to load newly created session ${storedSession.id} for branch copy`)
+      }
+
+      branchedStored.messages = validatedBranch.sourceSession.messages.slice(0, validatedBranch.branchIdx + 1)
+      branchedStored.branchFromMessageId = validatedBranch.sourceMessageId
+      branchedStored.branchFromSdkSessionId = validatedBranch.branchFromSdkSessionId
+      branchedStored.branchFromSessionPath = validatedBranch.branchFromSessionPath
+      await saveStoredSession(branchedStored)
+    }
+
     // Resolve connection/provider/auth/model using the provider-agnostic backend resolver.
-    const resolvedContext = resolveBackendContext({
-      sessionConnectionSlug: options?.llmConnection,
-      workspaceDefaultConnectionSlug: wsConfig?.defaults?.defaultLlmConnection,
-      managedModel: options?.model || storedSession.model || defaultModel,
-    })
+    // Reuse precomputed target context so branch validation and session construction share the same target identity.
+    const resolvedContext = targetBackendContext
     const resolvedModel = resolvedContext.resolvedModel
     const defaultThinkingLevel = resolveDefaultThinkingLevel(configuredDefaultThinkingLevel, resolvedContext.connection)
 
@@ -2033,41 +2285,64 @@ export class SessionManager {
       sessionLog.info(`🤖 Creating mini agent session: model=${resolvedModel}, systemPromptPreset=${options?.systemPromptPreset}`)
     }
 
-    const managed: ManagedSession = {
-      id: storedSession.id,
-      workspace,
-      agent: null,  // Lazy-load agent on first message
-      messages: [],
-      isProcessing: false,
-      lastMessageAt: storedSession.lastMessageAt ?? storedSession.lastUsedAt,  // Fallback for sessions saved before lastMessageAt was persisted
-      streamingText: '',
-      processingGeneration: 0,
-      isFlagged: storedSession.isFlagged ?? false,
-      sessionStatus: options?.sessionStatus,
-      labels: options?.labels,
+    const isBranch = !!validatedBranch
+
+    const managed = createManagedSession(storedSession, workspace, {
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
-      sdkCwd: storedSession.sdkCwd,
-      // Session-specific model takes priority, then workspace default
       model: resolvedModel,
-      // LLM connection - initially undefined, will be set when model is selected
-      // This allows the connection to be locked after first message
       llmConnection: options?.llmConnection,
       thinkingLevel: defaultThinkingLevel,
-      // System prompt preset for mini agents
       systemPromptPreset: options?.systemPromptPreset,
-      messageQueue: [],
-      backgroundShellCommands: new Map(),
       enabledSourceSlugs: defaultEnabledSourceSlugs,
-      messagesLoaded: true,  // New sessions don't need to load messages from disk
       hidden: options?.hidden,
-      subagentStartTimes: new Map(),
-      loggedSubagentStarts: new Set(),
-      loggedSubagentResults: new Set(),
-      // Initialize TokenRefreshManager for this session (handles OAuth token refresh with rate limiting)
-      tokenRefreshManager: new TokenRefreshManager(getSourceCredentialManager(), {
-        log: (msg) => sessionLog.debug(msg),
-      }),
+      branchFromMessageId: validatedBranch?.sourceMessageId,
+      branchFromSdkSessionId: validatedBranch?.branchFromSdkSessionId,
+      branchFromSessionPath: validatedBranch?.branchFromSessionPath,
+      messagesLoaded: !isBranch,  // Branched sessions: lazy-load messages from JSONL
+    })
+
+    // Eagerly load messages for branched sessions so the renderer gets the full
+    // conversation immediately (needed for scroll-to-bottom on panel open)
+    if (isBranch) {
+      await this.ensureMessagesLoaded(managed)
+
+      // Enforce branch correctness at creation time.
+      // A branch is only valid if backend context can be established now,
+      // not deferred to the first user message.
+      try {
+        await this.getOrCreateAgent(managed)
+        await managed.agent!.ensureBranchReady()
+      } catch (error) {
+        sessionLog.warn('Branch creation failed during backend preflight handshake', {
+          workspaceId,
+          sessionId: storedSession.id,
+          branchFromSessionId: validatedBranch?.sourceSessionId,
+          branchFromMessageId: validatedBranch?.sourceMessageId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+
+        await rollbackFailedBranchCreation({
+          managed,
+          workspaceRootPath,
+          sessionId: storedSession.id,
+          deleteFromRuntimeSessions: (id) => {
+            this.sessions.delete(id)
+          },
+          deleteStoredSession,
+        })
+
+        throw new Error(
+          `Could not create branch: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+    }
+
+    // Initialize mode-manager state immediately to avoid UI/enforcement races
+    // before the agent instance is lazily created.
+    setPermissionMode(storedSession.id, managed.permissionMode ?? 'ask', { changedBy: 'restore' })
+    if (managed.previousPermissionMode) {
+      hydratePreviousPermissionMode(storedSession.id, managed.previousPermissionMode)
     }
 
     this.sessions.set(storedSession.id, managed)
@@ -2084,224 +2359,12 @@ export class SessionManager {
       })
     }
 
-    return {
-      id: storedSession.id,
-      name: storedSession.name,
-      workspaceId: workspace.id,
-      workspaceName: workspace.name,
-      lastMessageAt: managed.lastMessageAt,
-      messages: [],
-      isProcessing: false,
-      isFlagged: storedSession.isFlagged ?? false,
-      permissionMode: defaultPermissionMode,
-      sessionStatus: options?.sessionStatus,
-      labels: options?.labels,
-      workingDirectory: resolvedWorkingDir,
-      enabledSourceSlugs: defaultEnabledSourceSlugs,
-      model: managed.model,
-      thinkingLevel: defaultThinkingLevel,
-      sessionFolderPath: getSessionStoragePath(workspaceRootPath, storedSession.id),
-      hidden: options?.hidden,
-    }
-  }
-
-  /**
-   * Create a sub-session under a parent session.
-   * Sub-sessions inherit workspace config but have a reference to their parent.
-   */
-  async createSubSession(workspaceId: string, parentSessionId: string, options?: import('../shared/types').CreateSessionOptions): Promise<Session> {
-    const workspace = getWorkspaceByNameOrId(workspaceId)
-    if (!workspace) {
-      throw new Error(`Workspace ${workspaceId} not found`)
-    }
-
-    const workspaceRootPath = workspace.rootPath
-
-    // Create the sub-session using storage layer (validates parent exists and prevents nesting)
-    const storedSession = await createStoredSubSession(workspaceRootPath, parentSessionId, {
-      name: options?.name,
-      workingDirectory: options?.workingDirectory,
-      permissionMode: options?.permissionMode,
-      enabledSourceSlugs: options?.enabledSourceSlugs,
-      model: options?.model,
-      llmConnection: options?.llmConnection,
-      sessionStatus: options?.sessionStatus,
-      labels: options?.labels,
-    })
-
-    // Get workspace defaults for managed session
-    const wsConfig = loadWorkspaceConfig(workspaceRootPath)
-    const globalDefaults = loadConfigDefaults()
-    const defaultPermissionMode = storedSession.permissionMode
-      ?? wsConfig?.defaults?.permissionMode
-      ?? globalDefaults.workspaceDefaults.permissionMode
-    const configuredDefaultThinkingLevel = wsConfig?.defaults?.thinkingLevel ?? globalDefaults.workspaceDefaults.thinkingLevel
-    const subSessionConnection = storedSession.llmConnection ? getLlmConnection(storedSession.llmConnection) : null
-    const isCodexSubSession =
-      options?.labels?.includes('codex') ||
-      subSessionConnection?.piAuthProvider === 'openai-codex' ||
-      Boolean(storedSession.model?.toLowerCase().includes('codex'))
-
-    const defaultThinkingLevel = isCodexSubSession
-      ? 'xhigh'
-      : resolveDefaultThinkingLevel(configuredDefaultThinkingLevel, subSessionConnection)
-
-    const managed: ManagedSession = {
-      id: storedSession.id,
-      workspace,
-      agent: null,
-      messages: [],
-      isProcessing: false,
-      lastMessageAt: storedSession.lastMessageAt ?? storedSession.lastUsedAt,
-      streamingText: '',
-      processingGeneration: 0,
-      isFlagged: storedSession.isFlagged ?? false,
-      name: storedSession.name,
-      sessionStatus: storedSession.sessionStatus,
-      labels: storedSession.labels,
-      permissionMode: defaultPermissionMode,
-      workingDirectory: storedSession.workingDirectory,
-      sdkCwd: storedSession.sdkCwd,
-      model: storedSession.model,
-      llmConnection: storedSession.llmConnection,
-      thinkingLevel: defaultThinkingLevel,
-      messageQueue: [],
-      backgroundShellCommands: new Map(),
-      enabledSourceSlugs: storedSession.enabledSourceSlugs,
-      messagesLoaded: true,
-      parentSessionId: storedSession.parentSessionId,
-      siblingOrder: storedSession.siblingOrder,
-      subagentStartTimes: new Map(),
-      loggedSubagentStarts: new Set(),
-      loggedSubagentResults: new Set(),
-      // Initialize TokenRefreshManager for this session
-      tokenRefreshManager: new TokenRefreshManager(getSourceCredentialManager(), {
-        log: (msg) => sessionLog.debug(msg),
-      }),
-    }
-
-    this.sessions.set(storedSession.id, managed)
-
-    // Notify all windows that a sub-session was created (for session list updates)
-    this.sendEvent({
-      type: 'session_created',
-      sessionId: storedSession.id,
-      parentSessionId: storedSession.parentSessionId,
-    }, workspace.id)
-
-    return {
-      id: storedSession.id,
-      name: storedSession.name,
-      workspaceId: workspace.id,
-      workspaceName: workspace.name,
-      lastMessageAt: managed.lastMessageAt,
-      messages: [],
-      isProcessing: false,
-      isFlagged: storedSession.isFlagged ?? false,
-      permissionMode: defaultPermissionMode,
-      sessionStatus: storedSession.sessionStatus,
-      labels: storedSession.labels,
-      workingDirectory: storedSession.workingDirectory,
-      enabledSourceSlugs: storedSession.enabledSourceSlugs,
-      model: managed.model,
-      llmConnection: storedSession.llmConnection,
-      thinkingLevel: defaultThinkingLevel,
-      sessionFolderPath: getSessionStoragePath(workspaceRootPath, storedSession.id),
-      parentSessionId: storedSession.parentSessionId,
-      siblingOrder: storedSession.siblingOrder,
-    }
-  }
-
-  /**
-   * Get session family (parent + siblings) for a sub-session.
-   * Returns null if the session is a root session (no parent).
-   */
-  getSessionFamily(sessionId: string): import('../shared/types').SessionFamily | null {
-    const managed = this.sessions.get(sessionId)
-    if (!managed) return null
-
-    return getStoredSessionFamily(managed.workspace.rootPath, sessionId)
-  }
-
-  /**
-   * Update sibling order for multiple sessions.
-   * Used when user reorders siblings via drag-drop.
-   */
-  async updateSiblingOrder(orderedSessionIds: string[]): Promise<void> {
-    if (orderedSessionIds.length === 0) return
-
-    // Get workspace from first session
-    const firstSession = this.sessions.get(orderedSessionIds[0]!)
-    if (!firstSession) return
-
-    await updateStoredSiblingOrder(firstSession.workspace.rootPath, orderedSessionIds)
-
-    // Notify all windows for session list refresh
-    this.sendEvent({ type: 'sessions_reordered' }, firstSession.workspace.id)
-  }
-
-  /**
-   * Archive a session and all its children.
-   * Returns the count of sessions archived.
-   */
-  async archiveSessionCascade(sessionId: string): Promise<{ count: number }> {
-    const managed = this.sessions.get(sessionId)
-    if (!managed) return { count: 0 }
-
-    // Get children before archiving
-    const children = getStoredChildSessions(managed.workspace.rootPath, sessionId)
-
-    // Archive via storage layer
-    const count = await archiveStoredSessionCascade(managed.workspace.rootPath, sessionId)
-
-    // Update in-memory state for parent
-    managed.isArchived = true
-    managed.archivedAt = Date.now()
-
-    // Update in-memory state for children
-    for (const child of children) {
-      const childManaged = this.sessions.get(child.id)
-      if (childManaged) {
-        childManaged.isArchived = true
-        childManaged.archivedAt = Date.now()
-      }
-    }
-
-    // Notify all windows
-    this.sendEvent({ type: 'session_archived_cascade', sessionId, count }, managed.workspace.id)
-
-    return { count }
-  }
-
-  /**
-   * Delete a session and all its children.
-   * Returns the count of sessions deleted.
-   */
-  deleteSessionCascade(sessionId: string): { count: number } {
-    const managed = this.sessions.get(sessionId)
-    if (!managed) return { count: 0 }
-
-    // Get children before deleting
-    const children = getStoredChildSessions(managed.workspace.rootPath, sessionId)
-
-    // Delete via storage layer
-    const count = deleteStoredSessionCascade(managed.workspace.rootPath, sessionId)
-
-    // Remove from in-memory state
-    this.sessions.delete(sessionId)
-    for (const child of children) {
-      this.sessions.delete(child.id)
-    }
-
-    // Notify all windows
-    this.sendEvent({ type: 'session_deleted_cascade', sessionId, count }, managed.workspace.id)
-
-    return { count }
+    return managedToSession(managed, isBranch ? { messages: managed.messages } : undefined)
   }
 
   /**
    * Get or create agent for a session (lazy loading)
-   * Creates CraftAgent for Claude or CodexBackend for Codex based on LLM connection.
+   * Creates the appropriate backend agent based on LLM connection.
    *
    * Provider resolution order:
    * 1. session.llmConnection (locked after first message)
@@ -2328,6 +2391,14 @@ export class SessionManager {
         managed.connectionLocked = true
         sessionLog.info(`Locked session ${managed.id} to connection "${connection.slug}"`)
         this.persistSession(managed)
+
+        // Keep renderer session capabilities in sync when auto-locking the connection.
+        this.sendEvent({
+          type: 'connection_changed',
+          sessionId: managed.id,
+          connectionSlug: connection.slug,
+          supportsBranching: resolveSupportsBranching(managed),
+        }, managed.workspace.id)
       }
 
       const provider = backendContext.provider
@@ -2385,6 +2456,9 @@ export class SessionManager {
         id: managed.id,
         workspaceRootPath: managed.workspace.rootPath,
         sdkSessionId: managed.sdkSessionId,
+        branchFromSdkSessionId: managed.branchFromSdkSessionId,
+        branchFromSessionPath: managed.branchFromSessionPath,
+        branchFromMessageId: managed.branchFromMessageId,
         createdAt: managed.lastMessageAt,
         lastUsedAt: managed.lastMessageAt,
         workingDirectory: managed.workingDirectory,
@@ -2441,6 +2515,27 @@ export class SessionManager {
         automationSystem: this.automationSystems.get(managed.workspace.rootPath),
         systemPromptPreset: managed.systemPromptPreset,
         debugMode: isDebugMode ? { enabled: true, logFilePath: getLogFilePath() } : undefined,
+        // Image resize callback — prevents oversized images from entering conversation history
+        onImageResize: async (filePath: string, maxSizeBytes: number): Promise<string | null> => {
+          try {
+            const buffer = await readFile(filePath)
+            const result = resizeImageForAPI(buffer, { maxSizeBytes })
+            if (!result) return null
+
+            // Write to session tmp directory (cleaned up with session)
+            const sessionTmpDir = join(sessionPath, 'tmp')
+            await mkdir(sessionTmpDir, { recursive: true })
+            const ext = result.format === 'jpeg' ? 'jpg' : 'png'
+            const outPath = join(sessionTmpDir, `resized-${randomUUID()}.${ext}`)
+            await writeFile(outPath, result.buffer)
+
+            sessionLog.info(`Image resized for Read: ${(buffer.length / 1024 / 1024).toFixed(1)}MB → ${(result.buffer.length / 1024 / 1024).toFixed(1)}MB (→ ${result.width}×${result.height})`)
+            return outPath
+          } catch (err) {
+            sessionLog.error('Image resize failed:', err)
+            return null
+          }
+        },
         // Source configs for postInit() — backends set up their own bridge/config
         initialSources: {
           enabledSources,
@@ -2457,7 +2552,30 @@ export class SessionManager {
       // Post-construction: debug callback, auth callback, postInit()
       // ============================================================
 
-      managed.agent.onDebug = (msg: string) => sessionLog.info(msg)
+      managed.agent.onDebug = (msg: string) => {
+        const marker = '__PERMISSION_BLOCK__'
+        if (msg.includes(marker)) {
+          const idx = msg.indexOf(marker)
+          const payloadRaw = msg.slice(idx + marker.length)
+          try {
+            const payload = JSON.parse(payloadRaw) as {
+              sessionId: string
+              toolName: string
+              effectiveMode: string
+              modeVersion: number
+              changedBy: string
+              changedAt: string
+              reason: string
+            }
+            sessionLog.info('Tool blocked by permission mode', payload)
+            return
+          } catch {
+            // fall through to plain logging when payload parsing fails
+          }
+        }
+
+        sessionLog.info(msg)
+      }
 
       // Unified auth callback — replaces per-backend onChatGptAuthRequired/onGithubAuthRequired
       managed.agent.onBackendAuthRequired = (reason: string) => {
@@ -2487,17 +2605,371 @@ export class SessionManager {
         managed.mcpPool.setSummarizeCallback(managed.agent.getSummarizeCallback())
       }
 
+      // Wire up browser pane tools — merge BrowserPaneFns into session callbacks
+      // so browser_* tools can delegate to BrowserPaneManager
+      if (this.browserPaneManager) {
+        const bpm = this.browserPaneManager
+        const sid = managed.id
+
+        const resolveSessionBrowserInstance = (toolName: string, options?: { show?: boolean }): string => {
+          const instanceId = bpm.createForSession(sid, { show: options?.show ?? false })
+          const info = bpm.getInstance(instanceId)
+          sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
+          return instanceId
+        }
+
+        const resolveLifecycleWindowTarget = (command: 'release' | 'close' | 'hide', requestedInstanceId?: string) => {
+          const windows = bpm.listInstances()
+
+          if (windows.length === 0) {
+            return { windows, reason: 'No browser windows are available. Use "open" first.' }
+          }
+
+          const validateTarget = (target: (typeof windows)[number] | undefined) => {
+            if (!target) {
+              return { ok: false as const, reason: `Browser window "${requestedInstanceId}" not found. Use "windows" to list available windows.` }
+            }
+
+            if (target.boundSessionId && target.boundSessionId !== sid) {
+              return { ok: false as const, reason: `Browser window "${target.id}" is locked to session ${target.boundSessionId}.` }
+            }
+
+            if (!target.boundSessionId && target.ownerSessionId && target.ownerSessionId !== sid) {
+              return { ok: false as const, reason: `Browser window "${target.id}" is currently owned by session ${target.ownerSessionId}.` }
+            }
+
+            return { ok: true as const, target }
+          }
+
+          if (requestedInstanceId) {
+            const validated = validateTarget(windows.find((w) => w.id === requestedInstanceId))
+            if (!validated.ok) {
+              return { windows, reason: validated.reason }
+            }
+            return { windows, target: validated.target }
+          }
+
+          const fallbackTarget = windows.find((w) => w.boundSessionId === sid)
+            ?? windows.find((w) => w.ownerSessionId === sid)
+
+          if (!fallbackTarget) {
+            return { windows, reason: `No ${command} target is currently associated with this session. Use "windows", then "${command} <id>".` }
+          }
+
+          const validated = validateTarget(fallbackTarget)
+          if (!validated.ok) {
+            return { windows, reason: validated.reason }
+          }
+
+          return { windows, target: validated.target }
+        }
+
+        mergeSessionScopedToolCallbacks(sid, {
+          browserPaneFns: {
+            openPanel: async (options) => {
+              const instanceId = options?.background
+                ? bpm.createForSession(sid, { show: false })
+                : bpm.focusBoundForSession(sid)
+              const info = bpm.getInstance(instanceId)
+              sessionLog.info(`[browser-pane] route decision: browser_open session=${sid} instance=${instanceId} background=${options?.background ?? false} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
+              return { instanceId }
+            },
+            navigate: (url) => {
+              const instanceId = resolveSessionBrowserInstance('browser_navigate')
+              return bpm.navigate(instanceId, url)
+            },
+            snapshot: () => {
+              const instanceId = resolveSessionBrowserInstance('browser_snapshot')
+              return bpm.getAccessibilitySnapshot(instanceId)
+            },
+            click: (ref, options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_click')
+              return bpm.clickElement(instanceId, ref, options)
+            },
+            clickAt: (x, y) => {
+              const instanceId = resolveSessionBrowserInstance('browser_click_at')
+              return bpm.clickAtCoordinates(instanceId, x, y)
+            },
+            drag: (x1, y1, x2, y2) => {
+              const instanceId = resolveSessionBrowserInstance('browser_drag')
+              return bpm.drag(instanceId, x1, y1, x2, y2)
+            },
+            fill: (ref, value) => {
+              const instanceId = resolveSessionBrowserInstance('browser_fill')
+              return bpm.fillElement(instanceId, ref, value)
+            },
+            type: (text) => {
+              const instanceId = resolveSessionBrowserInstance('browser_type')
+              return bpm.typeText(instanceId, text)
+            },
+            select: (ref, value) => {
+              const instanceId = resolveSessionBrowserInstance('browser_select')
+              return bpm.selectOption(instanceId, ref, value)
+            },
+            setClipboard: (text) => {
+              const instanceId = resolveSessionBrowserInstance('browser_set_clipboard')
+              return bpm.setClipboard(instanceId, text)
+            },
+            getClipboard: () => {
+              const instanceId = resolveSessionBrowserInstance('browser_get_clipboard')
+              return bpm.getClipboard(instanceId)
+            },
+            screenshot: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_screenshot')
+              return bpm.screenshot(instanceId, options)
+            },
+            screenshotRegion: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_screenshot_region')
+              return bpm.screenshotRegion(instanceId, options)
+            },
+            getConsoleLogs: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_console')
+              return Promise.resolve(bpm.getConsoleLogs(instanceId, options))
+            },
+            windowResize: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_window_resize')
+              return Promise.resolve(bpm.windowResize(instanceId, options.width, options.height))
+            },
+            getNetworkLogs: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_network')
+              return Promise.resolve(bpm.getNetworkLogs(instanceId, options))
+            },
+            waitFor: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_wait')
+              return bpm.waitFor(instanceId, options)
+            },
+            sendKey: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_key')
+              return bpm.sendKey(instanceId, options)
+            },
+            getDownloads: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_downloads')
+              return bpm.getDownloads(instanceId, options)
+            },
+            upload: (ref, filePaths) => {
+              const instanceId = resolveSessionBrowserInstance('browser_upload')
+              return bpm.uploadFile(instanceId, ref, filePaths).then(() => {})
+            },
+            scroll: (direction, amount) => {
+              const instanceId = resolveSessionBrowserInstance('browser_scroll')
+              return bpm.scroll(instanceId, direction, amount)
+            },
+            goBack: () => {
+              const instanceId = resolveSessionBrowserInstance('browser_back')
+              return bpm.goBack(instanceId)
+            },
+            goForward: () => {
+              const instanceId = resolveSessionBrowserInstance('browser_forward')
+              return bpm.goForward(instanceId)
+            },
+            evaluate: (expression) => {
+              const instanceId = resolveSessionBrowserInstance('browser_evaluate')
+              return bpm.evaluate(instanceId, expression)
+            },
+            focusWindow: async (targetInstanceId) => {
+              const windows = bpm.listInstances()
+              if (windows.length === 0) {
+                throw new Error('No browser windows available to focus. Use "open" first.')
+              }
+
+              const target = targetInstanceId
+                ? windows.find(w => w.id === targetInstanceId)
+                : windows.find(w => w.boundSessionId === sid || w.ownerSessionId === sid)
+
+              if (!target) {
+                if (targetInstanceId) {
+                  throw new Error(`Browser window "${targetInstanceId}" not found. Use "windows" to list available windows.`)
+                }
+                throw new Error('No browser window is currently bound to this session. Use "open --foreground" to create or reuse one.')
+              }
+
+              const availableToSession = !target.boundSessionId || target.boundSessionId === sid
+              if (!availableToSession) {
+                throw new Error(`Browser window "${target.id}" is locked to session ${target.boundSessionId}.`)
+              }
+
+              if (!target.boundSessionId) {
+                bpm.bindSession(target.id, sid)
+              }
+
+              bpm.focus(target.id)
+              const focused = bpm.getInstance(target.id)
+              return {
+                instanceId: target.id,
+                title: focused?.title ?? target.title,
+                url: focused?.currentUrl ?? target.url,
+              }
+            },
+            releaseControl: async (requestedInstanceId) => {
+              if (requestedInstanceId === 'all') {
+                const before = bpm.listInstances()
+                const beforeActive = before.filter((w) => !!w.agentControlActive).length
+                bpm.clearAgentControl(sid)
+                const after = bpm.listInstances()
+                const afterActive = after.filter((w) => !!w.agentControlActive).length
+                const released = afterActive < beforeActive
+
+                sessionLog.info(`[browser-pane] lifecycle release-all session=${sid} overlays=${beforeActive}->${afterActive}`)
+
+                return {
+                  action: released ? 'released' : 'noop',
+                  requestedInstanceId,
+                  affectedIds: released ? before.filter((w) => !!w.agentControlActive).map((w) => w.id) : [],
+                  reason: released ? undefined : 'No active overlay was found for this session.',
+                }
+              }
+
+              const resolution = resolveLifecycleWindowTarget('release', requestedInstanceId)
+              if (!resolution.target) {
+                sessionLog.info(`[browser-pane] lifecycle release session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
+                return {
+                  action: 'noop',
+                  requestedInstanceId,
+                  affectedIds: [],
+                  reason: resolution.reason,
+                }
+              }
+
+              const result = bpm.clearAgentControlForInstance(resolution.target.id, sid)
+              const action = result.released ? 'released' : 'noop'
+              sessionLog.info(`[browser-pane] lifecycle release session=${sid} requested=${requestedInstanceId ?? 'auto'} resolved=${resolution.target.id} result=${action} reason=${result.reason ?? 'none'}`)
+
+              return {
+                action,
+                requestedInstanceId,
+                resolvedInstanceId: resolution.target.id,
+                affectedIds: result.released ? [resolution.target.id] : [],
+                reason: result.reason,
+              }
+            },
+            closeWindow: async (requestedInstanceId) => {
+              const resolution = resolveLifecycleWindowTarget('close', requestedInstanceId)
+              if (!resolution.target) {
+                sessionLog.info(`[browser-pane] lifecycle close session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
+                return {
+                  action: 'noop',
+                  requestedInstanceId,
+                  affectedIds: [],
+                  reason: resolution.reason,
+                }
+              }
+
+              bpm.destroyInstance(resolution.target.id)
+              sessionLog.info(`[browser-pane] lifecycle close session=${sid} requested=${requestedInstanceId ?? 'auto'} resolved=${resolution.target.id} result=closed`)
+
+              return {
+                action: 'closed',
+                requestedInstanceId,
+                resolvedInstanceId: resolution.target.id,
+                affectedIds: [resolution.target.id],
+              }
+            },
+            hideWindow: async (requestedInstanceId) => {
+              const resolution = resolveLifecycleWindowTarget('hide', requestedInstanceId)
+              if (!resolution.target) {
+                sessionLog.info(`[browser-pane] lifecycle hide session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
+                return {
+                  action: 'noop',
+                  requestedInstanceId,
+                  affectedIds: [],
+                  reason: resolution.reason,
+                }
+              }
+
+              bpm.hide(resolution.target.id)
+              sessionLog.info(`[browser-pane] lifecycle hide session=${sid} requested=${requestedInstanceId ?? 'auto'} resolved=${resolution.target.id} result=hidden`)
+
+              return {
+                action: 'hidden',
+                requestedInstanceId,
+                resolvedInstanceId: resolution.target.id,
+                affectedIds: [resolution.target.id],
+              }
+            },
+            listWindows: async () => {
+              return bpm.listInstances()
+            },
+          } satisfies BrowserPaneFns,
+        })
+      }
+
       // Signal that the agent instance is ready (unblocks title generation)
       managed.agentReadyResolve?.()
 
       // Set up permission handler to forward requests to renderer
-      managed.agent.onPermissionRequest = (request: { requestId: string; toolName: string; command?: string; description: string; type?: 'bash' | 'file_write' | 'mcp_mutation' | 'api_mutation' }) => {
+      managed.agent.onPermissionRequest = (request: {
+        requestId: string;
+        toolName: string;
+        command?: string;
+        description: string;
+        type?: 'bash' | 'file_write' | 'mcp_mutation' | 'api_mutation' | 'admin_approval';
+        appName?: string;
+        reason?: string;
+        impact?: string;
+        requiresSystemPrompt?: boolean;
+        rememberForMinutes?: number;
+        commandHash?: string;
+        approvalTtlSeconds?: number;
+      }) => {
         sessionLog.info(`Permission request for session ${managed.id}:`, request.command)
+        let brokerMetadata: {
+          commandHash?: string
+          approvalTtlSeconds?: number
+        } = {}
+
+        if (request.type === 'admin_approval' && request.command) {
+          const brokerRequest = this.privilegedExecutionBroker.createRequest({
+            requestId: request.requestId,
+            sessionId: managed.id,
+            command: request.command,
+            reason: request.reason,
+            impact: request.impact,
+            approvalTtlSeconds: request.approvalTtlSeconds,
+          })
+
+          brokerMetadata = {
+            commandHash: brokerRequest.commandHash,
+            approvalTtlSeconds: brokerRequest.approvalTtlSeconds,
+          }
+        }
+
+        const effectiveCommandHash = brokerMetadata.commandHash ?? request.commandHash
+
+        this.pendingPermissionRequests.set(request.requestId, {
+          sessionId: managed.id,
+          type: request.type,
+          commandHash: effectiveCommandHash,
+        })
+
+        if (request.type === 'admin_approval' && effectiveCommandHash && this.hasActiveAdminRememberApproval(managed.id, effectiveCommandHash)) {
+          const brokerResult = this.privilegedExecutionBroker.resolveApproval(request.requestId, true, {
+            expectedCommandHash: effectiveCommandHash,
+          })
+
+          this.pendingPermissionRequests.delete(request.requestId)
+
+          if (brokerResult.ok) {
+            this.privilegedExecutionBroker.auditEvent('privileged_auto_approved_remember_window', {
+              sessionId: managed.id,
+              requestId: request.requestId,
+              commandHash: effectiveCommandHash,
+            })
+            const liveAgent = managed.agent
+            if (liveAgent) {
+              liveAgent.respondToPermission(request.requestId, true, false)
+              return
+            }
+          }
+
+          sessionLog.warn(`Remember-window auto-approval skipped for ${request.requestId}: ${brokerResult.reason}`)
+        }
+
         this.sendEvent({
           type: 'permission_request',
           sessionId: managed.id,
           request: {
             ...request,
+            ...brokerMetadata,
             sessionId: managed.id,
           }
         }, managed.workspace.id)
@@ -2510,12 +2982,29 @@ export class SessionManager {
 
       // Set up mode change handlers
       managed.agent.onPermissionModeChange = (mode) => {
-        sessionLog.info(`Permission mode changed for session ${managed.id}:`, mode)
+        if (managed.permissionMode === mode) {
+          return
+        }
+
         managed.permissionMode = mode
+        const diagnostics = getPermissionModeDiagnostics(managed.id)
+        managed.previousPermissionMode = diagnostics.previousPermissionMode
+        sessionLog.info('Permission mode changed (agent callback)', {
+          sessionId: managed.id,
+          permissionMode: mode,
+          modeVersion: diagnostics.modeVersion,
+          changedBy: diagnostics.lastChangedBy,
+          changedAt: diagnostics.lastChangedAt,
+        })
         this.sendEvent({
           type: 'permission_mode_changed',
           sessionId: managed.id,
           permissionMode: managed.permissionMode,
+          modeVersion: diagnostics.modeVersion,
+          changedBy: diagnostics.lastChangedBy,
+          changedAt: diagnostics.lastChangedAt,
+          previousPermissionMode: diagnostics.previousPermissionMode,
+          transitionDisplay: diagnostics.transitionDisplay,
         }, managed.workspace.id)
       }
 
@@ -2564,6 +3053,10 @@ export class SessionManager {
             sessionLog.info(`Force-aborting after plan submission for session ${managed.id}`)
             managed.agent.forceAbort(AbortReason.PlanSubmitted)
             managed.isProcessing = false
+
+            // Release browser overlay + session binding because the agent is no longer running.
+            // Plan submission pauses execution until user review, so browser ownership should not remain locked.
+            await releaseBrowserOwnershipOnForcedStop(this.browserPaneManager, managed.id)
 
             // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
             this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage }, managed.workspace.id)
@@ -2617,6 +3110,9 @@ export class SessionManager {
           managed.agent.forceAbort(AbortReason.AuthRequest)
           managed.isProcessing = false
 
+          // Release browser overlay + session binding because the agent is paused awaiting user auth.
+          void releaseBrowserOwnershipOnForcedStop(this.browserPaneManager, managed.id)
+
           // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
           this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage }, managed.workspace.id)
         }
@@ -2636,7 +3132,7 @@ export class SessionManager {
         // The UI will call sessionCommand({ type: 'startOAuth' }) when user clicks "Sign in"
       }
 
-      // Wire up onSpawnSession to create sub-sessions from agent tool calls
+      // Wire up onSpawnSession to create independent sessions from agent tool calls
       managed.agent.onSpawnSession = async (request) => {
         sessionLog.info(`Spawn session request from session ${managed.id}:`, request.name || '(unnamed)')
 
@@ -2671,13 +3167,13 @@ export class SessionManager {
           ? (resolvePreferredCodexModel(requestedConnection) ?? request.model ?? 'gpt-5.3-codex')
           : request.model
 
-        const session = await this.createSubSession(managed.workspace.id, managed.id, {
+        const session = await this.createSession(managed.workspace.id, {
           name: request.name,
-          llmConnection: request.llmConnection,
-          model: forcedModel,
-          enabledSourceSlugs: request.enabledSourceSlugs,
-          permissionMode: request.permissionMode,
-          labels: request.labels,
+          llmConnection: request.llmConnection ?? managed.llmConnection,
+          model: forcedModel ?? managed.model,
+          enabledSourceSlugs: request.enabledSourceSlugs ?? managed.enabledSourceSlugs,
+          permissionMode: request.permissionMode ?? managed.permissionMode,
+          labels: request.labels ?? managed.labels,
           workingDirectory: request.workingDirectory,
         })
 
@@ -2902,7 +3398,7 @@ export class SessionManager {
           .filter(isSourceUsable)
           .map(s => s.config.slug)
 
-        // Update bridge-mcp-server config/credentials for backends that use it (Codex, Copilot)
+        // Update bridge-mcp-server config/credentials for backends that need it
         await applyBridgeUpdates(managed.agent!, sessionPath, allEnabledSources, mcpServers, managed.id, workspaceRootPath, 'source enable', managed.poolServer?.url)
 
         await managed.agent!.setSourceServers(mcpServers, apiServers, intendedSlugs)
@@ -2929,9 +3425,19 @@ export class SessionManager {
       // Apply session-scoped permission mode to the newly created agent
       // This ensures the UI toggle state is reflected in the agent before first message
       if (managed.permissionMode) {
-        setPermissionMode(managed.id, managed.permissionMode)
+        setPermissionMode(managed.id, managed.permissionMode, { changedBy: 'restore' })
+        if (managed.previousPermissionMode) {
+          hydratePreviousPermissionMode(managed.id, managed.previousPermissionMode)
+        }
         managed.agent!.setPermissionMode(managed.permissionMode)
-        sessionLog.info(`Applied permission mode '${managed.permissionMode}' to agent for session ${managed.id}`)
+        const diagnostics = getPermissionModeDiagnostics(managed.id)
+        sessionLog.info('Applied permission mode to agent', {
+          sessionId: managed.id,
+          permissionMode: managed.permissionMode,
+          modeVersion: diagnostics.modeVersion,
+          changedBy: diagnostics.lastChangedBy,
+          changedAt: diagnostics.lastChangedAt,
+        })
       }
       end()
     }
@@ -2972,6 +3478,7 @@ export class SessionManager {
       await this.flushSession(managed.id)
       // Notify all windows for this workspace
       this.sendEvent({ type: 'session_archived', sessionId }, managed.workspace.id)
+      this.emitUnreadSummaryChanged()
     }
   }
 
@@ -2985,6 +3492,7 @@ export class SessionManager {
       await this.flushSession(managed.id)
       // Notify all windows for this workspace
       this.sendEvent({ type: 'session_unarchived', sessionId }, managed.workspace.id)
+      this.emitUnreadSummaryChanged()
     }
   }
 
@@ -3037,6 +3545,7 @@ export class SessionManager {
       type: 'connection_changed',
       sessionId,
       connectionSlug,
+      supportsBranching: resolveSupportsBranching(managed),
     }, managed.workspace.id)
   }
 
@@ -3312,7 +3821,7 @@ export class SessionManager {
       // Set active source servers (tools are only available from these)
       const intendedSlugs = sources.filter(isSourceUsable).map(s => s.config.slug)
 
-      // Update bridge-mcp-server config/credentials for backends that use it (Codex, Copilot)
+      // Update bridge-mcp-server config/credentials for backends that need it
       const usableSources = sources.filter(isSourceUsable)
       await applyBridgeUpdates(managed.agent, sessionPath, usableSources, mcpServers, managed.id, workspaceRootPath, 'source config change', managed.poolServer?.url)
 
@@ -3429,6 +3938,7 @@ export class SessionManager {
     if (needsPersist) {
       const workspaceRootPath = managed.workspace.rootPath
       await updateSessionMetadata(workspaceRootPath, sessionId, updates)
+      this.emitUnreadSummaryChanged()
     }
   }
 
@@ -3444,6 +3954,29 @@ export class SessionManager {
       // Persist to disk
       const workspaceRootPath = managed.workspace.rootPath
       await updateSessionMetadata(workspaceRootPath, sessionId, { hasUnread: true, lastReadMessageId: undefined })
+      this.emitUnreadSummaryChanged()
+    }
+  }
+
+  /**
+   * Mark all non-hidden, non-archived sessions in a workspace as read.
+   * Called from "Mark All Read" context menu on "All Sessions".
+   */
+  async markAllSessionsRead(workspaceId: string): Promise<void> {
+    const updates: Promise<void>[] = []
+    for (const managed of this.sessions.values()) {
+      if (managed.workspace.id !== workspaceId) continue
+      if (managed.hidden || managed.isArchived) continue
+      if (managed.isProcessing) continue
+      if (!managed.hasUnread) continue
+      managed.hasUnread = false
+      updates.push(
+        updateSessionMetadata(managed.workspace.rootPath, managed.id, { hasUnread: false })
+      )
+    }
+    if (updates.length > 0) {
+      await Promise.all(updates)
+      this.emitUnreadSummaryChanged()
     }
   }
 
@@ -3695,12 +4228,19 @@ export class SessionManager {
       this.deltaFlushTimers.delete(sessionId)
     }
     this.pendingDeltas.delete(sessionId)
+    this.clearAdminRememberApprovalsForSession(sessionId)
+    this.clearPendingPermissionRequestsForSession(sessionId)
 
     // Cancel any pending persistence write (session is being deleted, no need to save)
     sessionPersistenceQueue.cancel(sessionId)
 
     // Clean up session-scoped tool callbacks to prevent memory accumulation
     unregisterSessionScopedToolCallbacks(sessionId)
+
+    // Destroy browser instances bound to this session
+    if (this.browserPaneManager) {
+      this.browserPaneManager.destroyForSession(sessionId)
+    }
 
     // Dispose agent to clean up ConfigWatchers, event listeners, MCP connections
     if (managed.agent) {
@@ -3727,6 +4267,7 @@ export class SessionManager {
 
     // Notify all windows for this workspace that the session was deleted
     this.sendEvent({ type: 'session_deleted', sessionId }, managed.workspace.id)
+    this.emitUnreadSummaryChanged()
 
     // Clean up attachments directory (handled by deleteStoredSession for workspace-scoped storage)
     sessionLog.info(`Deleted session ${sessionId}`)
@@ -3748,7 +4289,7 @@ export class SessionManager {
 
     // If currently processing, redirect mid-stream. Each backend decides its strategy:
     // - Pi: steers (injects message, events continue through existing stream)
-    // - Claude/Codex/Copilot: aborts internally, session layer queues for re-send
+    // - Claude: aborts internally, session layer queues for re-send
     if (managed.isProcessing) {
       const agent = managed.agent
       const steered = agent?.redirect(message) ?? false
@@ -3883,6 +4424,7 @@ export class SessionManager {
     managed.isProcessing = true
     managed.streamingText = ''
     managed.processingGeneration++
+    managed.turnStartFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
 
     // Notify power manager that a session started processing
     // (may prevent display sleep if setting enabled)
@@ -4122,9 +4664,49 @@ export class SessionManager {
           const lastUserMsg = [...managed.messages].reverse().find(m => m.role === 'user')
 
           // If the last user message is newer than any assistant response, we got no reply
-          // This can happen due to context overflow or API issues - log for debugging but don't show UI warning
+          // This can happen due to context overflow or API issues
           if (lastUserMsg && (!lastAssistantMsg || lastUserMsg.timestamp > lastAssistantMsg.timestamp)) {
             sessionLog.warn(`Session ${sessionId} completed without assistant response - possible context overflow or API issue`)
+
+            // Check if there's a captured API error that explains the silent failure.
+            // Pass explicit session path to avoid reading from the wrong session
+            // (_sessionDir singleton can be clobbered by concurrent sessions).
+            const sessionErrorPath = getSessionStoragePath(managed.workspace.rootPath, managed.id)
+            const apiError = getLastApiError(sessionErrorPath)
+
+            if (apiError && apiError.status === 400) {
+              const isImageError = apiError.message?.includes('image exceeds')
+
+              const errorMessage: Message = {
+                id: generateMessageId(),
+                role: 'error',
+                content: isImageError
+                  ? `Image Too Large: ${apiError.message}`
+                  : `Request Error: ${apiError.message}`,
+                timestamp: this.monotonic(),
+                errorCode: isImageError ? 'image_too_large' : 'invalid_request',
+                errorTitle: isImageError ? 'Image Too Large' : 'Invalid Request',
+                errorDetails: isImageError
+                  ? ['An image in the conversation exceeds the 5 MB API limit.',
+                     'This session cannot recover — the image is embedded in the history.',
+                     'Please start a new session to continue.']
+                  : [apiError.message],
+                errorCanRetry: false,
+              }
+              managed.messages.push(errorMessage)
+              this.sendEvent({
+                type: 'typed_error',
+                sessionId,
+                error: {
+                  code: isImageError ? 'image_too_large' as const : 'invalid_request' as const,
+                  title: errorMessage.errorTitle!,
+                  message: apiError.message,
+                  actions: [],
+                  canRetry: false,
+                  details: errorMessage.errorDetails,
+                },
+              }, managed.workspace.id)
+            }
           }
 
           sendSpan.mark('chat.complete')
@@ -4134,7 +4716,7 @@ export class SessionManager {
         }
 
         // NOTE: We no longer break early on !isProcessing or stopRequested.
-        // After soft interrupt (forceAbort), Codex sets turnComplete=true which causes
+        // After soft interrupt (forceAbort), the backend sets turnComplete=true which causes
         // the generator to yield remaining queued events and then complete naturally.
         // This ensures we don't lose in-flight messages.
       }
@@ -4228,14 +4810,14 @@ export class SessionManager {
     }
 
     // Signal intent to stop - let the event loop drain remaining events before clearing isProcessing
-    // This prevents losing in-flight messages from Codex after soft interrupt
+    // This prevents losing in-flight messages after soft interrupt
     managed.stopRequested = true
 
     // Track interruption so the next user message gets a context note
     // telling the LLM the previous response was cut short
     managed.wasInterrupted = true
 
-    // Force-abort via Query.close() - sends soft interrupt to Codex
+    // Force-abort via Query.close() - sends soft interrupt to the backend
     if (managed.agent) {
       managed.agent.forceAbort(AbortReason.UserStop)
     }
@@ -4300,6 +4882,16 @@ export class SessionManager {
     managed.isProcessing = false
     managed.stopRequested = false  // Reset for next turn
 
+    const turnStartFinalMessageId = managed.turnStartFinalMessageId
+    managed.turnStartFinalMessageId = undefined
+
+    // Clear agent control overlay between turns. The session keeps browser
+    // ownership (boundSessionId) — only the visual overlay is removed.
+    // Full unbind happens below when the queue is empty (session truly done).
+    if (this.browserPaneManager) {
+      await this.browserPaneManager.clearVisualsForSession(sessionId)
+    }
+
     // Notify power manager that a session stopped processing
     // (may allow display sleep if no other sessions are active)
     const { onSessionStopped } = await import('./power-manager')
@@ -4309,10 +4901,12 @@ export class SessionManager {
     //    This is the explicit state machine for NEW badge:
     //    - If user is viewing: mark as read (they saw it complete)
     //    - If user is NOT viewing: mark as unread (they have new content)
+    //    IMPORTANT: only apply this when the turn produced a NEW final assistant message.
     const isViewing = this.isSessionBeingViewed(sessionId, managed.workspace.id)
-    const hasFinalMessage = this.getLastFinalAssistantMessageId(managed.messages) !== undefined
+    const currentFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
+    const didReceiveNewFinalMessage = !!currentFinalMessageId && currentFinalMessageId !== turnStartFinalMessageId
 
-    if (reason === 'complete' && hasFinalMessage) {
+    if (reason === 'complete' && didReceiveNewFinalMessage) {
       if (isViewing) {
         // User is watching - mark as read immediately
         await this.markSessionRead(sessionId)
@@ -4321,6 +4915,7 @@ export class SessionManager {
         if (!managed.hasUnread) {
           managed.hasUnread = true
           await updateSessionMetadata(managed.workspace.rootPath, sessionId, { hasUnread: true })
+          this.emitUnreadSummaryChanged()
         }
       }
     }
@@ -4333,11 +4928,27 @@ export class SessionManager {
       await this.setSessionStatus(sessionId, 'done')
     }
 
-    // 4. Check queue and process or complete
+    // 4. Apply deferred external metadata updates captured while processing.
+    if (managed.pendingExternalMetadata) {
+      const pendingHeader = managed.pendingExternalMetadata
+      managed.pendingExternalMetadata = undefined
+      sessionLog.info(`Applying deferred external metadata for session ${sessionId} after processing stop`)
+      this.applyExternalSessionMetadata(managed, pendingHeader)
+    }
+
+    // 5. Check queue and process or complete
     if (managed.messageQueue.length > 0) {
       // Has queued messages - process next
       this.processNextQueuedMessage(sessionId)
     } else {
+      // Session is truly done — release browser ownership.
+      // The window stays alive (hidden) and becomes reusable by future sessions.
+      // On the next turn, getOrCreateForSession() will re-bind it.
+      if (this.browserPaneManager) {
+        await this.browserPaneManager.clearVisualsForSession(sessionId)
+        this.browserPaneManager.unbindAllForSession(sessionId)
+      }
+
       // No queue - emit complete to UI (include tokenUsage and hasUnread for state updates)
       this.sendEvent({
         type: 'complete',
@@ -4347,7 +4958,7 @@ export class SessionManager {
       }, managed.workspace.id)
     }
 
-    // 5. Always persist
+    // 6. Always persist
     this.persistSession(managed)
   }
 
@@ -4511,9 +5122,34 @@ To view this task's output:
    * Respond to a pending permission request
    * Returns true if the response was delivered, false if agent/session is gone
    */
-  respondToPermission(sessionId: string, requestId: string, allowed: boolean, alwaysAllow: boolean): boolean {
+  respondToPermission(
+    sessionId: string,
+    requestId: string,
+    allowed: boolean,
+    alwaysAllow: boolean,
+    options?: import('../shared/types').PermissionResponseOptions,
+  ): boolean {
     const managed = this.sessions.get(sessionId)
     if (managed?.agent) {
+      const requestMeta = this.pendingPermissionRequests.get(requestId)
+      this.pendingPermissionRequests.delete(requestId)
+
+      if (requestMeta?.type === 'admin_approval') {
+        const brokerResult = this.privilegedExecutionBroker.resolveApproval(requestId, allowed, {
+          expectedCommandHash: requestMeta.commandHash,
+        })
+        if (!brokerResult.ok) {
+          sessionLog.warn(`Admin approval rejected by broker for ${requestId}: ${brokerResult.reason}`)
+          // Broker rejection should fail closed.
+          managed.agent.respondToPermission(requestId, false, false)
+          return false
+        }
+
+        if (allowed && requestMeta.commandHash && options?.rememberForMinutes) {
+          this.storeAdminRememberApproval(sessionId, requestMeta.commandHash, requestId, options.rememberForMinutes)
+        }
+      }
+
       sessionLog.info(`Permission response for ${requestId}: allowed=${allowed}, alwaysAllow=${alwaysAllow}`)
       managed.agent.respondToPermission(requestId, allowed, alwaysAllow)
       return true
@@ -4559,11 +5195,25 @@ To view this task's output:
   setSessionPermissionMode(sessionId: string, mode: PermissionMode): void {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      // No-op when unchanged to avoid duplicate logs/events
+      if (managed.permissionMode === mode) {
+        return
+      }
+
       // Update permission mode
       managed.permissionMode = mode
 
       // Update the mode state for this specific session via mode manager
-      setPermissionMode(sessionId, mode)
+      setPermissionMode(sessionId, mode, { changedBy: 'user' })
+      const diagnostics = getPermissionModeDiagnostics(sessionId)
+      managed.previousPermissionMode = diagnostics.previousPermissionMode
+      sessionLog.info('Permission mode changed', {
+        sessionId,
+        permissionMode: mode,
+        modeVersion: diagnostics.modeVersion,
+        changedBy: diagnostics.lastChangedBy,
+        changedAt: diagnostics.lastChangedAt,
+      })
 
       // Forward to the agent instance so backends (e.g. PiAgent) can
       // propagate the mode change to their subprocess
@@ -4575,9 +5225,66 @@ To view this task's output:
         type: 'permission_mode_changed',
         sessionId: managed.id,
         permissionMode: mode,
+        modeVersion: diagnostics.modeVersion,
+        changedBy: diagnostics.lastChangedBy,
+        changedAt: diagnostics.lastChangedAt,
+        previousPermissionMode: diagnostics.previousPermissionMode,
+        transitionDisplay: diagnostics.transitionDisplay,
       }, managed.workspace.id)
       // Persist to disk
       this.persistSession(managed)
+    }
+  }
+
+  /**
+   * Get authoritative permission mode diagnostics for a session.
+   * Used by renderer to reconcile optimistic/stale mode state.
+   */
+  getSessionPermissionModeState(sessionId: string): {
+    permissionMode: PermissionMode
+    previousPermissionMode?: PermissionMode
+    transitionDisplay?: string
+    modeVersion: number
+    changedAt: string
+    changedBy: 'user' | 'system' | 'restore' | 'automation' | 'unknown'
+  } | null {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return null
+
+    let diagnostics = getPermissionModeDiagnostics(sessionId)
+
+    // Hydrate persisted transition context when mode-manager has been reset (e.g. app restart).
+    if (managed.previousPermissionMode && !diagnostics.previousPermissionMode) {
+      hydratePreviousPermissionMode(sessionId, managed.previousPermissionMode)
+      diagnostics = getPermissionModeDiagnostics(sessionId)
+    }
+
+    // Heal restore races where mode-manager still has default state while
+    // session metadata already has a persisted non-default mode.
+    if (managed.permissionMode && diagnostics.permissionMode !== managed.permissionMode) {
+      sessionLog.warn('Permission mode diagnostics mismatch, reconciling to managed session mode', {
+        sessionId,
+        managedMode: managed.permissionMode,
+        diagnosticsMode: diagnostics.permissionMode,
+        modeVersion: diagnostics.modeVersion,
+        changedBy: diagnostics.lastChangedBy,
+      })
+      setPermissionMode(sessionId, managed.permissionMode, { changedBy: 'restore' })
+      if (managed.previousPermissionMode) {
+        hydratePreviousPermissionMode(sessionId, managed.previousPermissionMode)
+      }
+      diagnostics = getPermissionModeDiagnostics(sessionId)
+    }
+
+    managed.previousPermissionMode = diagnostics.previousPermissionMode
+
+    return {
+      permissionMode: diagnostics.permissionMode,
+      previousPermissionMode: diagnostics.previousPermissionMode,
+      transitionDisplay: diagnostics.transitionDisplay,
+      modeVersion: diagnostics.modeVersion,
+      changedAt: diagnostics.lastChangedAt,
+      changedBy: diagnostics.lastChangedBy,
     }
   }
 
@@ -4748,7 +5455,7 @@ To view this task's output:
           managed.lastFinalMessageId = assistantMessage.id
         }
 
-        this.sendEvent({ type: 'text_complete', sessionId, text: event.text, isIntermediate: event.isIntermediate, turnId: event.turnId, parentToolUseId: event.parentToolUseId, timestamp: assistantMessage.timestamp }, workspaceId)
+        this.sendEvent({ type: 'text_complete', sessionId, text: event.text, isIntermediate: event.isIntermediate, turnId: event.turnId, parentToolUseId: event.parentToolUseId, timestamp: assistantMessage.timestamp, messageId: assistantMessage.id }, workspaceId)
 
         // Persist session after complete message to prevent data loss on quit
         this.persistSession(managed)
@@ -4841,6 +5548,26 @@ To view this task's output:
             parentToolUseId,
           }
           managed.messages.push(toolStartMessage)
+        }
+
+        // Activate browser agent control overlay on actionable browser tool starts.
+        // Skip browser_tool help/release commands to avoid pointless overlay flashes.
+        const shouldActivateOverlay = shouldActivateBrowserOverlay(
+          event.toolName,
+          formattedToolInput,
+        )
+
+        if (this.browserPaneManager && shouldActivateOverlay) {
+          // Ensure first browser action in a turn gets an instance before overlay activation.
+          this.browserPaneManager.getOrCreateForSession(sessionId)
+
+          const resolvedDisplayName = toolDisplayMeta?.displayName
+            ?? event.displayName
+            ?? event.toolName
+          this.browserPaneManager.setAgentControl(sessionId, {
+            displayName: resolvedDisplayName,
+            intent: event.intent,
+          })
         }
 
         // Send event to renderer on first occurrence OR when input data is updated
@@ -5508,6 +6235,8 @@ To view this task's output:
 
     // Clear pending credential resolvers (they won't be resolved, but prevents memory leak)
     this.pendingCredentialResolvers.clear()
+    this.pendingPermissionRequests.clear()
+    this.adminRememberApprovals.clear()
 
     // Clean up session-scoped tool callbacks for all sessions
     for (const sessionId of this.sessions.keys()) {

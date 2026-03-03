@@ -291,6 +291,13 @@ export interface SessionToolContext {
   // ============================================================
 
   /**
+   * Submit developer feedback. Injected by each backend:
+   * - Claude: writes JSON files to ~/.craft-agent/feedback/
+   * - Codex/Pi: could send over IPC or write directly
+   */
+  submitFeedback?(feedback: import('./types.ts').DeveloperFeedback): void;
+
+  /**
    * Update user preferences. Injected by each backend:
    * - Claude: calls updatePreferences() from config/preferences.ts
    * - Codex/session-mcp-server: writes directly to preferences.json

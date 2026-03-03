@@ -49,7 +49,7 @@ export interface DeepLinkTarget {
   actionParams?: Record<string, string>
   /** Window mode - if set, opens in a new window instead of navigating in existing */
   windowMode?: 'focused' | 'full'
-  /** Right sidebar param (e.g., 'sessionMetadata', 'files/path/to/file') */
+  /** Right sidebar param (e.g., 'files/path/to/file', 'history') */
   rightSidebar?: string
 }
 

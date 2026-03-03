@@ -103,6 +103,9 @@ export function handleTextComplete(
     // Only update lastMessageAt for final (non-intermediate) messages
     const shouldUpdateTimestamp = !event.isIntermediate
     const updatedSession = updateMessageAt(session, msgIndex, {
+      // Replace temporary renderer-generated ID with authoritative main-process ID
+      // so branchFromMessageId always resolves against persisted session.jsonl.
+      ...(event.messageId ? { id: event.messageId } : {}),
       content: event.text,  // Complete text from SDK
       isStreaming: false,
       isPending: false,
@@ -120,7 +123,7 @@ export function handleTextComplete(
   // This handles the race condition where text_complete arrives
   // before text_delta's setSessions has been processed
   const newMessage: Message = {
-    id: generateMessageId(),
+    id: event.messageId ?? generateMessageId(),
     role: 'assistant',
     content: event.text,
     timestamp: event.timestamp ?? Date.now(),

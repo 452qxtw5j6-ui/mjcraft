@@ -46,6 +46,8 @@ export interface TextCompleteEvent {
   parentToolUseId?: string
   /** Timestamp from main process for consistent ordering with session.jsonl */
   timestamp?: number
+  /** Authoritative message ID from main process for persistence/branching parity */
+  messageId?: string
 }
 
 /**
@@ -285,6 +287,11 @@ export interface PermissionModeChangedEvent {
   type: 'permission_mode_changed'
   sessionId: string
   permissionMode: PermissionMode
+  previousPermissionMode?: PermissionMode
+  transitionDisplay?: string
+  modeVersion?: number
+  changedAt?: string
+  changedBy?: 'user' | 'system' | 'restore' | 'automation' | 'unknown'
 }
 
 /**
@@ -303,6 +310,7 @@ export interface LLMConnectionChangedEvent {
   type: 'connection_changed'
   sessionId: string
   connectionSlug: string
+  supportsBranching?: boolean
 }
 
 /**
@@ -478,7 +486,7 @@ export type Effect =
   | { type: 'permission_request'; request: PermissionRequest }
   | { type: 'credential_request'; request: CredentialRequest }
   | { type: 'generate_title'; sessionId: string; userMessage: string }
-  | { type: 'permission_mode_changed'; sessionId: string; permissionMode: PermissionMode }
+  | { type: 'permission_mode_changed'; sessionId: string; permissionMode: PermissionMode; previousPermissionMode?: PermissionMode; transitionDisplay?: string; modeVersion?: number; changedAt?: string; changedBy?: 'user' | 'system' | 'restore' | 'automation' | 'unknown' }
   | { type: 'auto_retry'; sessionId: string; originalMessage: string; sourceSlug: string }
   | { type: 'restore_input'; text: string }
 

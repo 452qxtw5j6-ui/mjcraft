@@ -8,14 +8,16 @@ import { execSync } from 'child_process'
 import { SessionManager } from './sessions'
 import { ipcLog, windowLog, searchLog } from './logger'
 import { WindowManager } from './window-manager'
+import type { BrowserPaneManager, BrowserScreenshotOptions } from './browser-pane-manager'
 import { registerOnboardingHandlers } from './onboarding'
-import { IPC_CHANNELS, type FileAttachment, type StoredAttachment, type SendMessageOptions, type LlmConnectionSetup, type SkillFile } from '../shared/types'
+import { IPC_CHANNELS, type FileAttachment, type StoredAttachment, type SendMessageOptions, type LlmConnectionSetup, type SkillFile, type BrowserPaneCreateOptions, type BrowserEmptyStateLaunchPayload } from '../shared/types'
 import { readFileAttachment, perf, validateImageForClaudeAPI, IMAGE_LIMITS } from '@craft-agent/shared/utils'
 import { safeJsonParse } from '@craft-agent/shared/utils/files'
 import { getPreferencesPath, getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts, getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace, loadStoredConfig, saveConfig, type Workspace, getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus, getGitBashPath, setGitBashPath, clearGitBashPath } from '@craft-agent/shared/config'
 import { getSessionAttachmentsPath, validateSessionId } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, getSourcesBySlugs, type LoadedSource } from '@craft-agent/shared/sources'
 import { isValidThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
+import { resizeImageForAPI } from './image-utils'
 import {
   resolveSetupTestConnectionHint,
   testBackendConnection,
@@ -135,7 +137,7 @@ async function validateFilePath(filePath: string): Promise<string> {
   return realPath
 }
 
-export function registerIpcHandlers(sessionManager: SessionManager, windowManager: WindowManager): void {
+export function registerIpcHandlers(sessionManager: SessionManager, windowManager: WindowManager, browserPaneManager?: BrowserPaneManager): void {
   // Get all sessions for the calling window's workspace
   // Waits for initialization to complete so sessions are never returned empty during startup
   ipcMain.handle(IPC_CHANNELS.GET_SESSIONS, async (event) => {
@@ -149,6 +151,20 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     const sessions = sessionManager.getSessions(workspaceId ?? undefined)
     end()
     return sessions
+  })
+
+  // Get unread summary across all workspaces
+  ipcMain.handle(IPC_CHANNELS.GET_UNREAD_SUMMARY, async () => {
+    try {
+      await sessionManager.waitForInit()
+    } catch (error) {
+      ipcLog.error('GET_UNREAD_SUMMARY continuing after initialization failure:', error)
+    }
+    return sessionManager.getUnreadSummary()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MARK_ALL_SESSIONS_READ, async (_event, workspaceId: string) => {
+    return sessionManager.markAllSessionsRead(workspaceId)
   })
 
   // Get a single session with messages (for lazy loading)
@@ -231,6 +247,12 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     windowManager.forceCloseWindow(event.sender.id)
   })
 
+  // Cancel close - renderer handled the request (closed a modal/panel).
+  // Clears the fallback timeout so the window stays open.
+  ipcMain.handle(IPC_CHANNELS.WINDOW_CANCEL_CLOSE, (event) => {
+    windowManager.cancelPendingClose(event.sender.id)
+  })
+
   // Show/hide macOS traffic light buttons (for fullscreen overlays)
   ipcMain.handle(IPC_CHANNELS.WINDOW_SET_TRAFFIC_LIGHTS, (event, visible: boolean) => {
     windowManager.setTrafficLightsVisible(event.sender.id, visible)
@@ -277,14 +299,6 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, workspaceId: string, options?: import('../shared/types').CreateSessionOptions) => {
     const end = perf.start('ipc.createSession', { workspaceId })
     const session = sessionManager.createSession(workspaceId, options)
-    end()
-    return session
-  })
-
-  // Create a sub-session under a parent session
-  ipcMain.handle(IPC_CHANNELS.CREATE_SUB_SESSION, async (_event, workspaceId: string, parentSessionId: string, options?: import('../shared/types').CreateSessionOptions) => {
-    const end = perf.start('ipc.createSubSession', { workspaceId, parentSessionId })
-    const session = await sessionManager.createSubSession(workspaceId, parentSessionId, options)
     end()
     return session
   })
@@ -350,9 +364,19 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
 
   // Respond to a permission request (bash command approval)
   // Returns true if the response was delivered, false if agent/session is gone
-  ipcMain.handle(IPC_CHANNELS.RESPOND_TO_PERMISSION, async (_event, sessionId: string, requestId: string, allowed: boolean, alwaysAllow: boolean) => {
-    return sessionManager.respondToPermission(sessionId, requestId, allowed, alwaysAllow)
-  })
+  ipcMain.handle(
+    IPC_CHANNELS.RESPOND_TO_PERMISSION,
+    async (
+      _event,
+      sessionId: string,
+      requestId: string,
+      allowed: boolean,
+      alwaysAllow: boolean,
+      options?: import('../shared/types').PermissionResponseOptions,
+    ) => {
+      return sessionManager.respondToPermission(sessionId, requestId, allowed, alwaysAllow, options)
+    },
+  )
 
   // Respond to a credential request (secure auth input)
   // Returns true if the response was delivered, false if agent/session is gone
@@ -438,15 +462,6 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
         return sessionManager.markCompactionComplete(sessionId)
       case 'clearPendingPlanExecution':
         return sessionManager.clearPendingPlanExecution(sessionId)
-      // Sub-session hierarchy
-      case 'getSessionFamily':
-        return sessionManager.getSessionFamily(sessionId)
-      case 'updateSiblingOrder':
-        return sessionManager.updateSiblingOrder(command.orderedSessionIds)
-      case 'archiveCascade':
-        return sessionManager.archiveSessionCascade(sessionId)
-      case 'deleteCascade':
-        return sessionManager.deleteSessionCascade(sessionId)
       default: {
         const _exhaustive: never = command
         throw new Error(`Unknown session command: ${JSON.stringify(command)}`)
@@ -460,6 +475,14 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     sessionId: string
   ) => {
     return sessionManager.getPendingPlanExecution(sessionId)
+  })
+
+  // Get authoritative permission mode diagnostics for renderer reconciliation
+  ipcMain.handle(IPC_CHANNELS.GET_SESSION_PERMISSION_MODE_STATE, async (
+    _event,
+    sessionId: string
+  ) => {
+    return sessionManager.getSessionPermissionModeState(sessionId)
   })
 
   // Read a file (with path validation to prevent traversal attacks)
@@ -490,17 +513,16 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     }
   })
 
-  // Read a file as a data URL for in-app binary preview (images).
-  // Returns data:{mime};base64,{content} — used by ImagePreviewOverlay.
-  // Note: PDFs use file:// URLs directly (Chromium's PDF viewer doesn't support data: URLs).
+  // Read an image file as a data URL for in-app image preview overlays.
+  // Returns data:{mime};base64,{content} — used by ImagePreviewOverlay and markdown image blocks.
   ipcMain.handle(IPC_CHANNELS.READ_FILE_DATA_URL, async (_event, path: string) => {
     try {
       const safePath = await validateFilePath(path)
       const buffer = await readFile(safePath)
       const ext = safePath.split('.').pop()?.toLowerCase() ?? ''
 
-      // Map extensions to MIME types (only formats Chromium can render in-app).
-      // HEIC/HEIF and TIFF are excluded — no Chromium codec, opened externally instead.
+      // Map previewable image extensions to MIME types.
+      // HEIC/HEIF/TIFF are intentionally excluded — no Chromium codec, opened externally instead.
       const mimeMap: Record<string, string> = {
         png: 'image/png',
         jpg: 'image/jpeg',
@@ -511,7 +533,6 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
         bmp: 'image/bmp',
         ico: 'image/x-icon',
         avif: 'image/avif',
-        pdf: 'application/pdf',
       }
       const mime = mimeMap[ext] || 'application/octet-stream'
       const base64 = buffer.toString('base64')
@@ -545,7 +566,7 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
       filters: [
         // Allow all files by default - the agent can figure out how to handle them
         { name: 'All Files', extensions: ['*'] },
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'ico', 'icns', 'heic', 'heif', 'svg'] },
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'] },
         { name: 'Documents', extensions: ['pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt', 'txt', 'md', 'rtf'] },
         { name: 'Code', extensions: ['js', 'ts', 'tsx', 'jsx', 'py', 'json', 'css', 'html', 'xml', 'yaml', 'yml', 'sh', 'sql', 'go', 'rs', 'rb', 'php', 'java', 'c', 'cpp', 'h', 'swift', 'kt'] },
       ]
@@ -686,48 +707,61 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
             }
             shouldResize = true
             ipcLog.info(`Image exceeds ${maxDim}px limit (${imageSize.width}×${imageSize.height}), will resize to ${targetSize.width}×${targetSize.height}`)
+          } else if (!validation.valid && validation.errorCode === 'size_exceeded') {
+            // File >5MB — try resize+compress instead of rejecting
+            shouldResize = true
+            ipcLog.info(`Image exceeds 5MB (${(decoded.length / 1024 / 1024).toFixed(1)}MB), will attempt resize`)
           } else if (!validation.valid) {
-            // Other validation errors (e.g., file size > 5MB) - reject
             throw new Error(validation.error)
           }
 
           // If resize is needed (either recommended or required), do it now
-          if (shouldResize && targetSize) {
-            ipcLog.info(`Resizing image from ${imageSize.width}×${imageSize.height} to ${targetSize.width}×${targetSize.height}`)
+          if (shouldResize) {
+            const isPhoto = attachment.mimeType === 'image/jpeg'
 
-            try {
-              const resized = image.resize({
-                width: targetSize.width,
-                height: targetSize.height,
-                quality: 'best',
-              })
+            if (targetSize) {
+              // Dimension-exceeded: resize to specific target dimensions
+              ipcLog.info(`Resizing image from ${imageSize.width}×${imageSize.height} to ${targetSize.width}×${targetSize.height}`)
+              try {
+                const resized = image.resize({
+                  width: targetSize.width,
+                  height: targetSize.height,
+                  quality: 'best',
+                })
 
-              // Get as PNG for best quality (or JPEG for photos to save space)
-              const isPhoto = attachment.mimeType === 'image/jpeg'
-              decoded = isPhoto ? resized.toJPEG(IMAGE_LIMITS.JPEG_QUALITY_HIGH) : resized.toPNG()
+                decoded = isPhoto ? resized.toJPEG(IMAGE_LIMITS.JPEG_QUALITY_HIGH) : resized.toPNG()
+                wasResized = true
+                finalSize = decoded.length
+
+                // Re-validate final size after resize
+                if (decoded.length > IMAGE_LIMITS.MAX_SIZE) {
+                  decoded = resized.toJPEG(IMAGE_LIMITS.JPEG_QUALITY_FALLBACK)
+                  finalSize = decoded.length
+                  if (decoded.length > IMAGE_LIMITS.MAX_SIZE) {
+                    throw new Error(`Image still too large after resize (${(decoded.length / 1024 / 1024).toFixed(1)}MB). Please use a smaller image.`)
+                  }
+                }
+              } catch (resizeError) {
+                ipcLog.error('Image resize failed:', resizeError)
+                const reason = resizeError instanceof Error ? resizeError.message : String(resizeError)
+                throw new Error(`Image too large (${imageSize.width}×${imageSize.height}) and automatic resize failed: ${reason}. Please manually resize it before attaching.`)
+              }
+            } else {
+              // Size-exceeded or optimal resize — use shared utility for full pipeline
+              const result = resizeImageForAPI(decoded, { isPhoto })
+              if (!result) {
+                throw new Error(`Image too large (${(decoded.length / 1024 / 1024).toFixed(1)}MB) and could not be compressed enough. Please use a smaller image.`)
+              }
+              decoded = result.buffer
               wasResized = true
               finalSize = decoded.length
-
-              // Re-validate final size after resize (should be much smaller)
-              if (decoded.length > IMAGE_LIMITS.MAX_SIZE) {
-                // Even after resize it's too big - try more aggressive compression
-                decoded = resized.toJPEG(IMAGE_LIMITS.JPEG_QUALITY_FALLBACK)
-                finalSize = decoded.length
-                if (decoded.length > IMAGE_LIMITS.MAX_SIZE) {
-                  throw new Error(`Image still too large after resize (${(decoded.length / 1024 / 1024).toFixed(1)}MB). Please use a smaller image.`)
-                }
-              }
-
-              ipcLog.info(`Image resized: ${attachment.size} → ${finalSize} bytes (${Math.round((1 - finalSize / attachment.size) * 100)}% reduction)`)
-
-              // Store resized base64 to return to renderer
-              // This is used when sending to Claude API instead of original large base64
-              resizedBase64 = decoded.toString('base64')
-            } catch (resizeError) {
-              ipcLog.error('Image resize failed:', resizeError)
-              const reason = resizeError instanceof Error ? resizeError.message : String(resizeError)
-              throw new Error(`Image too large (${imageSize.width}×${imageSize.height}) and automatic resize failed: ${reason}. Please manually resize it before attaching.`)
             }
+
+            ipcLog.info(`Image resized: ${attachment.size} → ${finalSize} bytes (${Math.round((1 - finalSize / attachment.size) * 100)}% reduction)`)
+
+            // Store resized base64 to return to renderer
+            // This is used when sending to Claude API instead of original large base64
+            resizedBase64 = decoded.toString('base64')
           }
         }
 
@@ -3209,16 +3243,12 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     setRichToolDescriptions(enabled)
   })
 
-  // Update app badge count
-  ipcMain.handle(IPC_CHANNELS.BADGE_UPDATE, async (_event, count: number) => {
-    const { updateBadgeCount } = await import('./notifications')
-    updateBadgeCount(count)
-  })
-
-  // Clear app badge
-  ipcMain.handle(IPC_CHANNELS.BADGE_CLEAR, async () => {
-    const { clearBadgeCount } = await import('./notifications')
-    clearBadgeCount()
+  // Refresh badge count from current unread state (called by renderer on mount)
+  ipcMain.handle(IPC_CHANNELS.BADGE_REFRESH, async () => {
+    try {
+      await sessionManager.waitForInit()
+    } catch { /* continue */ }
+    sessionManager.refreshBadge()
   })
 
   // Set dock icon with badge (canvas-rendered badge image from renderer)
@@ -3235,5 +3265,166 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
 
   // Note: Permission mode cycling settings (cyclablePermissionModes) are now workspace-level
   // and managed via WORKSPACE_SETTINGS_GET/UPDATE channels
+
+  // =========================================================================
+  // Browser Pane Management
+  // =========================================================================
+
+  if (browserPaneManager) {
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_CREATE, (_event, input?: string | BrowserPaneCreateOptions) => {
+      if (typeof input === 'string') {
+        return browserPaneManager.createInstance(input)
+      }
+
+      if (input?.bindToSessionId) {
+        return browserPaneManager.createForSession(input.bindToSessionId, { show: input.show ?? false })
+      }
+
+      return browserPaneManager.createInstance(input?.id, { show: input?.show })
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_DESTROY, (_event, id: string) => {
+      browserPaneManager.destroyInstance(id)
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_LIST, () => {
+      return browserPaneManager.listInstances()
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_NAVIGATE, async (_event, id: string, url: string) => {
+      try {
+        return await browserPaneManager.navigate(id, url)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] navigate failed for ${id}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_GO_BACK, async (_event, id: string) => {
+      try {
+        return await browserPaneManager.goBack(id)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] goBack failed for ${id}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_GO_FORWARD, async (_event, id: string) => {
+      try {
+        return await browserPaneManager.goForward(id)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] goForward failed for ${id}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_RELOAD, (_event, id: string) => {
+      browserPaneManager.reload(id)
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_STOP, (_event, id: string) => {
+      browserPaneManager.stop(id)
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_FOCUS, (_event, id: string) => {
+      browserPaneManager.focus(id)
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_EMPTY_STATE_LAUNCH, async (event, payload: BrowserEmptyStateLaunchPayload) => {
+      try {
+        return await browserPaneManager.handleEmptyStateLaunchFromRenderer(event.sender.id, payload)
+      } catch (err) {
+        ipcLog.error('[browser-pane] empty-state launch IPC failed:', err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_SNAPSHOT, async (_event, id: string) => {
+      try {
+        return await browserPaneManager.getAccessibilitySnapshot(id)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] snapshot failed for ${id}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_CLICK, async (_event, id: string, ref: string) => {
+      try {
+        return await browserPaneManager.clickElement(id, ref)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] click failed for ${id} ref=${ref}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_FILL, async (_event, id: string, ref: string, value: string) => {
+      try {
+        return await browserPaneManager.fillElement(id, ref, value)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] fill failed for ${id} ref=${ref}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_SELECT, async (_event, id: string, ref: string, value: string) => {
+      try {
+        return await browserPaneManager.selectOption(id, ref, value)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] select failed for ${id} ref=${ref}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_SCREENSHOT, async (_event, id: string, options?: BrowserScreenshotOptions) => {
+      try {
+        const result = await browserPaneManager.screenshot(id, options)
+        return {
+          base64: result.imageBuffer.toString('base64'),
+          imageFormat: result.imageFormat,
+          metadata: result.metadata,
+        }
+      } catch (err) {
+        ipcLog.error(`[browser-pane] screenshot failed for ${id}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_EVALUATE, async (_event, id: string, expression: string) => {
+      try {
+        return await browserPaneManager.evaluate(id, expression)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] evaluate failed for ${id}:`, err)
+        throw err
+      }
+    })
+
+    ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_SCROLL, async (_event, id: string, direction: string, amount?: number) => {
+      const validDirections = ['up', 'down', 'left', 'right']
+      if (!validDirections.includes(direction)) {
+        throw new Error(`Invalid scroll direction: ${direction}`)
+      }
+      try {
+        return await browserPaneManager.scroll(id, direction as 'up' | 'down' | 'left' | 'right', amount)
+      } catch (err) {
+        ipcLog.error(`[browser-pane] scroll failed for ${id}:`, err)
+        throw err
+      }
+    })
+
+    // Forward browser state changes to all windows
+    browserPaneManager.onStateChange((info) => {
+      windowManager.broadcastToAll(IPC_CHANNELS.BROWSER_PANE_STATE_CHANGED, info)
+    })
+
+    // Forward browser removals so renderer can immediately drop stale tabs
+    browserPaneManager.onRemoved((id) => {
+      windowManager.broadcastToAll(IPC_CHANNELS.BROWSER_PANE_REMOVED, id)
+    })
+
+    // Forward browser interaction/focus events so renderer can align panel focus.
+    browserPaneManager.onInteracted((id) => {
+      windowManager.broadcastToAll(IPC_CHANNELS.BROWSER_PANE_INTERACTED, id)
+    })
+  }
 
 }

@@ -54,3 +54,7 @@ export type { TransformDataArgs } from './transform-data.ts';
 // Render Template
 export { handleRenderTemplate } from './render-template.ts';
 export type { RenderTemplateArgs } from './render-template.ts';
+
+// Send Developer Feedback
+export { handleSendDeveloperFeedback } from './send-developer-feedback.ts';
+export type { SendDeveloperFeedbackArgs } from './send-developer-feedback.ts';

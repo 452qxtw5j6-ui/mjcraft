@@ -24,6 +24,7 @@ import { loadPreferences, formatPreferencesForPrompt } from '../config/preferenc
 import type { FileAttachment } from '../utils/files.ts';
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import { debug } from '../utils/debug.ts';
+import { guardLargeResult } from '../utils/large-response.ts';
 import {
   getSessionPlansDir,
   getLastPlanFilePath,
@@ -37,6 +38,7 @@ import {
 import { type AutomationSystem, type SdkAutomationCallbackMatcher } from '../automations/index.ts';
 import {
   getPermissionMode,
+  getPermissionModeDiagnostics,
   setPermissionMode,
   cyclePermissionMode,
   initializeModeState,
@@ -71,6 +73,11 @@ import type {
   SourceChangeCallback,
   SourceActivationCallback,
 } from './backend/types.ts';
+import { stat } from 'node:fs/promises';
+import { IMAGE_LIMITS } from '../utils/files.ts';
+
+/** Image extensions that may need size-guard in PreToolUse (matches Read tool's image detection) */
+const IMAGE_READ_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']);
 
 // Re-export permission mode functions for application usage
 export {
@@ -102,6 +109,15 @@ export type { LoadedSource } from '../sources/types.ts';
 // Re-exported for backwards compatibility with existing imports from claude-agent.ts
 import { AbortReason, type RecoveryMessage } from './core/index.ts';
 export { AbortReason, type RecoveryMessage };
+
+/** File extensions that can be converted to readable text by CLI tools. */
+const CONVERTIBLE_FILE_HINTS: Record<string, string> = {
+  pdf: 'markitdown or pdf-tool extract',
+  docx: 'markitdown', xlsx: 'markitdown or xlsx-tool read', pptx: 'markitdown or pptx-tool extract',
+  doc: 'markitdown', xls: 'markitdown', ppt: 'markitdown',
+  msg: 'markitdown', eml: 'markitdown', rtf: 'markitdown',
+  ics: 'ical-tool read',
+};
 
 export interface ClaudeAgentConfig {
   workspace: Workspace;
@@ -315,6 +331,7 @@ export class ClaudeAgent extends BaseAgent {
   private currentQueryAbortController: AbortController | null = null;
   private lastAbortReason: AbortReason | null = null;
   private sessionId: string | null = null;
+  private branchFromSdkSessionId: string | null = null;
   private isHeadless: boolean = false;
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   // Permission whitelists are now managed by this.permissionManager (inherited from BaseAgent)
@@ -351,7 +368,20 @@ export class ClaudeAgent extends BaseAgent {
   }
 
   // Callback for permission requests - set by application to receive permission prompts
-  public onPermissionRequest: ((request: { requestId: string; toolName: string; command?: string; description: string; type?: PermissionRequestType }) => void) | null = null;
+  public onPermissionRequest: ((request: {
+    requestId: string;
+    toolName: string;
+    command?: string;
+    description: string;
+    type?: PermissionRequestType;
+    appName?: string;
+    reason?: string;
+    impact?: string;
+    requiresSystemPrompt?: boolean;
+    rememberForMinutes?: number;
+    commandHash?: string;
+    approvalTtlSeconds?: number;
+  }) => void) | null = null;
 
   // Debug callback for status messages
   public onDebug: ((message: string) => void) | null = null;
@@ -426,6 +456,10 @@ export class ClaudeAgent extends BaseAgent {
     // Initialize sessionId from session config for conversation resumption
     if (config.session?.sdkSessionId) {
       this.sessionId = config.session.sdkSessionId;
+    }
+    // Initialize branch params for SDK-level fork (resume parent + forkSession)
+    if (config.session?.branchFromSdkSessionId) {
+      this.branchFromSdkSessionId = config.session.branchFromSdkSessionId;
     }
 
     // Initialize permission mode state with callbacks
@@ -808,6 +842,49 @@ export class ClaudeAgent extends BaseAgent {
                 this.prerequisiteManager.trackReadTool(input.tool_input as Record<string, unknown>);
               }
 
+              // --- Image size guard for Read tool ---
+              // Must run before runPreToolUseChecks. Once an oversized image enters
+              // the conversation history, the session becomes permanently stuck
+              // (API rejects with 400, SDK reports success, no recovery).
+              if (input.tool_name === 'Read') {
+                const filePath = (input.tool_input as { file_path?: string }).file_path;
+                if (filePath) {
+                  const ext = filePath.toLowerCase().split('.').pop() || '';
+                  if (IMAGE_READ_EXTENSIONS.has(ext)) {
+                    try {
+                      const stats = await stat(filePath);
+
+                      if (stats.size > IMAGE_LIMITS.MAX_RAW_SIZE) {
+                        const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
+                        this.onDebug?.(`Image ${filePath} is ${sizeMB}MB, attempting resize...`);
+
+                        if (this.config.onImageResize) {
+                          const resizedPath = await this.config.onImageResize(filePath, IMAGE_LIMITS.MAX_RAW_SIZE);
+                          if (resizedPath) {
+                            this.onDebug?.(`Image resized, redirecting Read to: ${resizedPath}`);
+                            return {
+                              continue: true,
+                              hookSpecificOutput: {
+                                hookEventName: 'PreToolUse' as const,
+                                updatedInput: { ...input.tool_input as Record<string, unknown>, file_path: resizedPath },
+                              },
+                            };
+                          }
+                        }
+
+                        return blockWithReason(
+                          `Image too large (${sizeMB}MB). The API limit is 5MB base64 (~3.5MB raw). Use a smaller or compressed version.`
+                        );
+                      }
+                    } catch (err) {
+                      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+                        this.onDebug?.(`Image size check failed for ${filePath}: ${err}`);
+                      }
+                    }
+                  }
+                }
+              }
+
               // Get current permission mode (single source of truth)
               const permissionMode = getPermissionMode(sessionId);
               this.onDebug?.(`PreToolUse hook: ${input.tool_name} (permissionMode=${permissionMode})`);
@@ -818,6 +895,7 @@ export class ClaudeAgent extends BaseAgent {
               const checkResult = runPreToolUseChecks({
                 toolName: input.tool_name,
                 input: toolInput,
+                sessionId,
                 permissionMode,
                 workspaceRootPath: this.workspaceRootPath,
                 workspaceId: extractWorkspaceSlug(this.workspaceRootPath, this.config.workspace.id),
@@ -862,8 +940,19 @@ export class ClaudeAgent extends BaseAgent {
                     },
                   };
 
-                case 'block':
+                case 'block': {
+                  const diagnostics = getPermissionModeDiagnostics(sessionId);
+                  this.onDebug?.(`__PERMISSION_BLOCK__${JSON.stringify({
+                    sessionId,
+                    toolName: input.tool_name,
+                    effectiveMode: diagnostics.permissionMode,
+                    modeVersion: diagnostics.modeVersion,
+                    changedBy: diagnostics.lastChangedBy,
+                    changedAt: diagnostics.lastChangedAt,
+                    reason: checkResult.reason,
+                  })}`);
                   return blockWithReason(checkResult.reason);
+                }
 
                 case 'source_activation_needed': {
                   const { sourceSlug, sourceExists } = checkResult;
@@ -937,6 +1026,13 @@ export class ClaudeAgent extends BaseAgent {
                       command,
                       description: checkResult.description,
                       type: checkResult.promptType,
+                      appName: checkResult.appName,
+                      reason: checkResult.reason,
+                      impact: checkResult.impact,
+                      requiresSystemPrompt: checkResult.requiresSystemPrompt,
+                      rememberForMinutes: checkResult.rememberForMinutes,
+                      commandHash: checkResult.commandHash,
+                      approvalTtlSeconds: checkResult.approvalTtlSeconds,
                     });
                   } else {
                     this.pendingPermissions.delete(requestId);
@@ -1013,7 +1109,12 @@ export class ClaudeAgent extends BaseAgent {
         })(),
         // Continue from previous session if we have one (enables conversation history & auto compaction)
         // Skip resume on retry (after session expiry) to start fresh
-        ...(!_isRetry && this.sessionId ? { resume: this.sessionId } : {}),
+        // For branched sessions: fork the parent session so the agent has full conversation context
+        ...(!_isRetry && this.sessionId
+          ? { resume: this.sessionId }
+          : !_isRetry && this.branchFromSdkSessionId
+            ? { resume: this.branchFromSdkSessionId, forkSession: true }
+            : {}),
         mcpServers,
         // NOTE: This callback is NOT called by the SDK because we set `permissionMode: 'bypassPermissions'` above.
         // All permission logic is handled via the PreToolUse hook instead (see hooks.PreToolUse above).
@@ -1033,10 +1134,8 @@ export class ClaudeAgent extends BaseAgent {
 
       // Log resume attempt for debugging session failures
       if (wasResuming) {
-        console.error(`[ClaudeAgent] Attempting to resume SDK session: ${this.sessionId}`);
         debug(`[ClaudeAgent] Attempting to resume SDK session: ${this.sessionId}`);
       } else {
-        console.error(`[ClaudeAgent] Starting fresh SDK session (no resume)`);
         debug(`[ClaudeAgent] Starting fresh SDK session (no resume)`);
       }
 
@@ -1086,6 +1185,7 @@ export class ClaudeAgent extends BaseAgent {
       this.eventAdapter.startTurn();
 
       // Process SDK messages and convert to AgentEvents
+      const summarizeCallback = this.getSummarizeCallback();
       let receivedComplete = false;
       // Track whether we received any assistant content (for empty response detection)
       // When SDK returns empty response (e.g., failed resume), we need to detect and recover
@@ -1166,6 +1266,36 @@ export class ClaudeAgent extends BaseAgent {
             // Reset prerequisite state on compaction (LLM loses guide content)
             if (event.type === 'info' && event.message === 'Compacted Conversation') {
               this.resetPrerequisiteState();
+            }
+
+            // Intercept large/binary/media-rich tool results — save assets to disk,
+            // preserve original JSON when needed, and/or summarize oversized text.
+            if (event.type === 'tool_result' && !event.isError && event.result) {
+              const guarded = await guardLargeResult(event.result, {
+                sessionPath: metadataSessionDir,
+                toolName: event.toolName || 'unknown',
+                input: event.input,
+                summarize: summarizeCallback,
+              });
+              if (guarded) {
+                yield { ...event, result: guarded };
+                continue;
+              }
+            }
+
+            // Suggest CLI tools when Read fails on convertible file types
+            if (event.type === 'tool_result' && event.toolName === 'Read' && event.isError && event.result) {
+              const filePath = typeof event.input?.file_path === 'string' ? event.input.file_path : undefined;
+              if (filePath) {
+                const ext = filePath.split('.').pop()?.toLowerCase();
+                const hint = ext ? CONVERTIBLE_FILE_HINTS[ext] : undefined;
+                if (hint) {
+                  // Split "or" alternatives into separate backtick-wrapped commands
+                  const commands = hint.split(' or ').map(cmd => `\`${cmd} "${filePath}"\``).join(' or ');
+                  yield { ...event, result: `${event.result}\n\nTip: Use ${commands} to convert this file to readable text.` };
+                  continue;
+                }
+              }
             }
 
             if (event.type === 'complete') {
@@ -2110,6 +2240,66 @@ export class ClaudeAgent extends BaseAgent {
   }
 
   // getActiveSourceSlugs() is now inherited from BaseAgent
+
+  // ============================================================
+  // Branch preflight
+  // ============================================================
+
+  /**
+   * Ensure branched sessions establish SDK fork context at creation time.
+   * This prevents "fake branches" where transcript history is copied but
+   * backend session context is only attempted later on first user message.
+   */
+  override async ensureBranchReady(): Promise<void> {
+    // Nothing to preflight for non-branched sessions or already-initialized sessions.
+    if (this.sessionId || !this.branchFromSdkSessionId) return;
+
+    const options: Options = {
+      ...getDefaultOptions(this.config.envOverrides),
+      model: this.getModel(),
+      // We only need session initialization/fork; no assistant turn required.
+      maxTurns: 0,
+      resume: this.branchFromSdkSessionId,
+      forkSession: true,
+      // Keep behavior aligned with normal chat options (permissions are enforced via hooks there).
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      tools: { type: 'preset', preset: 'claude_code' },
+    };
+
+    let capturedSessionId: string | null = null;
+    let preflightQuery: Query | null = null;
+
+    try {
+      preflightQuery = query({ prompt: ' ', options });
+
+      for await (const msg of preflightQuery) {
+        if ('session_id' in msg && msg.session_id) {
+          capturedSessionId = msg.session_id;
+          break;
+        }
+      }
+    } catch (error) {
+      throw new Error(
+        `Failed to establish branch context during creation: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      if (preflightQuery) {
+        try {
+          await preflightQuery.interrupt();
+        } catch {
+          // Ignore interrupt errors — query may already be complete.
+        }
+      }
+    }
+
+    if (!capturedSessionId) {
+      throw new Error('Failed to establish branch context during creation: no forked session ID received');
+    }
+
+    this.sessionId = capturedSessionId;
+    this.config.onSdkSessionIdUpdate?.(capturedSessionId);
+  }
 
   // ============================================================
   // Mini Completion (for title generation and other quick tasks)

@@ -1,10 +1,9 @@
 import * as React from "react"
 import { useRef, useState, useEffect, useCallback, useMemo } from "react"
-import { useAtomValue } from "jotai"
+import { useAtomValue, useStore } from "jotai"
 import { motion, AnimatePresence } from "motion/react"
 import {
   Archive,
-  CheckCircle2,
   Settings,
   ChevronRight,
   ChevronDown,
@@ -23,25 +22,21 @@ import {
   Inbox,
   Globe,
   FolderOpen,
-  HelpCircle,
-  ExternalLink,
   Cake,
+  Calendar,
+  Layers,
   ListTodo,
   Clock,
   Radio,
   Bot,
   Info,
-  Webhook,
 } from "lucide-react"
-import { PanelRightRounded } from "../icons/PanelRightRounded"
-import { PanelLeftRounded } from "../icons/PanelLeftRounded"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
-import { AppMenu } from "../AppMenu"
+import { TopBar } from "./TopBar"
 import { SquarePenRounded } from "../icons/SquarePenRounded"
 import { McpIcon } from "../icons/McpIcon"
 import { cn } from "@/lib/utils"
-import { isMac } from "@/lib/platform"
 import { Button } from "@/components/ui/button"
 import { HeaderIconButton } from "@/components/ui/HeaderIconButton"
 import { Separator } from "@/components/ui/separator"
@@ -71,9 +66,9 @@ import {
   AnimatedCollapsibleContent,
   springTransition as collapsibleSpring,
 } from "@/components/ui/collapsible"
-import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
-import { SessionList } from "./SessionList"
+import { SessionList, type ChatGroupingMode } from "./SessionList"
 import { MainContentPanel } from "./MainContentPanel"
+import { PanelStackContainer } from "./PanelStackContainer"
 import type { ChatDisplayHandle } from "./ChatDisplay"
 import { LeftSidebar } from "./LeftSidebar"
 import { useSession } from "@/hooks/useSession"
@@ -91,6 +86,7 @@ import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSourc
 import { sessionMetaMapAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
+import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
 import { useStatuses } from "@/hooks/useStatuses"
 import { useLabels } from "@/hooks/useLabels"
@@ -112,7 +108,6 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   type NavigationState,
-  type SessionFilter,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
 import { SourcesListPanel } from "./SourcesListPanel"
@@ -123,9 +118,8 @@ import { useAutomations } from "@/hooks/useAutomations"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
-import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
-import { RightSidebar } from "./RightSidebar"
+import { PANEL_GAP, PANEL_EDGE_INSET, RADIUS_EDGE, RADIUS_INNER } from "./panel-constants"
 import type { RichTextInputHandle } from "@/components/ui/rich-text-input"
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
@@ -436,8 +430,6 @@ function FilterLabelItems({
   )
 }
 
-const PANEL_WINDOW_EDGE_SPACING = 6 // Padding between panels and window edge
-const PANEL_PANEL_SPACING = 5 // Gap between adjacent panels
 
 /**
  * AppShell - Main 3-panel layout container
@@ -478,7 +470,6 @@ function AppShellContent({
     sessionOptions,
     onSelectWorkspace,
     onRefreshWorkspaces,
-    onCreateSession,
     onDeleteSession,
     onFlagSession,
     onUnflagSession,
@@ -494,6 +485,7 @@ function AppShellContent({
     onReset,
     onSendMessage,
     openNewChat,
+    pendingPermissions,
   } = contextValue
 
   // Get hotkey labels from centralized action registry
@@ -510,22 +502,12 @@ function AppShellContent({
     return storage.get(storage.KEYS.sessionListWidth, 300)
   })
 
-  // Right sidebar state (min 280, max 480)
-  const [isRightSidebarVisible, setIsRightSidebarVisible] = React.useState(() => {
-    return storage.get(storage.KEYS.rightSidebarVisible, false)
+  // Hides both sidebar and navigator (CMD+. toggle)
+  // Seed from either focused window param or persisted preference, then keep it toggleable.
+  const [isSidebarAndNavigatorHidden, setIsSidebarAndNavigatorHidden] = React.useState(() => {
+    return isFocusedMode || storage.get(storage.KEYS.focusModeEnabled, false)
   })
-  const [rightSidebarWidth, setRightSidebarWidth] = React.useState(() => {
-    return storage.get(storage.KEYS.rightSidebarWidth, 300)
-  })
-  const [skipRightSidebarAnimation, setSkipRightSidebarAnimation] = React.useState(false)
-
-  // Focus mode state - hides both sidebars for distraction-free chat
-  // Can be enabled via prop (URL param for new windows) or toggled via Cmd+.
-  const [isFocusModeActive, setIsFocusModeActive] = React.useState(() => {
-    return storage.get(storage.KEYS.focusModeEnabled, false)
-  })
-  // Effective focus mode combines prop-based (immutable) and state-based (toggleable)
-  const effectiveFocusMode = isFocusedMode || isFocusModeActive
+  const effectiveSidebarAndNavigatorHidden = isSidebarAndNavigatorHidden
 
   // What's New overlay
   const [showWhatsNew, setShowWhatsNew] = React.useState(false)
@@ -541,24 +523,11 @@ function AppShellContent({
     })
   }, [])
 
-  // Window width tracking for responsive behavior
-  const [windowWidth, setWindowWidth] = React.useState(window.innerWidth)
-
-  // Calculate overlay threshold dynamically based on actual sidebar widths
-  // Formula: 600px (300px right sidebar + 300px center) + leftSidebar + sessionList
-  // This ensures we switch to overlay mode when inline right sidebar would compress content
-  const MIN_INLINE_SPACE = 600 // 300px for right sidebar + 300px for center content
-  const leftSidebarEffectiveWidth = isSidebarVisible ? sidebarWidth : 0
-  const OVERLAY_THRESHOLD = MIN_INLINE_SPACE + leftSidebarEffectiveWidth + sessionListWidth
-  const shouldUseOverlay = windowWidth < OVERLAY_THRESHOLD
-
-  const [isResizing, setIsResizing] = React.useState<'sidebar' | 'session-list' | 'right-sidebar' | null>(null)
+  const [isResizing, setIsResizing] = React.useState<'sidebar' | 'session-list' | null>(null)
   const [sidebarHandleY, setSidebarHandleY] = React.useState<number | null>(null)
   const [sessionListHandleY, setSessionListHandleY] = React.useState<number | null>(null)
-  const [rightSidebarHandleY, setRightSidebarHandleY] = React.useState<number | null>(null)
   const resizeHandleRef = React.useRef<HTMLDivElement>(null)
   const sessionListHandleRef = React.useRef<HTMLDivElement>(null)
-  const rightSidebarHandleRef = React.useRef<HTMLDivElement>(null)
   const [session, setSession] = useSession()
   const { resolvedMode, isDark, setMode } = useTheme()
   const { canGoBack, canGoForward, goBack, goForward, navigateToSource, navigateToSession } = useNavigation()
@@ -567,11 +536,42 @@ function AppShellContent({
   const { handleEscapePress } = useEscapeInterrupt()
 
   // UNIFIED NAVIGATION STATE - single source of truth from NavigationContext
-  // All sidebar/navigator/main panel state is derived from this
+  // Derived from focused panel's route — all panels are peers
   const navState = useNavigationState()
 
-  // Derive chat filter from navigation state (only when in chats navigator)
-  const sessionFilter = isSessionsNavigation(navState) ? navState.filter : null
+  const store = useStore()
+  const panelStack = useAtomValue(panelStackAtom)
+  const panelCount = useAtomValue(panelCountAtom)
+  const focusedSessionId = useAtomValue(focusedSessionIdAtom)
+
+  // Navigate the focused panel to a session.
+  // If the session is already open in another panel, focus that panel instead.
+  const setFocusedPanel = useSetAtom(focusedPanelIdAtom)
+  const navigateToSessionInPanel = useCallback((sessionId: string) => {
+    // Check if the session is already open in any panel — focus it instead of navigating
+    const stack = store.get(panelStackAtom)
+    for (const entry of stack) {
+      if (parseSessionIdFromRoute(entry.route) === sessionId) {
+        setFocusedPanel(entry.id)
+        return
+      }
+    }
+
+    // Not open in any panel — navigate() updates the focused panel
+    navigateToSession(sessionId)
+  }, [store, setFocusedPanel, navigateToSession])
+
+  const sessionsContext = React.useMemo(() => {
+    if (isSessionsNavigation(navState)) {
+      return {
+        filter: navState.filter,
+        sessionId: navState.details?.sessionId ?? null,
+      }
+    }
+    return null
+  }, [navState])
+
+  const sessionFilter = sessionsContext?.filter ?? null
 
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
@@ -583,7 +583,7 @@ function AppShellContent({
   // has its own independent set of status and label filters.
   // Each filter entry stores a mode ('include' or 'exclude') for tri-state filtering.
   type FilterEntry = Record<string, FilterMode> // id → mode
-  type ViewFiltersMap = Record<string, { statuses: FilterEntry, labels: FilterEntry }>
+  type ViewFiltersMap = Record<string, { statuses: FilterEntry, labels: FilterEntry, groupingMode?: ChatGroupingMode }>
 
   // Compute a stable key for the current chat filter view
   const sessionFilterKey = useMemo(() => {
@@ -673,6 +673,24 @@ function AppShellContent({
   const [searchActive, setSearchActive] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState('')
 
+  // Grouping mode for chat list: per-view (stored in viewFiltersMap), forced to 'date' for state sub-views
+  const isStateSubView = sessionFilter?.kind === 'state'
+
+  const chatGroupingMode: ChatGroupingMode = isStateSubView
+    ? 'date'
+    : (viewFiltersMap[sessionFilterKey ?? '']?.groupingMode ?? 'date')
+
+  const setChatGroupingMode = useCallback((mode: ChatGroupingMode) => {
+    setViewFiltersMap(prev => {
+      if (!sessionFilterKey) return prev
+      const existing = prev[sessionFilterKey] ?? { statuses: {}, labels: {} }
+      return {
+        ...prev,
+        [sessionFilterKey]: { ...existing, groupingMode: mode }
+      }
+    })
+  }, [sessionFilterKey])
+
   // Ref for ChatDisplay navigation (exposed via forwardRef)
   const chatDisplayRef = React.useRef<ChatDisplayHandle>(null)
   // Track match count and index from ChatDisplay (for SessionList navigation UI)
@@ -708,26 +726,8 @@ function AppShellContent({
     setSearchQuery('')
   }, [navFilterKey])
 
-  // Auto-hide right sidebar when navigating away from chat sessions
-  React.useEffect(() => {
-    // Hide sidebar if not in chat view or no session selected
-    if (!isSessionsNavigation(navState) || !navState.details) {
-      setSkipRightSidebarAnimation(true)
-      setIsRightSidebarVisible(false)
-      // Reset skip flag after state update
-      setTimeout(() => setSkipRightSidebarAnimation(false), 0)
-    }
-  }, [navState])
-
   // Cmd+F to activate search
   useAction('app.search', () => setSearchActive(true))
-
-  // Track window width for responsive right sidebar behavior
-  React.useEffect(() => {
-    const handleResize = () => setWindowWidth(window.innerWidth)
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [])
 
   // Unified sidebar keyboard navigation state
   // Load expanded folders from localStorage (default: all collapsed)
@@ -849,21 +849,23 @@ function AppShellContent({
 
   // Subscribe to live source updates (when sources are added/removed dynamically)
   React.useEffect(() => {
-    const cleanup = window.electronAPI.onSourcesChanged((updatedSources) => {
+    const cleanup = window.electronAPI.onSourcesChanged((workspaceId, updatedSources) => {
+      if (workspaceId !== activeWorkspaceId) return
       // Clear icon cache so updated source icons are re-fetched on render
       clearSourceIconCaches()
       setSources(updatedSources || [])
     })
     return cleanup
-  }, [])
+  }, [activeWorkspaceId])
 
   // Subscribe to live skill updates (when skills are added/removed dynamically)
   React.useEffect(() => {
-    const cleanup = window.electronAPI.onSkillsChanged((updatedSkills) => {
+    const cleanup = window.electronAPI.onSkillsChanged((workspaceId, updatedSkills) => {
+      if (workspaceId !== activeWorkspaceId) return
       setSkills(updatedSkills || [])
     })
     return cleanup
-  }, [])
+  }, [activeWorkspaceId])
 
   // Handle session source selection changes
   const handleSessionSourcesChange = React.useCallback(async (sessionId: string, sourceSlugs: string[]) => {
@@ -1036,9 +1038,11 @@ function AppShellContent({
   }, { enabled: () => !document.querySelector('[role="dialog"]') })
 
   // Shift+Tab cycles permission mode through enabled modes (textarea handles its own, this handles when focus is elsewhere)
+  // In multi-panel, targets the focused panel's session
+  const effectiveSessionId = focusedSessionId ?? session.selected
   useAction('chat.cyclePermissionMode', () => {
-    if (session.selected) {
-      const currentOptions = contextValue.sessionOptions.get(session.selected)
+    if (effectiveSessionId) {
+      const currentOptions = contextValue.sessionOptions.get(effectiveSessionId)
       const currentMode = currentOptions?.permissionMode ?? 'ask'
       // Cycle through enabled permission modes
       const modes = enabledModes.length >= 2 ? enabledModes : ['safe', 'ask', 'allow-all'] as PermissionMode[]
@@ -1046,18 +1050,33 @@ function AppShellContent({
       // If current mode not in enabled list, jump to first enabled mode
       const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % modes.length
       const nextMode = modes[nextIndex]
-      contextValue.onSessionOptionsChange(session.selected, { permissionMode: nextMode })
+      contextValue.onSessionOptionsChange(effectiveSessionId, { permissionMode: nextMode })
     }
-  }, { enabled: () => !document.querySelector('[role="dialog"]') && document.activeElement?.tagName !== 'TEXTAREA' })
+  })
+
+  const handleToggleSidebar = useCallback(() => {
+    if (isSidebarAndNavigatorHidden) {
+      setIsSidebarAndNavigatorHidden(false)
+      return
+    }
+    setIsSidebarVisible(v => !v)
+  }, [isSidebarAndNavigatorHidden])
 
   // Sidebar toggle (CMD+B)
-  useAction('view.toggleSidebar', () => setIsSidebarVisible(v => !v))
+  useAction('view.toggleSidebar', handleToggleSidebar)
 
   // Focus mode toggle (CMD+.) - hides both sidebars
-  useAction('view.toggleFocusMode', () => setIsFocusModeActive(v => !v))
+  useAction('view.toggleFocusMode', () => setIsSidebarAndNavigatorHidden(v => !v))
+
+  // Panel focus navigation (CMD+SHIFT+[ / ])
+  const focusNextPanel = useSetAtom(focusNextPanelAtom)
+  const focusPrevPanel = useSetAtom(focusPrevPanelAtom)
+  useAction('panel.focusNext', focusNextPanel, { enabled: () => panelCount > 1 })
+  useAction('panel.focusPrev', focusPrevPanel, { enabled: () => panelCount > 1 })
 
   // New chat
-  useAction('app.newChat', () => handleNewChat(true))
+  useAction('app.newChat', () => handleNewChat())
+  useAction('app.newChatInPanel', () => handleNewChat(true))
 
   // Settings
   useAction('app.settings', onOpenSettings)
@@ -1089,14 +1108,15 @@ function AppShellContent({
 
   // ESC to stop processing - requires double-press within 1 second
   // First press shows warning overlay, second press interrupts
+  // In multi-panel, targets the focused panel's session
   useAction('chat.stopProcessing', () => {
-    if (session.selected) {
-      const meta = sessionMetaMap.get(session.selected)
+    if (effectiveSessionId) {
+      const meta = sessionMetaMap.get(effectiveSessionId)
       if (meta?.isProcessing) {
         // handleEscapePress returns true on second press (within timeout)
         const shouldInterrupt = handleEscapePress()
         if (shouldInterrupt) {
-          window.electronAPI.cancelProcessing(session.selected, false).catch(err => {
+          window.electronAPI.cancelProcessing(effectiveSessionId, false).catch(err => {
             console.error('[AppShell] Failed to cancel processing:', err)
           })
         }
@@ -1107,11 +1127,11 @@ function AppShellContent({
     // Overlays (dialogs, menus, popovers, etc.) should handle their own Escape
     enabled: () => {
       if (hasOpenOverlay()) return false
-      if (!session.selected) return false
-      const meta = sessionMetaMap.get(session.selected)
+      if (!effectiveSessionId) return false
+      const meta = sessionMetaMap.get(effectiveSessionId)
       return meta?.isProcessing ?? false
     }
-  }, [session, handleEscapePress])
+  }, [effectiveSessionId, handleEscapePress])
 
   // Theme toggle (CMD+SHIFT+A)
   useAction('app.toggleTheme', () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'))
@@ -1153,7 +1173,7 @@ function AppShellContent({
     return () => document.removeEventListener('paste', handleGlobalPaste)
   }, [])
 
-  // Resize effect for sidebar, session list, and right sidebar
+  // Resize effect for sidebar, session list, browser host lane, and metadata right sidebar.
   React.useEffect(() => {
     if (!isResizing) return
 
@@ -1173,14 +1193,6 @@ function AppShellContent({
           const rect = sessionListHandleRef.current.getBoundingClientRect()
           setSessionListHandleY(e.clientY - rect.top)
         }
-      } else if (isResizing === 'right-sidebar') {
-        // Calculate from right edge
-        const newWidth = Math.min(Math.max(window.innerWidth - e.clientX, 280), 480)
-        setRightSidebarWidth(newWidth)
-        if (rightSidebarHandleRef.current) {
-          const rect = rightSidebarHandleRef.current.getBoundingClientRect()
-          setRightSidebarHandleY(e.clientY - rect.top)
-        }
       }
     }
 
@@ -1191,9 +1203,6 @@ function AppShellContent({
       } else if (isResizing === 'session-list') {
         storage.set(storage.KEYS.sessionListWidth, sessionListWidth)
         setSessionListHandleY(null)
-      } else if (isResizing === 'right-sidebar') {
-        storage.set(storage.KEYS.rightSidebarWidth, rightSidebarWidth)
-        setRightSidebarHandleY(null)
       }
       setIsResizing(null)
     }
@@ -1205,7 +1214,12 @@ function AppShellContent({
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [isResizing, sidebarWidth, sessionListWidth, rightSidebarWidth, isSidebarVisible])
+  }, [
+    isResizing,
+    sidebarWidth,
+    sessionListWidth,
+    isSidebarVisible,
+  ])
 
   // Spring transition config - shared between sidebar and header
   // Critical damping (no bounce): damping = 2 * sqrt(stiffness * mass)
@@ -1218,6 +1232,14 @@ function AppShellContent({
   // Use session metadata from Jotai atom (lightweight, no messages)
   // This prevents closures from retaining full message arrays
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const setSessionMetaMap = useSetAtom(sessionMetaMapAtom)
+
+  const hasPendingPrompt = React.useCallback((sessionId: string) => {
+    return (pendingPermissions.get(sessionId)?.length ?? 0) > 0
+  }, [pendingPermissions])
+
+  // Workspace-level unread indicators (needed for workspace selectors across all workspaces)
+  const [workspaceUnreadMap, setWorkspaceUnreadMap] = useState<Record<string, boolean>>({})
 
   // Reload skills when active session's workingDirectory changes (for project-level skills)
   // Skills are loaded from: global (~/.agents/skills/), workspace, and project ({workingDirectory}/.agents/skills/)
@@ -1246,6 +1268,46 @@ function AppShellContent({
   const activeSessionMetas = useMemo(() => {
     return workspaceSessionMetas.filter(s => !s.isArchived)
   }, [workspaceSessionMetas])
+
+  const refreshWorkspaceUnreadMap = useCallback(async () => {
+    try {
+      const summary = await window.electronAPI.getUnreadSummary()
+      const next: Record<string, boolean> = {}
+
+      for (const workspace of workspaces) {
+        next[workspace.id] = !!summary.hasUnreadByWorkspace[workspace.id]
+      }
+
+      setWorkspaceUnreadMap(next)
+    } catch (error) {
+      console.error('[AppShell] Failed to refresh workspace unread indicators:', error)
+    }
+  }, [workspaces])
+
+  // Initial + workspace-list refresh
+  useEffect(() => {
+    void refreshWorkspaceUnreadMap()
+  }, [refreshWorkspaceUnreadMap])
+
+  // Keep active workspace unread indicator in sync with live metadata updates
+  useEffect(() => {
+    if (!activeWorkspaceId) return
+    const activeHasUnread = activeSessionMetas.some((session) => !!session.hasUnread)
+    setWorkspaceUnreadMap((prev) => ({ ...prev, [activeWorkspaceId]: activeHasUnread }))
+  }, [activeWorkspaceId, activeSessionMetas])
+
+  // Keep cross-workspace indicators in sync with global unread updates from main process
+  useEffect(() => {
+    const cleanup = window.electronAPI.onUnreadSummaryChanged((summary) => {
+      const next: Record<string, boolean> = {}
+      for (const workspace of workspaces) {
+        next[workspace.id] = !!summary.hasUnreadByWorkspace[workspace.id]
+      }
+      setWorkspaceUnreadMap(next)
+    })
+
+    return cleanup
+  }, [workspaces])
 
   // Count sessions by todo state (scoped to workspace)
   const isMetaDone = (s: SessionMeta) => s.sessionStatus === 'done' || s.sessionStatus === 'cancelled'
@@ -1454,41 +1516,6 @@ function AppShellContent({
     return onDeleteSession(sessionId, skipConfirmation)
   }, [session.selected, setSession, onDeleteSession])
 
-  // Right sidebar OPEN button (fades out when sidebar is open, hidden in non-chat views)
-  const rightSidebarOpenButton = React.useMemo(() => {
-    if (!isSessionsNavigation(navState) || !navState.details) return null
-
-    return (
-      <motion.div
-        initial={false}
-        animate={{ opacity: isRightSidebarVisible ? 0 : 1 }}
-        transition={{ duration: 0.15 }}
-        style={{ pointerEvents: isRightSidebarVisible ? 'none' : 'auto' }}
-      >
-        <HeaderIconButton
-          icon={<PanelRightRounded className="h-5 w-6" />}
-          onClick={() => setIsRightSidebarVisible(true)}
-          tooltip="Open sidebar"
-          className="text-foreground"
-        />
-      </motion.div>
-    )
-  }, [navState, isRightSidebarVisible])
-
-  // Right sidebar CLOSE button (shown in sidebar header when open)
-  const rightSidebarCloseButton = React.useMemo(() => {
-    if (!isRightSidebarVisible) return null
-
-    return (
-      <HeaderIconButton
-        icon={<PanelLeftRounded className="h-5 w-6" />}
-        onClick={() => setIsRightSidebarVisible(false)}
-        tooltip="Close sidebar"
-        className="text-foreground"
-      />
-    )
-  }, [isRightSidebarVisible])
-
   // Extend context value with local overrides (textareaRef, wrapped onDeleteSession, sources, skills, labels, enabledModes, rightSidebarOpenButton, effectiveSessionStatuses)
   const appShellContextValue = React.useMemo<AppShellContextType>(() => ({
     ...contextValue,
@@ -1501,7 +1528,7 @@ function AppShellContent({
     enabledModes,
     sessionStatuses: effectiveSessionStatuses,
     onSessionSourcesChange: handleSessionSourcesChange,
-    rightSidebarButton: rightSidebarOpenButton,
+    rightSidebarButton: null,
     // Search state for ChatDisplay highlighting
     sessionListSearchQuery: searchActive ? searchQuery : undefined,
     isSearchModeActive: searchActive,
@@ -1513,7 +1540,7 @@ function AppShellContent({
     onDeleteAutomation: handleDeleteAutomation,
     automationTestResults,
     getAutomationHistory,
-  }), [contextValue, handleDeleteSession, sources, skills, labelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, rightSidebarOpenButton, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory])
+  }), [contextValue, handleDeleteSession, sources, skills, labelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -1526,20 +1553,15 @@ function AppShellContent({
     storage.set(storage.KEYS.sidebarVisible, isSidebarVisible)
   }, [isSidebarVisible])
 
-  // Persist right sidebar visibility to localStorage
-  React.useEffect(() => {
-    storage.set(storage.KEYS.rightSidebarVisible, isRightSidebarVisible)
-  }, [isRightSidebarVisible])
-
   // Persist focus mode state to localStorage
   React.useEffect(() => {
-    storage.set(storage.KEYS.focusModeEnabled, isFocusModeActive)
-  }, [isFocusModeActive])
+    storage.set(storage.KEYS.focusModeEnabled, isSidebarAndNavigatorHidden)
+  }, [isSidebarAndNavigatorHidden])
 
   // Listen for focus mode toggle from menu (View → Focus Mode)
   React.useEffect(() => {
     const cleanup = window.electronAPI.onMenuToggleFocusMode?.(() => {
-      setIsFocusModeActive(v => !v)
+      setIsSidebarAndNavigatorHidden(v => !v)
     })
     return cleanup
   }, [])
@@ -1547,10 +1569,10 @@ function AppShellContent({
   // Listen for sidebar toggle from menu (View → Toggle Sidebar)
   React.useEffect(() => {
     const cleanup = window.electronAPI.onMenuToggleSidebar?.(() => {
-      setIsSidebarVisible(v => !v)
+      handleToggleSidebar()
     })
     return cleanup
-  }, [])
+  }, [handleToggleSidebar])
 
   // Persist per-view filter map to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -1783,20 +1805,36 @@ function AppShellContent({
   }, [captureContextMenuPosition])
 
   // Create a new chat and select it
-  const handleNewChat = useCallback(async (_useCurrentAgent: boolean = true) => {
+  const handleNewChat = useCallback((newPanel: boolean = false) => {
     if (!activeWorkspace) return
 
     // Exit search mode and switch to All Sessions
     setSearchActive(false)
     setSearchQuery('')
 
-    const newSession = await onCreateSession(activeWorkspace.id)
-    // Navigate to the new session via central routing
-    navigate(routes.view.allSessions(newSession.id))
+    // Delegate to NavigationContext which handles session creation
+    navigate(
+      routes.action.newSession(),
+      newPanel ? { newPanel: true, targetLaneId: 'main' } : undefined
+    )
 
     // Focus the chat input after navigation completes
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
-  }, [activeWorkspace, onCreateSession, focusZone])
+  }, [activeWorkspace, focusZone, navigate])
+
+  // Create a brand new dedicated browser window and focus it.
+  // Intentionally unbound: this action should always create a NEW window.
+  const handleNewBrowserWindow = useCallback(async () => {
+    try {
+      const instanceId = await window.electronAPI.browserPane.create({
+        show: true,
+      })
+      await window.electronAPI.browserPane.focus(instanceId)
+    } catch (error) {
+      console.error('[Chat] Failed to create browser window:', error)
+      toast.error('Failed to create browser window')
+    }
+  }, [])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -1828,7 +1866,7 @@ function AppShellContent({
     // Skip initial render
     if (menuTriggerRef.current === menuNewChatTrigger) return
     menuTriggerRef.current = menuNewChatTrigger
-    handleNewChat(true)
+    handleNewChat()
   }, [menuNewChatTrigger, handleNewChat])
 
   // Unified sidebar items: nav buttons only (agents system removed)
@@ -1841,16 +1879,16 @@ function AppShellContent({
   const unifiedSidebarItems = React.useMemo((): SidebarItem[] => {
     const result: SidebarItem[] = []
 
-    // 1. Sessions section: All Sessions, Flagged, States header, States items
+    // 1. Sessions section: All Sessions (expandable) with status items, Flagged, Archived as children
     result.push({ id: 'nav:allSessions', type: 'nav', action: handleAllSessionsClick })
-    result.push({ id: 'nav:flagged', type: 'nav', action: handleFlaggedClick })
-    result.push({ id: 'nav:states', type: 'nav', action: handleAllSessionsClick })
     for (const state of effectiveSessionStatuses) {
       result.push({ id: `nav:state:${state.id}`, type: 'nav', action: () => handleSessionStatusClick(state.id) })
     }
+    result.push({ id: 'nav:flagged', type: 'nav', action: handleFlaggedClick })
+    result.push({ id: 'nav:archived', type: 'nav', action: handleArchivedClick })
 
     // 2. Labels section header + regular label tree for keyboard nav
-    result.push({ id: 'nav:labels', type: 'nav', action: handleAllSessionsClick })
+    result.push({ id: 'nav:labels', type: 'nav', action: () => handleLabelClick('__all__') })
     // Flatten regular label tree for keyboard navigation (depth-first)
     const flattenTree = (nodes: LabelTreeNode[]) => {
       for (const node of nodes) {
@@ -1861,9 +1899,6 @@ function AppShellContent({
       }
     }
     flattenTree(labelTree)
-
-    // 2b. Archived section
-    result.push({ id: 'nav:archived', type: 'nav', action: handleArchivedClick })
 
     // 3. Sources, Skills, Settings
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
@@ -2089,77 +2124,50 @@ function AppShellContent({
 
   return (
     <AppShellProvider value={appShellContextValue}>
-        {/*
-          Draggable title bar region for transparent window (macOS)
-          - Fixed overlay at z-titlebar allows window dragging from the top bar area
-          - Interactive elements (buttons, dropdowns) must use:
-            1. titlebar-no-drag: prevents drag behavior on clickable elements
-            2. relative z-panel: ensures elements render above this drag overlay
-        */}
-        <div className="titlebar-drag-region fixed top-0 left-0 right-0 h-[50px] z-titlebar" />
+        {/* === TOP BAR === */}
+        <TopBar
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onSelectWorkspace={onSelectWorkspace}
+          workspaceUnreadMap={workspaceUnreadMap}
+          onWorkspaceCreated={() => onRefreshWorkspaces?.()}
+          activeSessionId={effectiveSessionId}
+          onNewChat={() => handleNewChat()}
+          onNewWindow={() => window.electronAPI.menuNewWindow()}
+          onOpenSettings={onOpenSettings}
+          onOpenSettingsSubpage={handleSettingsClick}
+          onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
+          onOpenStoredUserPreferences={onOpenStoredUserPreferences}
+          onBack={goBack}
+          onForward={goForward}
+          canGoBack={canGoBack}
+          canGoForward={canGoForward}
+          onToggleSidebar={handleToggleSidebar}
+          onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
+          onAddSessionPanel={() => handleNewChat(true)}
+          onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
+        />
 
-      {/* App Menu - fixed position, fades out in focused mode
-          On macOS: offset 86px to avoid stoplight controls
-          On Windows/Linux: offset 12px (no stoplight controls) */}
-      {(() => {
-        const menuLeftOffset = isMac ? 86 : 12
-        return (
-          <motion.div
-            initial={false}
-            animate={{ opacity: effectiveFocusMode ? 0 : 1 }}
-            transition={springTransition}
-            className={cn(
-              "fixed top-0 h-[50px] z-overlay flex items-center pointer-events-none pr-2",
-              effectiveFocusMode && "pointer-events-none"
-            )}
-            style={{ left: menuLeftOffset, width: sidebarWidth - menuLeftOffset }}
-          >
-            <AppMenu
-              onNewChat={() => handleNewChat(true)}
-              onNewWindow={() => window.electronAPI.menuNewWindow()}
-              onOpenSettings={onOpenSettings}
-              onOpenSettingsSubpage={handleSettingsClick}
-              onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
-              onOpenStoredUserPreferences={onOpenStoredUserPreferences}
-              onBack={goBack}
-              onForward={goForward}
-              canGoBack={canGoBack}
-              canGoForward={canGoForward}
-              onToggleSidebar={() => setIsSidebarVisible(prev => !prev)}
-              onToggleFocusMode={() => setIsFocusModeActive(prev => !prev)}
-            />
-          </motion.div>
-        )
-      })()}
-
-      {/* === OUTER LAYOUT: Sidebar | Main Content === */}
-      <div className="h-full flex items-stretch relative">
-        {/* === SIDEBAR (Left) ===
-            Animated width with spring physics for smooth 60-120fps transitions.
-            Uses overflow-hidden to clip content during collapse animation.
-            Resizable via drag handle on right edge (200-400px range). */}
-        <motion.div
-          initial={false}
-          animate={{
-            width: effectiveFocusMode ? 0 : (isSidebarVisible ? sidebarWidth : 0),
-            opacity: effectiveFocusMode ? 0 : 1,
-          }}
-          transition={isResizing ? { duration: 0 } : springTransition}
-          className="h-full overflow-hidden shrink-0 relative"
-        >
-          <div
-            ref={sidebarRef}
-            style={{ width: sidebarWidth }}
-            className="h-full font-sans relative"
-            data-focus-zone="sidebar"
-            tabIndex={sidebarFocused ? 0 : -1}
-            onKeyDown={handleSidebarKeyDown}
-          >
-            <div className="flex h-full flex-col pt-[50px] select-none">
+      {/* === OUTER LAYOUT: Unified Panel Stack | Right Sidebar === */}
+      <div
+        className="flex items-stretch relative"
+        style={{ height: 'calc(100% - 48px)', marginTop: 48, paddingRight: PANEL_EDGE_INSET, paddingBottom: PANEL_EDGE_INSET, paddingLeft: 0, gap: PANEL_GAP }}
+      >
+        <PanelStackContainer
+          sidebarSlot={
+            <div
+              ref={sidebarRef}
+              style={{ width: sidebarWidth }}
+              className="h-full font-sans relative"
+              data-focus-zone="sidebar"
+              tabIndex={sidebarFocused ? 0 : -1}
+              onKeyDown={handleSidebarKeyDown}
+            >
+            <div className="flex h-full flex-col select-none">
               {/* Sidebar Top Section */}
               <div className="flex-1 flex flex-col min-h-0">
                 {/* New Session Button - Gmail-style, with context menu for "Open in New Window" */}
-                <div className="px-2 pt-1 pb-2 shrink-0">
+                <div className="px-2 pb-2 shrink-0">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <div>
@@ -2167,7 +2175,7 @@ function AppShellContent({
                           <ContextMenuTrigger asChild>
                             <Button
                               variant="ghost"
-                              onClick={() => handleNewChat(true)}
+                              onClick={(e) => handleNewChat(e.metaKey || e.ctrlKey)}
                               className="w-full justify-start gap-2 py-[7px] px-2 text-[13px] font-normal rounded-[6px] shadow-minimal bg-background"
                               data-tutorial="new-chat-button"
                             >
@@ -2186,7 +2194,7 @@ function AppShellContent({
                     <TooltipContent side="right">{newChatHotkey}</TooltipContent>
                   </Tooltip>
                 </div>
-                {/* Primary Nav: All Sessions, Flagged, States, Labels | Sources, Skills | Settings */}
+                {/* Primary Nav: All Sessions (▸ Statuses, Flagged, Archived), Labels | Sources, Skills | Settings */}
                 {/* pb-4 provides clearance so the last item scrolls above the mask-fade-bottom gradient */}
                 <div className="flex-1 overflow-y-auto min-h-0 mask-fade-bottom pb-4">
                 <LeftSidebar
@@ -2195,6 +2203,7 @@ function AppShellContent({
                   focusedItemId={focusedSidebarItemId}
                   links={[
                     // --- Sessions Section ---
+                    // All Sessions: expandable with status children (sortable) + Flagged & Archived as trailing items
                     {
                       id: "nav:allSessions",
                       title: "All Sessions",
@@ -2202,46 +2211,67 @@ function AppShellContent({
                       icon: Inbox,
                       variant: sessionFilter?.kind === 'allSessions' ? "default" : "ghost",
                       onClick: handleAllSessionsClick,
-                    },
-                    {
-                      id: "nav:flagged",
-                      title: "Flagged",
-                      label: String(flaggedCount),
-                      icon: <Flag className="h-3.5 w-3.5" />,
-                      variant: sessionFilter?.kind === 'flagged' ? "default" : "ghost",
-                      onClick: handleFlaggedClick,
-                    },
-                    // States: expandable section with status sub-items (drag-and-drop reorder)
-                    {
-                      id: "nav:states",
-                      title: "Status",
-                      icon: CheckCircle2,
-                      variant: "ghost",
-                      onClick: () => toggleExpanded('nav:states'),
                       expandable: true,
-                      expanded: isExpanded('nav:states'),
-                      onToggle: () => toggleExpanded('nav:states'),
+                      expanded: isExpanded('nav:allSessions'),
+                      onToggle: () => toggleExpanded('nav:allSessions'),
                       contextMenu: {
                         type: 'allSessions',
                         onConfigureStatuses: openConfigureStatuses,
+                        onMarkAllRead: () => {
+                          if (!activeWorkspaceId) return
+                          // Optimistic: clear hasUnread on all workspace session metas
+                          setSessionMetaMap(prev => {
+                            const next = new Map(prev)
+                            for (const [id, meta] of next) {
+                              if (meta.workspaceId === activeWorkspaceId && meta.hasUnread) {
+                                next.set(id, { ...meta, hasUnread: false })
+                              }
+                            }
+                            return next
+                          })
+                          window.electronAPI.markAllSessionsRead(activeWorkspaceId)
+                        },
                       },
                       // Enable flat DnD reorder for status items
                       sortable: { onReorder: handleStatusReorder },
-                      items: effectiveSessionStatuses.map(state => ({
-                        id: `nav:state:${state.id}`,
-                        title: state.label,
-                        label: String(sessionStatusCounts[state.id] || 0),
-                        icon: state.icon,
-                        iconColor: state.resolvedColor,
-                        iconColorable: state.iconColorable,
-                        variant: (sessionFilter?.kind === 'state' && sessionFilter.stateId === state.id ? "default" : "ghost") as "default" | "ghost",
-                        onClick: () => handleSessionStatusClick(state.id),
-                        contextMenu: {
-                          type: 'status' as const,
-                          statusId: state.id,
-                          onConfigureStatuses: openConfigureStatuses,
+                      items: [
+                        // Status items (sortable via SortableStatusList)
+                        ...effectiveSessionStatuses.map(state => ({
+                          id: `nav:state:${state.id}`,
+                          title: state.label,
+                          label: String(sessionStatusCounts[state.id] || 0),
+                          icon: state.icon,
+                          iconColor: state.resolvedColor,
+                          iconColorable: state.iconColorable,
+                          variant: (sessionFilter?.kind === 'state' && sessionFilter.stateId === state.id ? "default" : "ghost") as "default" | "ghost",
+                          onClick: () => handleSessionStatusClick(state.id),
+                          contextMenu: {
+                            type: 'status' as const,
+                            statusId: state.id,
+                            onConfigureStatuses: openConfigureStatuses,
+                          },
+                        })),
+                        // Separator: SortableStatusList splits here — items after become non-sortable trailingItems
+                        { id: 'separator:states-flagged', type: 'separator' as const },
+                        // Flagged (trailing, non-sortable)
+                        {
+                          id: "nav:flagged",
+                          title: "Flagged",
+                          label: String(flaggedCount),
+                          icon: <Flag className="h-3.5 w-3.5" />,
+                          variant: (sessionFilter?.kind === 'flagged' ? "default" : "ghost") as "default" | "ghost",
+                          onClick: handleFlaggedClick,
                         },
-                      })),
+                        // Archived (trailing, non-sortable)
+                        {
+                          id: "nav:archived",
+                          title: "Archived",
+                          label: archivedCount > 0 ? String(archivedCount) : undefined,
+                          icon: Archive,
+                          variant: (sessionFilter?.kind === 'archived' ? "default" : "ghost") as "default" | "ghost",
+                          onClick: handleArchivedClick,
+                        },
+                      ],
                     },
                     // Labels: navigable header (shows all labeled sessions) + hierarchical tree (drag-and-drop reorder + re-parent)
                     {
@@ -2261,15 +2291,6 @@ function AppShellContent({
                         onAddLabel: handleAddLabel,
                       },
                       items: buildLabelSidebarItems(labelTree),
-                    },
-                    // --- Archived Section ---
-                    {
-                      id: "nav:archived",
-                      title: "Archived",
-                      label: archivedCount > 0 ? String(archivedCount) : undefined,
-                      icon: Archive,
-                      variant: sessionFilter?.kind === 'archived' ? "default" : "ghost",
-                      onClick: handleArchivedClick,
                     },
                     // --- Separator ---
                     { id: "separator:chats-sources", type: "separator" },
@@ -2417,117 +2438,11 @@ function AppShellContent({
                 </div>
               </div>
 
-              {/* Sidebar Bottom Section: WorkspaceSwitcher + Help icon */}
-              <div className="mt-auto shrink-0 py-2 px-2">
-                <div className="flex items-center gap-1">
-                  {/* Workspace switcher takes available space */}
-                  <div className="flex-1 min-w-0">
-                    <WorkspaceSwitcher
-                      isCollapsed={false}
-                      workspaces={workspaces}
-                      activeWorkspaceId={activeWorkspaceId}
-                      onSelect={onSelectWorkspace}
-                      onWorkspaceCreated={() => onRefreshWorkspaces?.()}
-                    />
-                  </div>
-                  {/* Help button - icon only with tooltip */}
-                  <DropdownMenu>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <DropdownMenuTrigger asChild>
-                          <button
-                            className="flex items-center justify-center h-7 w-7 rounded-[6px] select-none outline-none hover:bg-foreground/5 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
-                          >
-                            <HelpCircle className="h-4 w-4 text-foreground/60" />
-                          </button>
-                        </DropdownMenuTrigger>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">Help & Documentation</TooltipContent>
-                    </Tooltip>
-                    <StyledDropdownMenuContent align="end" side="top" sideOffset={8}>
-                      <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl(getDocUrl('sources'))}>
-                        <DatabaseZap className="h-3.5 w-3.5" />
-                        <span className="flex-1">Sources</span>
-                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
-                      </StyledDropdownMenuItem>
-                      <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl(getDocUrl('skills'))}>
-                        <Zap className="h-3.5 w-3.5" />
-                        <span className="flex-1">Skills</span>
-                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
-                      </StyledDropdownMenuItem>
-                      <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl(getDocUrl('statuses'))}>
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        <span className="flex-1">Statuses</span>
-                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
-                      </StyledDropdownMenuItem>
-                      <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl(getDocUrl('permissions'))}>
-                        <Settings className="h-3.5 w-3.5" />
-                        <span className="flex-1">Permissions</span>
-                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
-                      </StyledDropdownMenuItem>
-                      <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl(getDocUrl('automations'))}>
-                        <Webhook className="h-3.5 w-3.5" />
-                        <span className="flex-1">Automations</span>
-                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
-                      </StyledDropdownMenuItem>
-                      <StyledDropdownMenuSeparator />
-                      <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl('https://agents.craft.do/docs')}>
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        <span className="flex-1">All Documentation</span>
-                      </StyledDropdownMenuItem>
-                    </StyledDropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
             </div>
           </div>
-        </motion.div>
-
-        {/* Sidebar Resize Handle (hidden in focused mode) */}
-        {!effectiveFocusMode && (
-        <div
-          ref={resizeHandleRef}
-          onMouseDown={(e) => { e.preventDefault(); setIsResizing('sidebar') }}
-          onMouseMove={(e) => {
-            if (resizeHandleRef.current) {
-              const rect = resizeHandleRef.current.getBoundingClientRect()
-              setSidebarHandleY(e.clientY - rect.top)
-            }
-          }}
-          onMouseLeave={() => { if (!isResizing) setSidebarHandleY(null) }}
-          className="absolute top-0 w-3 h-full cursor-col-resize z-panel flex justify-center"
-          style={{
-            left: isSidebarVisible ? sidebarWidth - 6 : -6,
-            transition: isResizing === 'sidebar' ? undefined : 'left 0.15s ease-out',
-          }}
-        >
-          {/* Visual indicator - 2px wide */}
-          <div
-            className="w-0.5 h-full"
-            style={getResizeGradientStyle(sidebarHandleY)}
-          />
-        </div>
-        )}
-
-        {/* === MAIN CONTENT (Right) ===
-            Flex layout: Session List | Chat Display */}
-        <div
-          className="flex-1 overflow-hidden min-w-0 flex h-full"
-          style={{ padding: PANEL_WINDOW_EDGE_SPACING, gap: PANEL_PANEL_SPACING / 2 }}
-        >
-          {/* === SESSION LIST PANEL ===
-              Animated width with spring physics for smooth 60-120fps transitions.
-              Outer motion.div animates width (clipping mask), inner div maintains fixed width
-              so content doesn't reflow during animation - same pattern as left sidebar. */}
-          <motion.div
-            initial={false}
-            animate={{
-              width: effectiveFocusMode ? 0 : sessionListWidth,
-              opacity: effectiveFocusMode ? 0 : 1,
-            }}
-            transition={isResizing ? { duration: 0 } : springTransition}
-            className="h-full shrink-0 overflow-hidden bg-background shadow-middle rounded-l-[14px] rounded-r-[10px]"
-          >
+          }
+          sidebarWidth={effectiveSidebarAndNavigatorHidden ? 0 : (isSidebarVisible ? sidebarWidth : 0)}
+          navigatorSlot={
             <div
               style={{ width: sessionListWidth }}
               className="h-full flex flex-col min-w-0 relative z-panel"
@@ -2878,6 +2793,31 @@ function AppShellContent({
                               </StyledDropdownMenuSubContent>
                             </DropdownMenuSub>
 
+                            {/* Group by submenu - hidden in state sub-views (always date there) */}
+                            {!isStateSubView && (
+                              <>
+                                <StyledDropdownMenuSeparator />
+                                <DropdownMenuSub>
+                                  <StyledDropdownMenuSubTrigger>
+                                    <Layers className="h-3.5 w-3.5" />
+                                    <span className="flex-1">Group</span>
+                                  </StyledDropdownMenuSubTrigger>
+                                  <StyledDropdownMenuSubContent minWidth="min-w-[140px]">
+                                    <StyledDropdownMenuItem onClick={() => setChatGroupingMode('date')}>
+                                      <Calendar className="h-3.5 w-3.5" />
+                                      <span className="flex-1">Date</span>
+                                      {chatGroupingMode === 'date' && <Check className="h-3 w-3 text-muted-foreground" />}
+                                    </StyledDropdownMenuItem>
+                                    <StyledDropdownMenuItem onClick={() => setChatGroupingMode('status')}>
+                                      <Inbox className="h-3.5 w-3.5" />
+                                      <span className="flex-1">Status</span>
+                                      {chatGroupingMode === 'status' && <Check className="h-3 w-3 text-muted-foreground" />}
+                                    </StyledDropdownMenuItem>
+                                  </StyledDropdownMenuSubContent>
+                                </DropdownMenuSub>
+                              </>
+                            )}
+
                             <StyledDropdownMenuSeparator />
                             <StyledDropdownMenuItem
                               onClick={() => {
@@ -3210,140 +3150,74 @@ function AppShellContent({
                   evaluateViews={evaluateViews}
                   labels={labelConfigs}
                   onLabelsChange={handleSessionLabelsChange}
+                  groupingMode={chatGroupingMode}
                   workspaceId={activeWorkspaceId ?? undefined}
                   statusFilter={listFilter}
                   labelFilterMap={labelFilter}
+                  focusedSessionId={panelCount === 0 ? null : panelCount > 1 ? focusedSessionId : undefined}
+                  onNavigateToSession={panelCount > 1 ? navigateToSessionInPanel : undefined}
+                  hasPendingPrompt={hasPendingPrompt}
                 />
               </>
             )}
             </div>
-          </motion.div>
+          }
+          navigatorWidth={effectiveSidebarAndNavigatorHidden ? 0 : sessionListWidth}
+          isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
+          isRightSidebarVisible={false}
+          isResizing={!!isResizing}
+        />
 
-          {/* Session List Resize Handle (hidden in focused mode) */}
-          {!effectiveFocusMode && (
+        {/* Sidebar Resize Handle (absolute, hidden in focused mode) */}
+        {!effectiveSidebarAndNavigatorHidden && (
+        <div
+          ref={resizeHandleRef}
+          onMouseDown={(e) => { e.preventDefault(); setIsResizing('sidebar') }}
+          onMouseMove={(e) => {
+            if (resizeHandleRef.current) {
+              const rect = resizeHandleRef.current.getBoundingClientRect()
+              setSidebarHandleY(e.clientY - rect.top)
+            }
+          }}
+          onMouseLeave={() => { if (!isResizing) setSidebarHandleY(null) }}
+          className="absolute top-0 w-3 h-full cursor-col-resize z-panel flex justify-center"
+          style={{
+            left: isSidebarVisible ? sidebarWidth - 3 : -6,
+            transition: isResizing === 'sidebar' ? undefined : 'left 0.15s ease-out',
+          }}
+        >
           <div
-            ref={sessionListHandleRef}
-            onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}
-            onMouseMove={(e) => {
-              if (sessionListHandleRef.current) {
-                const rect = sessionListHandleRef.current.getBoundingClientRect()
-                setSessionListHandleY(e.clientY - rect.top)
-              }
-            }}
-            onMouseLeave={() => { if (isResizing !== 'session-list') setSessionListHandleY(null) }}
-            className="relative w-0 h-full cursor-col-resize flex justify-center shrink-0"
-          >
-            {/* Touch area */}
-            <div className="absolute inset-y-0 -left-1.5 -right-1.5 flex justify-center cursor-col-resize">
-              <div
-                className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5"
-                style={getResizeGradientStyle(sessionListHandleY)}
-              />
-            </div>
-          </div>
-          )}
-
-          {/* === MAIN CONTENT PANEL === */}
-          <div className={cn(
-            "flex-1 overflow-hidden min-w-0 bg-foreground-2 shadow-middle",
-            effectiveFocusMode ? "rounded-l-[14px]" : "rounded-l-[10px]",
-            isRightSidebarVisible ? "rounded-r-[10px]" : "rounded-r-[14px]"
-          )}>
-            <MainContentPanel isFocusedMode={effectiveFocusMode} />
-          </div>
-
-          {/* Right Sidebar - Inline Mode (≥ 920px) */}
-          {!shouldUseOverlay && (
-            <>
-              {/* Resize Handle */}
-              {isRightSidebarVisible && (
-                <div
-                  ref={rightSidebarHandleRef}
-                  onMouseDown={(e) => { e.preventDefault(); setIsResizing('right-sidebar') }}
-                  onMouseMove={(e) => {
-                    if (rightSidebarHandleRef.current) {
-                      const rect = rightSidebarHandleRef.current.getBoundingClientRect()
-                      setRightSidebarHandleY(e.clientY - rect.top)
-                    }
-                  }}
-                  onMouseLeave={() => { if (isResizing !== 'right-sidebar') setRightSidebarHandleY(null) }}
-                  className="relative w-0 h-full cursor-col-resize flex justify-center shrink-0"
-                >
-                  {/* Touch area */}
-                  <div className="absolute inset-y-0 -left-1.5 -right-1.5 flex justify-center cursor-col-resize">
-                    <div
-                      className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5"
-                      style={getResizeGradientStyle(rightSidebarHandleY)}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Inline Sidebar */}
-              <motion.div
-                initial={false}
-                animate={{
-                  width: isRightSidebarVisible ? rightSidebarWidth : 0,
-                  marginLeft: isRightSidebarVisible ? 0 : -PANEL_PANEL_SPACING / 2,
-                }}
-                transition={isResizing === 'right-sidebar' || skipRightSidebarAnimation ? { duration: 0 } : springTransition}
-                className="h-full shrink-0 overflow-visible"
-              >
-                <motion.div
-                  initial={false}
-                  animate={{
-                    x: isRightSidebarVisible ? 0 : rightSidebarWidth + PANEL_PANEL_SPACING / 2,
-                    opacity: isRightSidebarVisible ? 1 : 0,
-                  }}
-                  transition={isResizing === 'right-sidebar' || skipRightSidebarAnimation ? { duration: 0 } : springTransition}
-                  className="h-full bg-foreground-2 shadow-middle rounded-l-[10px] rounded-r-[14px]"
-                  style={{ width: rightSidebarWidth }}
-                >
-                  <RightSidebar
-                    panel={{ type: 'sessionMetadata' }}
-                    sessionId={isSessionsNavigation(navState) && navState.details ? navState.details.sessionId : undefined}
-                    closeButton={rightSidebarCloseButton}
-                  />
-                </motion.div>
-              </motion.div>
-            </>
-          )}
-
-          {/* Right Sidebar - Overlay Mode (< 920px) */}
-          {shouldUseOverlay && (
-            <AnimatePresence>
-              {isRightSidebarVisible && (
-                <>
-                  {/* Backdrop */}
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={skipRightSidebarAnimation ? { duration: 0 } : { duration: 0.2 }}
-                    className="fixed inset-0 bg-black/25 z-overlay"
-                    onClick={() => setIsRightSidebarVisible(false)}
-                  />
-                  {/* Drawer panel */}
-                  <motion.div
-                    initial={{ x: 316 }}
-                    animate={{ x: 0 }}
-                    exit={{ x: 316 }}
-                    transition={skipRightSidebarAnimation ? { duration: 0 } : springTransition}
-                    className="fixed inset-y-0 right-0 w-[316px] h-screen z-overlay p-1.5"
-                  >
-                    <div className="h-full bg-foreground-2 overflow-hidden shadow-strong rounded-[12px]">
-                      <RightSidebar
-                        panel={{ type: 'sessionMetadata' }}
-                        sessionId={isSessionsNavigation(navState) && navState.details ? navState.details.sessionId : undefined}
-                        closeButton={rightSidebarCloseButton}
-                      />
-                    </div>
-                  </motion.div>
-                </>
-              )}
-            </AnimatePresence>
-          )}
+            className="w-0.5 h-full"
+            style={getResizeGradientStyle(sidebarHandleY)}
+          />
         </div>
+        )}
+
+        {/* Session List Resize Handle (absolute, hidden in focused mode) */}
+        {!effectiveSidebarAndNavigatorHidden && (
+        <div
+          ref={sessionListHandleRef}
+          onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}
+          onMouseMove={(e) => {
+            if (sessionListHandleRef.current) {
+              const rect = sessionListHandleRef.current.getBoundingClientRect()
+              setSessionListHandleY(e.clientY - rect.top)
+            }
+          }}
+          onMouseLeave={() => { if (isResizing !== 'session-list') setSessionListHandleY(null) }}
+          className="absolute top-0 w-3 h-full cursor-col-resize z-panel flex justify-center"
+          style={{
+            left: (isSidebarVisible ? sidebarWidth + PANEL_GAP : PANEL_EDGE_INSET) + sessionListWidth - 2,
+            transition: isResizing === 'session-list' ? undefined : 'left 0.15s ease-out',
+          }}
+        >
+          <div
+            className="w-0.5 h-full"
+            style={getResizeGradientStyle(sessionListHandleY)}
+          />
+        </div>
+        )}
+
       </div>
 
       {/* ============================================================================

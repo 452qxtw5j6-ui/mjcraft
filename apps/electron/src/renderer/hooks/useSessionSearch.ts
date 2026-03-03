@@ -4,7 +4,7 @@ import { isToday, isYesterday, format, startOfDay } from "date-fns"
 import { searchLog } from "@/lib/logger"
 import { parseLabelEntry } from "@craft-agent/shared/labels"
 import { fuzzyScore } from "@craft-agent/shared/search"
-import { getSessionTitle } from "@/utils/session"
+import { getSessionTitle, getSessionStatus } from "@/utils/session"
 import type { SessionMeta } from "@/atoms/sessions"
 import type { ViewConfig } from "@craft-agent/shared/views"
 import type { SessionFilter } from "@/contexts/NavigationContext"
@@ -13,8 +13,8 @@ import type { SessionFilter } from "@/contexts/NavigationContext"
 // Constants
 // ---------------------------------------------------------------------------
 
-const INITIAL_DISPLAY_LIMIT = 20
-const BATCH_SIZE = 20
+const INITIAL_DISPLAY_LIMIT = 50
+const BATCH_SIZE = 50
 const MAX_SEARCH_RESULTS = 100
 
 // ---------------------------------------------------------------------------
@@ -35,6 +35,12 @@ export interface ContentSearchResult {
   snippet: string
 }
 
+/** Metadata for a collapsed group — emitted by the data pipeline so the renderer can show header-only groups */
+export interface CollapsedGroupMeta {
+  key: string
+  count: number
+}
+
 export interface UseSessionSearchOptions {
   items: SessionMeta[]
   searchActive: boolean
@@ -44,6 +50,12 @@ export interface UseSessionSearchOptions {
   evaluateViews?: (meta: SessionMeta) => ViewConfig[]
   statusFilter?: Map<string, FilterMode>
   labelFilterMap?: Map<string, FilterMode>
+  /** Collapsed group keys — collapsed items are excluded from pagination and flatItems */
+  collapsedGroups?: Set<string>
+  /** Grouping mode — needed to compute group keys for collapse-aware pagination */
+  groupingMode?: 'date' | 'status'
+  /** Ref to the ScrollArea viewport element — used for scroll-based pagination */
+  scrollViewportRef?: React.RefObject<HTMLDivElement>
 }
 
 export interface UseSessionSearchResult {
@@ -63,11 +75,11 @@ export interface UseSessionSearchResult {
   flatItems: SessionMeta[]
   dateGroups: DateGroup[]
   sessionIndexMap: Map<string, number>
-  childSessionsByParent: Map<string, SessionMeta[]>
 
   // Pagination
   hasMore: boolean
-  sentinelRef: React.RefObject<HTMLDivElement>
+  /** Metadata for collapsed groups (key + item count) — used to build header-only placeholder groups */
+  collapsedGroupsMeta: CollapsedGroupMeta[]
 
   // Refs
   searchInputRef: React.RefObject<HTMLInputElement>
@@ -103,17 +115,6 @@ function groupSessionsByDate(sessions: SessionMeta[]): DateGroup[] {
       ...group,
       label: formatDateHeader(group.date),
     }))
-}
-
-function sortChildSessions(children: SessionMeta[]): SessionMeta[] {
-  const hasExplicitOrder = children.some(s => s.siblingOrder !== undefined)
-
-  return [...children].sort((a, b) => {
-    if (hasExplicitOrder) {
-      return (a.siblingOrder ?? Number.POSITIVE_INFINITY) - (b.siblingOrder ?? Number.POSITIVE_INFINITY)
-    }
-    return (a.createdAt || 0) - (b.createdAt || 0)
-  })
 }
 
 interface FilterMatchOptions {
@@ -212,13 +213,15 @@ export function useSessionSearch({
   evaluateViews,
   statusFilter,
   labelFilterMap,
+  collapsedGroups,
+  groupingMode,
+  scrollViewportRef,
 }: UseSessionSearchOptions): UseSessionSearchResult {
 
   const [contentSearchResults, setContentSearchResults] = useState<Map<string, ContentSearchResult>>(new Map())
   const [isSearchingContent, setIsSearchingContent] = useState(false)
   const [displayLimit, setDisplayLimit] = useState(INITIAL_DISPLAY_LIMIT)
   const searchInputRef = useRef<HTMLInputElement>(null)
-  const sentinelRef = useRef<HTMLDivElement>(null)
 
   // Search mode is active when search is open AND query has 2+ characters
   const isSearchMode = searchActive && searchQuery.length >= 2
@@ -302,23 +305,6 @@ export function useSessionSearch({
     [visibleItems]
   )
 
-  // Map parent session ID -> sorted child sessions
-  const childSessionsByParent = useMemo(() => {
-    const byParent = new Map<string, SessionMeta[]>()
-    for (const session of visibleItems) {
-      if (!session.parentSessionId) continue
-      const current = byParent.get(session.parentSessionId) ?? []
-      current.push(session)
-      byParent.set(session.parentSessionId, current)
-    }
-
-    for (const [parentId, children] of byParent) {
-      byParent.set(parentId, sortChildSessions(children))
-    }
-
-    return byParent
-  }, [visibleItems])
-
   // Filter items by search query or current filter
   const searchFilteredItems = useMemo(() => {
     if (!isSearchMode) {
@@ -342,17 +328,6 @@ export function useSessionSearch({
         return countB - countA
       })
   }, [sortedItems, isSearchMode, searchQuery, contentSearchResults, currentFilter, evaluateViews, statusFilter, labelFilterMap])
-
-  // Normal mode: deduplicate child sessions shown via parent dropdowns
-  const normalModeTopLevelItems = useMemo(() => {
-    if (isSearchMode) return searchFilteredItems
-
-    const presentIds = new Set(searchFilteredItems.map(item => item.id))
-    return searchFilteredItems.filter(item => {
-      if (!item.parentSessionId) return true
-      return !presentIds.has(item.parentSessionId)
-    })
-  }, [isSearchMode, searchFilteredItems])
 
   // Split search results: matching current filter vs others
   const { matchingFilterItems, otherResultItems, exceededSearchLimit } = useMemo(() => {
@@ -412,33 +387,67 @@ export function useSessionSearch({
     setDisplayLimit(INITIAL_DISPLAY_LIMIT)
   }, [searchQuery])
 
-  const paginatedItems = useMemo(() => {
-    const source = isSearchMode ? searchFilteredItems : normalModeTopLevelItems
-    return source.slice(0, displayLimit)
-  }, [isSearchMode, searchFilteredItems, normalModeTopLevelItems, displayLimit])
+  // Collapse-aware pagination: collapsed items are excluded entirely from
+  // paginatedItems (and therefore flatItems / keyboard nav). Their counts are
+  // returned as collapsedGroupsMeta so the renderer can show header-only groups.
+  const { paginatedItems, hasMore, collapsedGroupsMeta } = useMemo(() => {
+    // Fast path: no collapse state → original slice
+    if (!collapsedGroups || collapsedGroups.size === 0) {
+      return {
+        paginatedItems: searchFilteredItems.slice(0, displayLimit),
+        hasMore: displayLimit < searchFilteredItems.length,
+        collapsedGroupsMeta: [] as CollapsedGroupMeta[],
+      }
+    }
 
-  const hasMore = displayLimit < (isSearchMode ? searchFilteredItems.length : normalModeTopLevelItems.length)
+    const expandedItems: SessionMeta[] = []
+    const collapsedCounts = new Map<string, number>()
 
-  const loadMore = useCallback(() => {
-    const total = isSearchMode ? searchFilteredItems.length : normalModeTopLevelItems.length
-    setDisplayLimit(prev => Math.min(prev + BATCH_SIZE, total))
-  }, [isSearchMode, searchFilteredItems.length, normalModeTopLevelItems.length])
+    for (const item of searchFilteredItems) {
+      const groupKey = groupingMode === 'status'
+        ? `status-${getSessionStatus(item)}`
+        : startOfDay(new Date(item.lastMessageAt || 0)).toISOString()
 
-  useEffect(() => {
-    if (!hasMore || !sentinelRef.current) return
+      if (collapsedGroups.has(groupKey)) {
+        collapsedCounts.set(groupKey, (collapsedCounts.get(groupKey) || 0) + 1)
+      } else {
+        expandedItems.push(item)
+      }
+    }
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          loadMore()
-        }
-      },
-      { rootMargin: '100px' }
+    const meta: CollapsedGroupMeta[] = Array.from(collapsedCounts.entries()).map(
+      ([key, count]) => ({ key, count })
     )
 
-    observer.observe(sentinelRef.current)
-    return () => observer.disconnect()
-  }, [hasMore, loadMore])
+    return {
+      paginatedItems: expandedItems.slice(0, displayLimit),
+      hasMore: displayLimit < expandedItems.length,
+      collapsedGroupsMeta: meta,
+    }
+  }, [searchFilteredItems, displayLimit, collapsedGroups, groupingMode])
+
+  const loadMore = useCallback(() => {
+    setDisplayLimit(prev => Math.min(prev + BATCH_SIZE, searchFilteredItems.length))
+  }, [searchFilteredItems.length])
+
+  // Scroll-based pagination: listen for scroll on the actual ScrollArea viewport
+  // (IntersectionObserver with root=null doesn't detect scroll inside Radix ScrollArea)
+  useEffect(() => {
+    if (!hasMore) return
+    const viewport = scrollViewportRef?.current
+    if (!viewport) return
+
+    const check = () => {
+      const { scrollTop, scrollHeight, clientHeight } = viewport
+      if (scrollHeight - scrollTop - clientHeight < 200) {
+        loadMore()
+      }
+    }
+
+    check() // fill viewport on mount / after group expand
+    viewport.addEventListener('scroll', check, { passive: true })
+    return () => viewport.removeEventListener('scroll', check)
+  }, [hasMore, loadMore, displayLimit, scrollViewportRef])
 
   // --- Derived render data ---
 
@@ -468,9 +477,8 @@ export function useSessionSearch({
     flatItems,
     dateGroups,
     sessionIndexMap,
-    childSessionsByParent,
     hasMore,
-    sentinelRef,
+    collapsedGroupsMeta,
     searchInputRef,
   }
 }

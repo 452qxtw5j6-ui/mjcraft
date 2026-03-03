@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTheme } from '@/hooks/useTheme'
 import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
-import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus } from '../shared/types'
+import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
@@ -263,6 +263,58 @@ export default function App() {
     sessionOptionsRef.current = sessionOptions
   }, [sessionOptions])
 
+  const applyPermissionModeState = useCallback((sessionId: string, state: PermissionModeState, source: 'event' | 'reconcile') => {
+    setSessionOptions(prev => {
+      const next = new Map(prev)
+      const current = next.get(sessionId) ?? defaultSessionOptions
+      const currentVersion = current.permissionModeVersion ?? -1
+
+      if (state.modeVersion < currentVersion) {
+        window.electronAPI.debugLog(
+          '[ModeSync] Ignoring stale permission mode update',
+          { sessionId, source, incoming: state.modeVersion, current: currentVersion }
+        )
+        return prev
+      }
+
+      if (
+        state.modeVersion === currentVersion &&
+        current.permissionMode !== state.permissionMode
+      ) {
+        window.electronAPI.debugLog(
+          '[ModeSync] Equal modeVersion with differing mode detected, applying and requesting reconciliation',
+          {
+            sessionId,
+            source,
+            modeVersion: state.modeVersion,
+            currentMode: current.permissionMode,
+            incomingMode: state.permissionMode,
+          }
+        )
+      }
+
+      next.set(sessionId, {
+        ...current,
+        permissionMode: state.permissionMode,
+        permissionModeVersion: state.modeVersion,
+      })
+      return next
+    })
+  }, [])
+
+  const reconcilePermissionModeState = useCallback(async (sessionId: string) => {
+    try {
+      const state = await window.electronAPI.getSessionPermissionModeState(sessionId)
+      if (!state) return
+      applyPermissionModeState(sessionId, state, 'reconcile')
+    } catch (error) {
+      window.electronAPI.debugLog('[ModeSync] Failed to reconcile permission mode', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }, [applyPermissionModeState])
+
   // Event processor hook - handles all agent events through pure functions
   const { processAgentEvent } = useEventProcessor()
 
@@ -385,7 +437,7 @@ export default function App() {
 
     window.electronAPI.getWorkspaces().then(setWorkspaces)
     window.electronAPI.getNotificationsEnabled().then(setNotificationsEnabled)
-    window.electronAPI.getSessions().then((loadedSessions) => {
+    window.electronAPI.getSessions().then(async (loadedSessions) => {
       // Initialize per-session atoms and metadata map
       // NOTE: No sessionsAtom used - sessions are only in per-session atoms
       initializeSessions(loadedSessions)
@@ -404,6 +456,12 @@ export default function App() {
         }
       }
       setSessionOptions(optionsMap)
+
+      // Reconcile permission mode state from backend diagnostics (mode + modeVersion)
+      await Promise.allSettled(
+        loadedSessions.map((s) => reconcilePermissionModeState(s.id))
+      )
+
       // Mark sessions as loaded for splash screen
       setSessionsLoaded(true)
 
@@ -428,7 +486,7 @@ export default function App() {
     })
     // Load app-level theme
     window.electronAPI.getAppTheme().then(setAppTheme)
-  }, [appState, initialSessionId, windowWorkspaceId, setSession, initializeSessions, resolveDefaultConnectionSlug])
+  }, [appState, initialSessionId, windowWorkspaceId, initializeSessions, resolveDefaultConnectionSlug, reconcilePermissionModeState])
 
   // Subscribe to theme change events (live updates when theme.json changes)
   useEffect(() => {
@@ -483,15 +541,36 @@ export default function App() {
               next.set(sessionId, [...existingQueue, effect.request])
               return next
             })
+
+            // Native notification for approval-required pauses (same gating as completion notifications)
+            const notifySession = store.get(sessionAtomFamily(sessionId))
+            if (notifySession && !notifySession.hidden) {
+              const isAdminPrompt = effect.request.type === 'admin_approval'
+              const promptBody = isAdminPrompt
+                ? `Admin approval required: ${effect.request.appName || effect.request.toolName}`
+                : `Permission required: ${effect.request.toolName}`
+              showSessionNotification(notifySession, promptBody)
+            }
             break
           }
           case 'permission_mode_changed': {
-            setSessionOptions(prevOpts => {
-              const next = new Map(prevOpts)
-              const current = next.get(effect.sessionId) ?? defaultSessionOptions
-              next.set(effect.sessionId, { ...current, permissionMode: effect.permissionMode })
-              return next
-            })
+            if (typeof effect.modeVersion === 'number' && effect.changedAt && effect.changedBy) {
+              applyPermissionModeState(effect.sessionId, {
+                permissionMode: effect.permissionMode,
+                modeVersion: effect.modeVersion,
+                changedAt: effect.changedAt,
+                changedBy: effect.changedBy,
+              }, 'event')
+            } else {
+              // Backward compatibility: apply mode optimistically then reconcile authoritative state.
+              setSessionOptions(prevOpts => {
+                const next = new Map(prevOpts)
+                const current = next.get(effect.sessionId) ?? defaultSessionOptions
+                next.set(effect.sessionId, { ...current, permissionMode: effect.permissionMode })
+                return next
+              })
+              void reconcilePermissionModeState(effect.sessionId)
+            }
             break
           }
           case 'credential_request': {
@@ -553,14 +632,6 @@ export default function App() {
     }
 
     const cleanup = window.electronAPI.onSessionEvent((event: SessionEvent) => {
-      // Events without sessionId require full metadata refresh.
-      if (event.type === 'sessions_reordered') {
-        window.electronAPI.getSessions()
-          .then(initializeSessions)
-          .catch(error => console.error('Failed to refresh sessions after reorder event:', error))
-        return
-      }
-
       if (!('sessionId' in event)) return
 
       const sessionId = event.sessionId
@@ -613,13 +684,6 @@ export default function App() {
 
       if (event.type === 'session_deleted') {
         removeSession(sessionId)
-        return
-      }
-
-      if (event.type === 'session_deleted_cascade' || event.type === 'session_archived_cascade') {
-        window.electronAPI.getSessions()
-          .then(initializeSessions)
-          .catch(error => console.error(`Failed to refresh sessions after ${event.type}:`, error))
         return
       }
 
@@ -713,7 +777,18 @@ export default function App() {
     })
 
     return cleanup
-  }, [processAgentEvent, windowWorkspaceId, store, updateSessionDirect, showSessionNotification, initializeSessions, addSession, removeSession])
+  }, [
+    processAgentEvent,
+    windowWorkspaceId,
+    store,
+    updateSessionDirect,
+    showSessionNotification,
+    initializeSessions,
+    addSession,
+    removeSession,
+    applyPermissionModeState,
+    reconcilePermissionModeState,
+  ])
 
   // Listen for menu bar events
   useEffect(() => {
@@ -733,12 +808,9 @@ export default function App() {
     }
   }, [])
 
-  const handleCreateSession = useCallback(async (workspaceId: string, options?: import('../shared/types').CreateSessionOptions): Promise<Session> => {
-    const session = await window.electronAPI.createSession(workspaceId, options)
-    // Add to per-session atom and metadata map (no sessionsAtom)
-    addSession(session)
-
-    // Apply session defaults to the unified sessionOptions
+  // Populate sessionOptions for a session with non-default permission mode or thinking level.
+  // Centralised helper used by all session creation paths (create, branch, event handler).
+  const populateSessionOptions = useCallback((session: Session) => {
     const hasNonDefaultMode = session.permissionMode && session.permissionMode !== 'ask'
     const hasNonDefaultThinking = session.thinkingLevel && normalizeThinkingLevel(session.thinkingLevel) !== DEFAULT_THINKING_LEVEL
     if (hasNonDefaultMode || hasNonDefaultThinking) {
@@ -752,9 +824,16 @@ export default function App() {
         return next
       })
     }
+  }, [])
+
+  const handleCreateSession = useCallback(async (workspaceId: string, options?: import('../shared/types').CreateSessionOptions): Promise<Session> => {
+    const session = await window.electronAPI.createSession(workspaceId, options)
+    // Add to per-session atom and metadata map (no sessionsAtom)
+    addSession(session)
+    populateSessionOptions(session)
 
     return session
-  }, [addSession])
+  }, [addSession, populateSessionOptions])
 
   // Deep link navigation is initialized later after handleInputChange is defined
 
@@ -780,6 +859,12 @@ export default function App() {
     removeSession(sessionId)
     return true
   }, [store, removeSession])
+
+  // Auto-delete handler for empty sessions (fire-and-forget, no confirmation)
+  const handleAutoDeleteEmptySession = useCallback((sessionId: string) => {
+    window.electronAPI.deleteSession(sessionId)
+    removeSession(sessionId)
+  }, [removeSession])
 
   const handleFlagSession = useCallback((sessionId: string) => {
     updateSessionById(sessionId, { isFlagged: true })
@@ -1092,8 +1177,14 @@ export default function App() {
     }
   }, [windowWorkspaceId, handleCreateSession, handleInputChange])
 
-  const handleRespondToPermission = useCallback(async (sessionId: string, requestId: string, allowed: boolean, alwaysAllow: boolean) => {
-    const success = await window.electronAPI.respondToPermission(sessionId, requestId, allowed, alwaysAllow)
+  const handleRespondToPermission = useCallback(async (
+    sessionId: string,
+    requestId: string,
+    allowed: boolean,
+    alwaysAllow: boolean,
+    options?: import('../shared/types').PermissionResponseOptions,
+  ) => {
+    const success = await window.electronAPI.respondToPermission(sessionId, requestId, allowed, alwaysAllow, options)
 
     if (success) {
       // Remove only the first permission from the queue (the one we just responded to)
@@ -1165,16 +1256,37 @@ export default function App() {
   // handleOpenFile/handleOpenUrl that always opened in external apps.
   const linkInterceptor = useLinkInterceptor({
     openFileExternal: async (path) => {
-      try { await window.electronAPI.openFile(path) }
-      catch (error) { console.error('Failed to open file:', error) }
+      try {
+        await window.electronAPI.openFile(path)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        console.error('Failed to open file:', error)
+        toast.error('Failed to open file', {
+          description: message,
+        })
+      }
     },
     openUrl: async (url) => {
-      try { await window.electronAPI.openUrl(url) }
-      catch (error) { console.error('Failed to open URL:', error) }
+      try {
+        await window.electronAPI.openUrl(url)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        console.error('Failed to open URL:', error)
+        toast.error('Failed to open link', {
+          description: `${message}. If this is a local path, use Open File instead.`,
+        })
+      }
     },
     showInFolder: async (path) => {
-      try { await window.electronAPI.showInFolder(path) }
-      catch (error) { console.error('Failed to show in folder:', error) }
+      try {
+        await window.electronAPI.showInFolder(path)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        console.error('Failed to show in folder:', error)
+        toast.error(`Failed to reveal in ${getFileManagerName()}`, {
+          description: message,
+        })
+      }
     },
     readFile: (path) => window.electronAPI.readFile(path),
     readFileDataUrl: (path) => window.electronAPI.readFileDataUrl(path),
@@ -1267,21 +1379,28 @@ export default function App() {
       store.set(sourcesAtom, [])
       store.set(skillsAtom, [])
 
-      // 8. Clear session atoms BEFORE navigating
-      // This prevents applyNavigationState from auto-selecting a session from the old workspace.
-      // Without this, getFirstSessionId() would return a session ID from the previous workspace,
-      // causing the detail panel to show a stale chat until sessions reload.
+      // 8. Clear session atoms BEFORE workspace switch
+      // This prevents stale session data from the previous workspace being visible.
       store.set(sessionMetaMapAtom, new Map())
       store.set(sessionIdsAtom, [])
 
-      // 9. Navigate to allSessions view without a specific session selected
-      // This ensures the UI is in a clean state for the new workspace
-      navigate(routes.view.allSessions())
-
-      // Note: Sessions and theme will reload automatically due to windowWorkspaceId dependency
-      // in useEffect hooks
+      // Note: NavigationContext detects the workspaceId change and handles
+      // panel restoration from the stored workspace URL (or defaults to allSessions).
+      // Sessions and theme will reload automatically due to windowWorkspaceId dependency
+      // in useEffect hooks.
     }
   }, [windowWorkspaceId, setSession, store])
+
+  // Handle workspace switch by slug (called by NavigationContext on popstate when ?ws= changes)
+  const handleSwitchWorkspaceBySlug = useCallback((slug: string) => {
+    const target = workspaces.find(w => {
+      const wsSlug = extractWorkspaceSlugFromPath(w.rootPath, w.id)
+      return wsSlug === slug
+    })
+    if (target) {
+      handleSelectWorkspace(target.id)
+    }
+  }, [workspaces, handleSelectWorkspace])
 
   // Handle workspace refresh (e.g., after icon upload)
   const handleRefreshWorkspaces = useCallback(() => {
@@ -1389,8 +1508,10 @@ export default function App() {
     // Bypass link interceptor — opens file directly in system editor.
     // Used by overlay header badges (when already viewing a file, "Open" should launch editor).
     onOpenFileExternal: linkInterceptor.openFileExternal,
-    // Read file contents as UTF-8 string (used by datatable/spreadsheet src field)
+    // Read file contents as UTF-8 string (used by datatable/spreadsheet/html-preview src fields)
     onReadFile: (path: string) => window.electronAPI.readFile(path),
+    // Read file as data URL (used by image-preview blocks)
+    onReadFileDataUrl: (path: string) => window.electronAPI.readFileDataUrl(path),
     // Read file as binary Uint8Array (used by PDF preview blocks)
     onReadFileBinary: (path: string) => window.electronAPI.readFileBinary(path),
     // Reveal a file in the system file manager (Finder on macOS, Explorer on Windows, etc.)
@@ -1472,8 +1593,12 @@ export default function App() {
         <TooltipProvider delayDuration={0}>
         <NavigationProvider
           workspaceId={windowWorkspaceId}
+          workspaceSlug={windowWorkspaceSlug}
+          onSwitchWorkspaceBySlug={handleSwitchWorkspaceBySlug}
           onCreateSession={handleCreateSession}
           onInputChange={handleInputChange}
+          getDraft={getDraft}
+          onAutoDeleteEmptySession={handleAutoDeleteEmptySession}
           isReady={appState === 'ready'}
         >
           {/* Handle window close requests (X button, Cmd+W) - close modal first if open */}

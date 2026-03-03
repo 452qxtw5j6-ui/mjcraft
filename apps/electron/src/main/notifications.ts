@@ -11,6 +11,7 @@ import { Notification, app, BrowserWindow, nativeImage } from 'electron'
 import { join } from 'path'
 import { readFileSync } from 'fs'
 import { mainLog } from './logger'
+import { IPC_CHANNELS } from '../shared/types'
 import type { WindowManager } from './window-manager'
 
 let windowManager: WindowManager | null = null
@@ -144,12 +145,11 @@ export function updateBadgeCount(count: number): void {
 function updateBadgeCountMacOS(count: number): void {
   try {
     if (count > 0) {
-      // Draw badge onto icon using the renderer process
-      // We'll send this to the renderer which has Canvas API
-      const windows = BrowserWindow.getAllWindows()
-      const window = windows[0]
-      if (window && !window.isDestroyed() && !window.webContents.isDestroyed() && baseIconDataUrl) {
-        window.webContents.send('badge:draw', { count, iconDataUrl: baseIconDataUrl })
+      // Draw badge onto icon using the renderer process (Canvas API)
+      // Use windowManager to target only app windows — BrowserWindow.getAllWindows()
+      // includes browser pane windows which have no onBadgeDraw listener
+      if (windowManager && baseIconDataUrl) {
+        windowManager.broadcastToAll(IPC_CHANNELS.BADGE_DRAW, { count, iconDataUrl: baseIconDataUrl })
       }
     } else {
       // Reset to original icon (no badge)
@@ -169,21 +169,20 @@ function updateBadgeCountMacOS(count: number): void {
  */
 function updateBadgeCountWindows(count: number): void {
   try {
-    const windows = BrowserWindow.getAllWindows()
-    const window = windows[0]
-    if (!window || window.isDestroyed()) {
-      return
-    }
-
     if (count > 0) {
-      // Create a simple overlay icon with the count
-      // We'll ask the renderer to draw it and send back via IPC
-      if (!window.webContents.isDestroyed() && baseIconDataUrl) {
-        window.webContents.send('badge:draw-windows', { count })
+      // Draw overlay icon using the renderer process (Canvas API)
+      // Use windowManager to target only app windows
+      if (windowManager) {
+        windowManager.broadcastToAll(IPC_CHANNELS.BADGE_DRAW_WINDOWS, { count })
       }
     } else {
-      // Clear the overlay
-      window.setOverlayIcon(null, '')
+      // Clear the overlay on all windows
+      const windows = BrowserWindow.getAllWindows()
+      for (const window of windows) {
+        if (!window.isDestroyed()) {
+          window.setOverlayIcon(null, '')
+        }
+      }
     }
     mainLog.info('Badge count updated (Windows):', count)
   } catch (error) {

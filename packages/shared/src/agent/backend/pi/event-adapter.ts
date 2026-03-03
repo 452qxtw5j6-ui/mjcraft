@@ -243,10 +243,25 @@ export class PiEventAdapter extends BaseEventAdapter {
           args.model = this.miniModel;
         }
 
-        // Look up metadata from the store (populated by the interceptor in the Pi subprocess)
+        // Canonical metadata from subprocess event payload (interceptor-authoritative path).
+        const eventMeta = this.extractToolMetadataFromEvent(event);
+
+        // Backward-compatibility fallback: shared store (legacy side-channel).
         const storedMeta = toolMetadataStore.get(toolCallId, this.sessionDir);
-        const intent = storedMeta?.intent
+
+        // Last-resort fallback: args metadata if present.
+        const argsIntent = typeof args._intent === 'string' ? args._intent : undefined;
+        const argsDisplayName = typeof args._displayName === 'string' ? args._displayName : undefined;
+
+        const intent = eventMeta?.intent
+          || storedMeta?.intent
+          || argsIntent
           || (typeof args.description === 'string' ? args.description : undefined);
+
+        const displayName = eventMeta?.displayName
+          || storedMeta?.displayName
+          || argsDisplayName
+          || this.getToolDisplayName(toolName);
 
         // Classify bash commands that are actually file reads
         if (toolName === 'Bash' && typeof args.command === 'string') {
@@ -267,7 +282,7 @@ export class PiEventAdapter extends BaseEventAdapter {
           toolName,
           args,
           intent,
-          storedMeta?.displayName || this.getToolDisplayName(toolName),
+          displayName,
         );
         break;
       }
@@ -371,6 +386,24 @@ export class PiEventAdapter extends BaseEventAdapter {
   // ============================================================
   // Helpers
   // ============================================================
+
+  /**
+   * Extract canonical tool metadata from enriched tool_execution_start events.
+   * This is the interceptor-authoritative path emitted by pi-agent-server.
+   */
+  private extractToolMetadataFromEvent(event: PiEvent): { intent?: string; displayName?: string } | undefined {
+    const metadata = (event as {
+      toolMetadata?: { intent?: unknown; displayName?: unknown };
+    }).toolMetadata;
+
+    if (!metadata) return undefined;
+
+    const intent = typeof metadata.intent === 'string' ? metadata.intent : undefined;
+    const displayName = typeof metadata.displayName === 'string' ? metadata.displayName : undefined;
+
+    if (!intent && !displayName) return undefined;
+    return { intent, displayName };
+  }
 
   /**
    * Normalize Pi SDK tool input field names to Claude Code format.
