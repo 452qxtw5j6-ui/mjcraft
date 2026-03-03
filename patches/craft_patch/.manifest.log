@@ -1,0 +1,2 @@
+2026-02-28T14:50:48+0900 | version=0.5.1 | file=craft-agent-v0.5.1.01.patch | mode=all | summary= 39 files changed, 725 insertions(+), 135 deletions(-) | message=manual backup by Craft Agent (fallback, direct git diff)
+2026-02-28T14:51:15+0900 | version=0.5.1 | file=craft-agent-v0.5.1.02.patch | mode=all | summary= 40 files changed, 730 insertions(+), 140 deletions(-) | message=script validation fix test

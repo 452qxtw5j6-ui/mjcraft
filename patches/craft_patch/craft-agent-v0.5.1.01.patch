@@ -1,0 +1,1739 @@
+diff --git a/apps/electron/electron-builder.yml b/apps/electron/electron-builder.yml
+index 670e1bf..6cfa690 100644
+--- a/apps/electron/electron-builder.yml
++++ b/apps/electron/electron-builder.yml
+@@ -1,5 +1,5 @@
+-appId: com.lukilabs.craft-agent
+-productName: Craft Agents
++appId: com.mjay.mjcraft
++productName: MJCraft
+ copyright: Copyright © 2025 Craft Docs Ltd.
+ 
+ electronVersion: "39.2.7"
+@@ -88,21 +88,21 @@ mac:
+     - "!**/vendor/copilot/linux-*/**"
+     - "!**/vendor/copilot/win32-*/**"
+   # Use predictable naming for macOS packages (applies to zip; dmg uses its own config below)
+-  artifactName: "Craft-Agent-${arch}.${ext}"
++  artifactName: "MJCraft-${arch}.${ext}"
+   # Code signing & notarization (disabled by default for local builds)
+   # To enable: set CSC_LINK, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+   # notarize:
+   #   teamId: ${APPLE_TEAM_ID}
+ 
+ dmg:
+-  # Use predictable naming: Craft-Agent-arm64.dmg, Craft-Agent-x64.dmg
+-  artifactName: "Craft-Agent-${arch}.dmg"
++  # Use predictable naming: MJCraft-arm64.dmg, MJCraft-x64.dmg
++  artifactName: "MJCraft-${arch}.dmg"
+   # Custom background (multi-resolution TIFF with 1x+2x for retina support)
+   background: resources/dmg-background.tiff
+   # Use app icon as the mounted volume icon in Finder
+   icon: resources/icon.icns
+   iconSize: 80
+-  title: "Craft Agents"
++  title: "MJCraft"
+   contents:
+     - x: 130
+       y: 200
+@@ -120,8 +120,8 @@ win:
+     - target: nsis
+       arch:
+         - x64
+-  # Use predictable naming: Craft-Agent-x64.exe
+-  artifactName: "Craft-Agent-${arch}.${ext}"
++  # Use predictable naming: MJCraft-x64.exe
++  artifactName: "MJCraft-${arch}.${ext}"
+   files:
+     # Exclude binaries for other platforms
+     - "!**/vendor/codex/darwin-*/**"
+@@ -168,7 +168,7 @@ linux:
+     - target: AppImage
+       arch:
+         - x64
+-  artifactName: "Craft-Agent-${arch}.${ext}"
++  artifactName: "MJCraft-${arch}.${ext}"
+   extraResources:
+     - from: node_modules/@anthropic-ai/claude-agent-sdk
+       to: app/node_modules/@anthropic-ai/claude-agent-sdk
+diff --git a/apps/electron/package.json b/apps/electron/package.json
+index a615fa4..18f034f 100644
+--- a/apps/electron/package.json
++++ b/apps/electron/package.json
+@@ -1,7 +1,8 @@
+ {
+   "name": "@craft-agent/electron",
+   "version": "0.5.1",
+-  "description": "Electron desktop app for Craft Agents",
++  "description": "Electron desktop app for MJCraft",
++  "productName": "MJCraft",
+   "main": "dist/main.cjs",
+   "private": true,
+   "author": {
+diff --git a/apps/electron/resources/config-defaults.json b/apps/electron/resources/config-defaults.json
+index 84055d5..f96d5e4 100644
+--- a/apps/electron/resources/config-defaults.json
++++ b/apps/electron/resources/config-defaults.json
+@@ -11,7 +11,7 @@
+     "richToolDescriptions": true
+   },
+   "workspaceDefaults": {
+-    "thinkingLevel": "think",
++    "thinkingLevel": "medium",
+     "permissionMode": "safe",
+     "cyclablePermissionModes": ["safe", "allow-all"],
+     "localMcpServers": {
+diff --git a/apps/electron/src/main/connection-setup-logic.ts b/apps/electron/src/main/connection-setup-logic.ts
+index 9b642bd..f746d1b 100644
+--- a/apps/electron/src/main/connection-setup-logic.ts
++++ b/apps/electron/src/main/connection-setup-logic.ts
+@@ -69,7 +69,7 @@ export const BUILT_IN_CONNECTION_TEMPLATES: Record<string, {
+     authType: 'oauth',
+   },
+   'chatgpt-plus': {
+-    name: 'ChatGPT Plus',
++    name: 'ChatGPT Plus/Pro',
+     providerType: 'pi',
+     authType: 'oauth',
+     piAuthProvider: 'openai-codex',
+diff --git a/apps/electron/src/main/index.ts b/apps/electron/src/main/index.ts
+index 422d216..4f5a215 100644
+--- a/apps/electron/src/main/index.ts
++++ b/apps/electron/src/main/index.ts
+@@ -117,8 +117,8 @@ let sessionManager: SessionManager | null = null
+ let pendingDeepLink: string | null = null
+ 
+ // Set app name early (before app.whenReady) to ensure correct macOS menu bar title
+-// Supports multi-instance dev: CRAFT_APP_NAME env var (e.g., "Craft Agents [1]")
+-app.setName(process.env.CRAFT_APP_NAME || 'Craft Agents')
++// Supports multi-instance dev: CRAFT_APP_NAME env var (e.g., "MJCraft [1]")
++app.setName(process.env.CRAFT_APP_NAME || 'MJCraft')
+ 
+ // Register as default protocol client for craftagents:// URLs
+ // This must be done before app.whenReady() on some platforms
+diff --git a/apps/electron/src/main/ipc.ts b/apps/electron/src/main/ipc.ts
+index e96fd69..14f188f 100644
+--- a/apps/electron/src/main/ipc.ts
++++ b/apps/electron/src/main/ipc.ts
+@@ -69,6 +69,8 @@ function buildBackendHostRuntimeContext() {
+   }
+ }
+ 
++const DEFAULT_AUTOMATIONS_CONFIG = '{\n  "version": 2,\n  "automations": {}\n}\n'
++
+ /**
+  * Validates that a file path is within allowed directories to prevent path traversal attacks.
+  * Allowed directories: user's home directory and /tmp
+@@ -393,7 +395,7 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
+       case 'setThinkingLevel':
+         // Validate thinking level before passing to session manager
+         if (!isValidThinkingLevel(command.level)) {
+-          throw new Error(`Invalid thinking level: ${command.level}. Valid values: 'off', 'think', 'max'`)
++          throw new Error(`Invalid thinking level: ${command.level}. Valid values: 'off', 'think', 'low', 'medium', 'high', 'max', 'xhigh'`)
+         }
+         return sessionManager.setSessionThinkingLevel(sessionId, command.level)
+       case 'updateWorkingDirectory':
+@@ -462,16 +464,25 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
+ 
+   // Read a file (with path validation to prevent traversal attacks)
+   ipcMain.handle(IPC_CHANNELS.READ_FILE, async (_event, path: string) => {
++    let safePath = path
+     try {
+       // Validate and normalize the path
+-      const safePath = await validateFilePath(path)
++      safePath = await validateFilePath(path)
+       const content = await readFile(safePath, 'utf-8')
+       return content
+     } catch (error) {
+       const message = error instanceof Error ? error.message : 'Unknown error'
++      const code = error instanceof Error && 'code' in error
++        ? (error as NodeJS.ErrnoException).code
++        : undefined
++
+       // ENOENT is expected for optional config files (e.g. automations.json)
+-      if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+-        ipcLog.debug('readFile: file not found:', path)
++      if (code === 'ENOENT') {
++        if (basename(safePath) === 'automations.json') {
++          ipcLog.debug('readFile: optional automations config missing, returning default:', safePath)
++          return DEFAULT_AUTOMATIONS_CONFIG
++        }
++        ipcLog.debug('readFile: file not found:', safePath)
+       } else {
+         ipcLog.error('readFile error:', message)
+       }
+diff --git a/apps/electron/src/main/menu.ts b/apps/electron/src/main/menu.ts
+index 8fe96b3..0cd55c0 100644
+--- a/apps/electron/src/main/menu.ts
++++ b/apps/electron/src/main/menu.ts
+@@ -10,7 +10,7 @@ let cachedWindowManager: WindowManager | null = null
+ 
+ /**
+  * Creates and sets the application menu for macOS.
+- * Includes only relevant items for the Craft Agents app.
++ * Includes only relevant items for the MJCraft app.
+  *
+  * Call rebuildMenu() when update state changes to refresh the menu.
+  */
+@@ -62,9 +62,9 @@ export async function rebuildMenu(): Promise<void> {
+   const template: Electron.MenuItemConstructorOptions[] = [
+     // App menu (macOS only)
+     ...(isMac ? [{
+-      label: 'Craft Agents',
++      label: 'MJCraft',
+       submenu: [
+-        { role: 'about' as const, label: 'About Craft Agents' },
++        { role: 'about' as const, label: 'About MJCraft' },
+         updateMenuItem,
+         { type: 'separator' as const },
+         {
+@@ -73,11 +73,11 @@ export async function rebuildMenu(): Promise<void> {
+           click: () => sendToRenderer(IPC_CHANNELS.MENU_OPEN_SETTINGS)
+         },
+         { type: 'separator' as const },
+-        { role: 'hide' as const, label: 'Hide Craft Agents' },
++        { role: 'hide' as const, label: 'Hide MJCraft' },
+         { role: 'hideOthers' as const },
+         { role: 'unhide' as const },
+         { type: 'separator' as const },
+-        { role: 'quit' as const, label: 'Quit Craft Agents' }
++        { role: 'quit' as const, label: 'Quit MJCraft' }
+       ]
+     }] : []),
+ 
+@@ -173,7 +173,7 @@ export async function rebuildMenu(): Promise<void> {
+             await dialog.showMessageBox({
+               type: 'info',
+               message: 'Reset to Defaults',
+-              detail: 'To reset Craft Agent to defaults, quit the app and run:\n\nbun run fresh-start\n\nThis will delete all configuration, credentials, workspaces, and sessions.',
++              detail: 'To reset MJCraft to defaults, quit the app and run:\n\nbun run fresh-start\n\nThis will delete all configuration, credentials, workspaces, and sessions.',
+               buttons: ['OK']
+             })
+           }
+diff --git a/apps/electron/src/main/sessions.ts b/apps/electron/src/main/sessions.ts
+index 008b563..a3b8ea3 100644
+--- a/apps/electron/src/main/sessions.ts
++++ b/apps/electron/src/main/sessions.ts
+@@ -364,6 +364,9 @@ function resolveToolDisplayMeta(
+           'transform_data': 'Transform Data',
+           'render_template': 'Render Template',
+           'update_user_preferences': 'Update Preferences',
++          'spawn_session': 'Spawn Session',
++          'send_to_session': 'Send To Session',
++          'list_sessions': 'List Sessions',
+         },
+         'craft-agents-docs': {
+           'SearchCraftAgents': 'Search Docs',
+@@ -2539,6 +2542,121 @@ export class SessionManager {
+         }
+       }
+ 
++      // Wire up onSendToSession to send a message to another existing session
++      managed.agent.onSendToSession = async (request) => {
++        sessionLog.info(`Send-to-session request from ${managed.id} -> ${request.targetSessionId}`)
++
++        if (request.targetSessionId === managed.id) {
++          throw new Error('Cannot send a message to the same session.')
++        }
++
++        const target = this.sessions.get(request.targetSessionId)
++        if (!target) {
++          throw new Error(`Target session not found: ${request.targetSessionId}`)
++        }
++
++        // Enforce workspace isolation
++        if (target.workspace.id !== managed.workspace.id) {
++          throw new Error('Target session must be in the same workspace.')
++        }
++
++        await this.ensureMessagesLoaded(target)
++
++        // Build FileAttachment[] from paths (if any)
++        let fileAttachments: FileAttachment[] | undefined
++        if (request.attachments?.length) {
++          const attachments: FileAttachment[] = []
++          for (const a of request.attachments) {
++            try {
++              const safePath = await validateSpawnAttachmentPath(a.path)
++              const attachment = readFileAttachment(safePath)
++              if (attachment) {
++                if (a.name) attachment.name = a.name
++                attachments.push(attachment)
++              } else {
++                sessionLog.warn(`send_to_session: attachment not found: ${a.path}`)
++              }
++            } catch (error) {
++              const message = error instanceof Error ? error.message : String(error)
++              sessionLog.warn(`send_to_session: blocked attachment path ${a.path}: ${message}`)
++            }
++          }
++          if (attachments.length > 0) fileAttachments = attachments
++        }
++
++        const beforeLen = target.messages.length
++
++        await this.sendMessage(target.id, request.message, fileAttachments)
++
++        const newUserMessage = [...target.messages.slice(beforeLen)]
++          .reverse()
++          .find(m => m.role === 'user')
++
++        if (!newUserMessage?.id) {
++          throw new Error('Failed to resolve message ID after sending to target session.')
++        }
++
++        const messageId = newUserMessage.id
++
++        if (!request.waitForResponse) {
++          return {
++            status: 'sent' as const,
++            messageId,
++          }
++        }
++
++        const timeoutMs = 120000
++        const start = Date.now()
++        let response: string | undefined
++
++        while (Date.now() - start < timeoutMs) {
++          await this.ensureMessagesLoaded(target)
++
++          const latestAssistant = [...target.messages]
++            .reverse()
++            .find(m => m.role === 'assistant' && !m.isIntermediate && (m.timestamp ?? 0) > (newUserMessage.timestamp ?? 0))
++
++          if (latestAssistant) {
++            response = latestAssistant.content
++            break
++          }
++
++          await new Promise(resolve => setTimeout(resolve, 250))
++        }
++
++        if (response === undefined) {
++          throw new Error('Timed out waiting for target session response.')
++        }
++
++        return {
++          status: 'completed' as const,
++          messageId,
++          response,
++        }
++      }
++
++      // Wire up onListSessions so agents can discover valid target session IDs
++      managed.agent.onListSessions = async (request) => {
++        const includeArchived = request.includeArchived ?? false
++        const limit = request.limit ?? 50
++
++        const sessions = this.getSessions(managed.workspace.id)
++          .filter(s => !s.hidden)
++          .filter(s => includeArchived || !s.isArchived)
++          .slice(0, limit)
++          .map(s => ({
++            id: s.id,
++            name: s.name,
++            status: s.sessionStatus,
++            isArchived: s.isArchived,
++            isProcessing: s.isProcessing,
++            lastMessageAt: s.lastMessageAt,
++            workspaceId: s.workspaceId,
++          }))
++
++        return { sessions }
++      }
++
+       // Wire up onSourceActivationRequest to auto-enable sources when agent tries to use them
+       managed.agent.onSourceActivationRequest = async (sourceSlug: string): Promise<boolean> => {
+         sessionLog.info(`Source activation request for session ${managed.id}:`, sourceSlug)
+diff --git a/apps/electron/src/renderer/App.tsx b/apps/electron/src/renderer/App.tsx
+index be335a7..3fa88b7 100644
+--- a/apps/electron/src/renderer/App.tsx
++++ b/apps/electron/src/renderer/App.tsx
+@@ -55,6 +55,7 @@ import {
+ import { useLinkInterceptor, type FilePreviewState } from '@/hooks/useLinkInterceptor'
+ import { getFileManagerName } from '@/lib/platform'
+ import { ActionRegistryProvider } from '@/actions'
++import { DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
+ 
+ type AppState = 'loading' | 'onboarding' | 'reauth' | 'ready'
+ 
+@@ -393,12 +394,12 @@ export default function App() {
+       for (const s of loadedSessions) {
+         // Only store non-default options to keep the map lean
+         const hasNonDefaultMode = s.permissionMode && s.permissionMode !== 'ask'
+-        const hasNonDefaultThinking = s.thinkingLevel && s.thinkingLevel !== 'think'
++        const hasNonDefaultThinking = s.thinkingLevel && normalizeThinkingLevel(s.thinkingLevel) !== DEFAULT_THINKING_LEVEL
+         if (hasNonDefaultMode || hasNonDefaultThinking) {
+           optionsMap.set(s.id, {
+             ultrathinkEnabled: false, // ultrathink is single-shot, never persisted
+             permissionMode: s.permissionMode ?? 'ask',
+-            thinkingLevel: s.thinkingLevel ?? 'think',
++            thinkingLevel: s.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+           })
+         }
+       }
+@@ -717,14 +718,14 @@ export default function App() {
+ 
+     // Apply session defaults to the unified sessionOptions
+     const hasNonDefaultMode = session.permissionMode && session.permissionMode !== 'ask'
+-    const hasNonDefaultThinking = session.thinkingLevel && session.thinkingLevel !== 'think'
++    const hasNonDefaultThinking = session.thinkingLevel && normalizeThinkingLevel(session.thinkingLevel) !== DEFAULT_THINKING_LEVEL
+     if (hasNonDefaultMode || hasNonDefaultThinking) {
+       setSessionOptions(prev => {
+         const next = new Map(prev)
+         next.set(session.id, {
+           ultrathinkEnabled: false,
+           permissionMode: session.permissionMode ?? 'ask',
+-          thinkingLevel: session.thinkingLevel ?? 'think',
++          thinkingLevel: session.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+         })
+         return next
+       })
+diff --git a/apps/electron/src/renderer/components/AppMenu.tsx b/apps/electron/src/renderer/components/AppMenu.tsx
+index f92acc2..d506e4e 100644
+--- a/apps/electron/src/renderer/components/AppMenu.tsx
++++ b/apps/electron/src/renderer/components/AppMenu.tsx
+@@ -317,7 +317,7 @@ export function AppMenu({
+           {/* Quit */}
+           <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
+             <Icons.LogOut className="h-3.5 w-3.5" />
+-            Quit Craft Agents
++            Quit MJCraft
+             {quitHotkey && <DropdownMenuShortcut className="pl-6">{quitHotkey}</DropdownMenuShortcut>}
+           </StyledDropdownMenuItem>
+         </StyledDropdownMenuContent>
+diff --git a/apps/electron/src/renderer/components/app-shell/ChatDisplay.tsx b/apps/electron/src/renderer/components/app-shell/ChatDisplay.tsx
+index 92206dd..a6c9a7c 100644
+--- a/apps/electron/src/renderer/components/app-shell/ChatDisplay.tsx
++++ b/apps/electron/src/renderer/components/app-shell/ChatDisplay.tsx
+@@ -41,7 +41,7 @@ import { useFocusZone } from "@/hooks/keyboard"
+ import { useTheme } from "@/hooks/useTheme"
+ import type { Session, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, LoadedSource, LoadedSkill } from "../../../shared/types"
+ import type { PermissionMode } from "@craft-agent/shared/agent/modes"
+-import type { ThinkingLevel } from "@craft-agent/shared/agent/thinking-levels"
++import { type ThinkingLevel, DEFAULT_THINKING_LEVEL } from "@craft-agent/shared/agent/thinking-levels"
+ import { TurnCard, UserMessageBubble, groupMessagesByTurn, formatTurnAsMarkdown, formatActivityAsMarkdown, type Turn, type AssistantTurn, type UserTurn, type SystemTurn, type AuthRequestTurn } from "@craft-agent/ui"
+ import { MemoizedAuthRequestCard } from "@/components/chat/AuthRequestCard"
+ import { ActiveOptionBadges } from "./ActiveOptionBadges"
+@@ -115,7 +115,7 @@ interface ChatDisplayProps {
+   /** Callback to respond to credential request */
+   onRespondToCredential?: (sessionId: string, requestId: string, response: CredentialResponse) => void
+   // Thinking level (session-level setting)
+-  /** Current thinking level ('off', 'think', 'max') */
++  /** Current effort level (legacy think/max aliases supported) */
+   thinkingLevel?: ThinkingLevel
+   /** Callback when thinking level changes */
+   onThinkingLevelChange?: (level: ThinkingLevel) => void
+@@ -386,7 +386,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
+   pendingCredential,
+   onRespondToCredential,
+   // Thinking level
+-  thinkingLevel = 'think',
++  thinkingLevel = DEFAULT_THINKING_LEVEL,
+   onThinkingLevelChange,
+   // Advanced options
+   ultrathinkEnabled = false,
+diff --git a/apps/electron/src/renderer/components/app-shell/SessionBadges.tsx b/apps/electron/src/renderer/components/app-shell/SessionBadges.tsx
+index 41ce066..ee11451 100644
+--- a/apps/electron/src/renderer/components/app-shell/SessionBadges.tsx
++++ b/apps/electron/src/renderer/components/app-shell/SessionBadges.tsx
+@@ -20,6 +20,12 @@ interface SessionBadgesProps {
+   item: SessionMeta
+ }
+ 
++function formatCompactTokens(value: number): string {
++  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
++  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
++  return `${value}`
++}
++
+ export function SessionBadges({ item }: SessionBadgesProps) {
+   const ctx = useSessionListContext()
+   const permissionMode = ctx.sessionOptions?.get(item.id)?.permissionMode
+@@ -67,6 +73,11 @@ export function SessionBadges({ item }: SessionBadgesProps) {
+           <ConnectionIcon connection={connectionDetails} size={14} showTooltip />
+         </EntityListBadge>
+       )}
++      {item.tokenUsage?.totalTokens != null && item.tokenUsage.totalTokens > 0 && (
++        <EntityListBadge colorClass="bg-foreground/5 text-foreground/70" className="tabular-nums" title={`Tokens: ${item.tokenUsage.totalTokens.toLocaleString()}${item.tokenUsage.costUsd ? ` · $${item.tokenUsage.costUsd.toFixed(4)}` : ''}`}>
++          {formatCompactTokens(item.tokenUsage.totalTokens)} tok
++        </EntityListBadge>
++      )}
+       {permissionMode && (
+         <EntityListBadge colorClass={cn(
+           permissionMode === 'safe' && "bg-foreground/5 text-foreground/60",
+diff --git a/apps/electron/src/renderer/components/app-shell/SessionMenu.tsx b/apps/electron/src/renderer/components/app-shell/SessionMenu.tsx
+index 82c99c7..3eb26db 100644
+--- a/apps/electron/src/renderer/components/app-shell/SessionMenu.tsx
++++ b/apps/electron/src/renderer/components/app-shell/SessionMenu.tsx
+@@ -32,6 +32,7 @@ import {
+   Copy,
+   AppWindow,
+   CloudUpload,
++  Cpu,
+   RefreshCw,
+   Tag,
+ } from 'lucide-react'
+@@ -65,6 +66,8 @@ export interface SessionMenuProps {
+   onSessionStatusChange: (state: SessionStatusId) => void
+   onOpenInNewWindow: () => void
+   onDelete: () => void
++  /** Create a Codex sub-session delegated from this session (optional) */
++  onDelegateToCodex?: () => void
+ }
+ 
+ /**
+@@ -85,6 +88,7 @@ export function SessionMenu({
+   onSessionStatusChange,
+   onOpenInNewWindow,
+   onDelete,
++  onDelegateToCodex,
+ }: SessionMenuProps) {
+   // Derive display state from item
+   const sessionId = item.id
+@@ -223,6 +227,14 @@ export function SessionMenu({
+         </Sub>
+       )}
+ 
++      {/* Claude main → Codex sub-agent delegation */}
++      {onDelegateToCodex && (
++        <MenuItem onClick={onDelegateToCodex}>
++          <Cpu className="h-3.5 w-3.5" />
++          <span className="flex-1">Delegate to Codex</span>
++        </MenuItem>
++      )}
++
+       {/* Flag/Unflag */}
+       {!isFlagged ? (
+         <MenuItem onClick={onFlag}>
+diff --git a/apps/electron/src/renderer/components/app-shell/input/FreeFormInput.tsx b/apps/electron/src/renderer/components/app-shell/input/FreeFormInput.tsx
+index 48c8873..c0004d4 100644
+--- a/apps/electron/src/renderer/components/app-shell/input/FreeFormInput.tsx
++++ b/apps/electron/src/renderer/components/app-shell/input/FreeFormInput.tsx
+@@ -65,7 +65,7 @@ import { FreeFormInputContextBadge } from './FreeFormInputContextBadge'
+ import type { FileAttachment, LoadedSource, LoadedSkill } from '../../../../shared/types'
+ import type { PermissionMode } from '@craft-agent/shared/agent/modes'
+ import { PERMISSION_MODE_ORDER } from '@craft-agent/shared/agent/modes'
+-import { type ThinkingLevel, THINKING_LEVELS, getThinkingLevelName } from '@craft-agent/shared/agent/thinking-levels'
++import { type ThinkingLevel, CLAUDE_EFFORT_LEVELS, GPT_EFFORT_LEVELS, getThinkingLevelName, normalizeThinkingLevel, DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
+ import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
+ import { hasOpenOverlay } from '@/lib/overlay-detection'
+ import { EscapeInterruptOverlay } from './EscapeInterruptOverlay'
+@@ -125,7 +125,7 @@ export interface FreeFormInputProps {
+   /** Callback when model changes (includes connection slug for proper persistence) */
+   onModelChange: (model: string, connection?: string) => void
+   // Thinking level (session-level setting)
+-  /** Current thinking level ('off', 'think', 'max') */
++  /** Current effort level (legacy think/max aliases still supported) */
+   thinkingLevel?: ThinkingLevel
+   /** Callback when thinking level changes */
+   onThinkingLevelChange?: (level: ThinkingLevel) => void
+@@ -219,7 +219,7 @@ export function FreeFormInput({
+   inputRef: externalInputRef,
+   currentModel,
+   onModelChange,
+-  thinkingLevel = 'think',
++  thinkingLevel = DEFAULT_THINKING_LEVEL,
+   onThinkingLevelChange,
+   ultrathinkEnabled = false,
+   onUltrathinkChange,
+@@ -288,14 +288,43 @@ export function FreeFormInput({
+     return connection.models || ANTHROPIC_MODELS
+   }, [llmConnections, currentConnection, workspaceDefaultConnection, connectionUnavailable])
+ 
+-  const availableThinkingLevels = THINKING_LEVELS
++  // Effective connection: canonical fallback chain (session → workspace default → global default → first)
++  const effectiveConnection = resolveEffectiveConnectionSlug(currentConnection, workspaceDefaultConnection, llmConnections)
++
++  // Effective connection details (with fallbacks) for model list
++  // Unlike currentConnectionDetails which is null when no explicit connection is set,
++  // this resolves to the actual connection being used (including workspace default)
++  const effectiveConnectionDetails = React.useMemo(() => {
++    if (!effectiveConnection) return null
++    return llmConnections.find(c => c.slug === effectiveConnection) ?? null
++  }, [llmConnections, effectiveConnection])
+ 
+-  // Disable thinking selector when the current model explicitly doesn't support it
++  // Disable effort selector when the current model explicitly doesn't support it
+   const thinkingDisabled = React.useMemo(() => {
+     const model = availableModels.find(m => typeof m !== 'string' && m.id === currentModel)
+     return typeof model !== 'string' && model?.supportsThinking === false
+   }, [availableModels, currentModel])
+ 
++  // Provider-aware official effort levels
++  const availableThinkingLevels = React.useMemo(() => {
++    if (thinkingDisabled) return []
++    const providerType = effectiveConnectionDetails?.providerType
++    // Pi(OpenAI/Codex): low/medium/high/xhigh
++    if (providerType === 'pi') return GPT_EFFORT_LEVELS
++    // Anthropic/Claude: low/medium/high/max
++    return CLAUDE_EFFORT_LEVELS
++  }, [thinkingDisabled, effectiveConnectionDetails])
++
++  const effortLabel = React.useMemo(() => {
++    return effectiveConnectionDetails?.providerType === 'pi' ? 'Reasoning effort' : 'Effort'
++  }, [effectiveConnectionDetails])
++
++  const currentThinkingDisplayName = React.useMemo(() => {
++    const normalized = normalizeThinkingLevel(thinkingLevel)
++    const def = availableThinkingLevels.find((l) => l.id === normalized)
++    return def?.name ?? getThinkingLevelName(thinkingLevel)
++  }, [thinkingLevel, availableThinkingLevels])
++
+   // Get display name for current model (full name, not short name)
+   const currentModelDisplayName = React.useMemo(() => {
+     const modelToDisplay = connectionDefaultModel ?? currentModel
+@@ -335,18 +364,6 @@ export function FreeFormInput({
+     return llmConnections.find(c => c.slug === currentConnection) ?? null
+   }, [llmConnections, currentConnection])
+ 
+-  // Effective connection: canonical fallback chain (session → workspace default → global default → first)
+-  const effectiveConnection = resolveEffectiveConnectionSlug(currentConnection, workspaceDefaultConnection, llmConnections)
+-
+-  // Effective connection details (with fallbacks) for model list
+-  // Unlike currentConnectionDetails which is null when no explicit connection is set,
+-  // this resolves to the actual connection being used (including workspace default)
+-  const effectiveConnectionDetails = React.useMemo(() => {
+-    if (!effectiveConnection) return null
+-    return llmConnections.find(c => c.slug === effectiveConnection) ?? null
+-  }, [llmConnections, effectiveConnection])
+-
+-
+   // Access sessionStatuses and onSessionStatusChange from context for the # menu state picker
+   const sessionStatuses = appShellCtx?.sessionStatuses ?? []
+   const onSessionStatusChange = appShellCtx?.onSessionStatusChange
+@@ -1793,13 +1810,13 @@ Model
+                   <DropdownMenuSub>
+                     <StyledDropdownMenuSubTrigger disabled={thinkingDisabled} className={cn("flex items-center justify-between px-2 py-2 rounded-lg", thinkingDisabled && "opacity-50 cursor-not-allowed")}>
+                       <div className="text-left flex-1">
+-                        <div className="font-medium text-sm">{getThinkingLevelName(thinkingLevel)}</div>
+-                        <div className="text-xs text-muted-foreground">{thinkingDisabled ? 'Not supported by this model' : 'Extended reasoning depth'}</div>
++                        <div className="font-medium text-sm">{currentThinkingDisplayName}</div>
++                        <div className="text-xs text-muted-foreground">{thinkingDisabled ? 'Not supported by this model' : effortLabel}</div>
+                       </div>
+                     </StyledDropdownMenuSubTrigger>
+                     <StyledDropdownMenuSubContent className="min-w-[220px]">
+                       {availableThinkingLevels.map(({ id, name, description }) => {
+-                        const isSelected = thinkingLevel === id
++                        const isSelected = normalizeThinkingLevel(thinkingLevel) === id
+                         return (
+                           <StyledDropdownMenuItem
+                             key={id}
+diff --git a/apps/electron/src/renderer/components/onboarding/APISetupStep.tsx b/apps/electron/src/renderer/components/onboarding/APISetupStep.tsx
+index 7ebb644..5c966c7 100644
+--- a/apps/electron/src/renderer/components/onboarding/APISetupStep.tsx
++++ b/apps/electron/src/renderer/components/onboarding/APISetupStep.tsx
+@@ -86,7 +86,7 @@ const API_SETUP_OPTIONS: ApiSetupOption[] = [
+   },
+   {
+     id: 'pi_chatgpt_oauth',
+-    name: 'ChatGPT Plus',
++    name: 'ChatGPT Plus/Pro',
+     description: 'Use your ChatGPT subscription with Craft Agents Backend.',
+     icon: <Cpu className="size-4" />,
+     providerType: 'pi',
+diff --git a/apps/electron/src/renderer/components/onboarding/CredentialsStep.tsx b/apps/electron/src/renderer/components/onboarding/CredentialsStep.tsx
+index e711a11..dee0dc8 100644
+--- a/apps/electron/src/renderer/components/onboarding/CredentialsStep.tsx
++++ b/apps/electron/src/renderer/components/onboarding/CredentialsStep.tsx
+@@ -90,7 +90,7 @@ export function CredentialsStep({
+     return (
+       <StepFormLayout
+         title="Connect ChatGPT"
+-        description="Use your ChatGPT subscription to power Craft Agents."
++        description="Use your ChatGPT subscription to power MJCraft."
+         actions={
+           <>
+             <BackButton onClick={onBack} disabled={status === 'validating'} />
+@@ -130,7 +130,7 @@ export function CredentialsStep({
+     return (
+       <StepFormLayout
+         title="Connect GitHub Copilot"
+-        description="Use your GitHub Copilot subscription to power Craft Agents."
++        description="Use your GitHub Copilot subscription to power MJCraft."
+         actions={
+           <>
+             <BackButton onClick={onBack} disabled={status === 'validating'} />
+diff --git a/apps/electron/src/renderer/components/onboarding/GitBashWarning.tsx b/apps/electron/src/renderer/components/onboarding/GitBashWarning.tsx
+index 764d6e6..fb561a3 100644
+--- a/apps/electron/src/renderer/components/onboarding/GitBashWarning.tsx
++++ b/apps/electron/src/renderer/components/onboarding/GitBashWarning.tsx
+@@ -61,7 +61,7 @@ export function GitBashWarning({
+   return (
+     <StepFormLayout
+       title="Git Bash Required"
+-      description="Craft Agent needs Git Bash to run shell commands on Windows. It was not found on your system."
++      description="MJCraft needs Git Bash to run shell commands on Windows. It was not found on your system."
+     >
+       <div className="space-y-4">
+         {/* Primary action: Download Git */}
+diff --git a/apps/electron/src/renderer/components/onboarding/ProviderSelectStep.tsx b/apps/electron/src/renderer/components/onboarding/ProviderSelectStep.tsx
+index 8adc1f8..67366e8 100644
+--- a/apps/electron/src/renderer/components/onboarding/ProviderSelectStep.tsx
++++ b/apps/electron/src/renderer/components/onboarding/ProviderSelectStep.tsx
+@@ -29,7 +29,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
+   },
+   {
+     id: 'chatgpt',
+-    name: 'Codex · ChatGPT Plus',
++    name: 'Codex · ChatGPT Plus/Pro',
+     description: 'Use your ChatGPT Plus or Pro subscription.',
+     icon: <img src={openaiIcon} alt="" className="size-5 rounded-[3px]" />,
+   },
+@@ -72,7 +72,7 @@ export function ProviderSelectStep({ onSelect }: ProviderSelectStepProps) {
+           <CraftAgentsSymbol className="size-10 text-accent" />
+         </div>
+       }
+-      title="Welcome to Craft Agents"
++      title="Welcome to MJCraft"
+       description="How would you like to connect?"
+     >
+       <div className="space-y-3">
+diff --git a/apps/electron/src/renderer/components/onboarding/ReauthScreen.tsx b/apps/electron/src/renderer/components/onboarding/ReauthScreen.tsx
+index 17424f4..da49cda 100644
+--- a/apps/electron/src/renderer/components/onboarding/ReauthScreen.tsx
++++ b/apps/electron/src/renderer/components/onboarding/ReauthScreen.tsx
+@@ -47,9 +47,9 @@ export function ReauthScreen({ onLogin, onReset }: ReauthScreenProps) {
+           title="Session Expired"
+           description={
+             <>
+-              Your Craft session has expired or is no longer valid.
++              Your MJCraft session has expired or is no longer valid.
+               <br />
+-              Please log in again to continue using Craft Agents.
++              Please log in again to continue using MJCraft.
+               <br />
+               <span className="text-muted-foreground/70 text-xs mt-2 block">
+                 Your conversations and settings are preserved.
+@@ -72,7 +72,7 @@ export function ReauthScreen({ onLogin, onReset }: ReauthScreenProps) {
+                 ) : (
+                   <>
+                     <RefreshCw className="mr-2 size-4" />
+-                    Log In with Craft
++                    Log In with MJCraft
+                   </>
+                 )}
+               </Button>
+diff --git a/apps/electron/src/renderer/components/onboarding/WelcomeStep.tsx b/apps/electron/src/renderer/components/onboarding/WelcomeStep.tsx
+index 012ffd7..a002ae1 100644
+--- a/apps/electron/src/renderer/components/onboarding/WelcomeStep.tsx
++++ b/apps/electron/src/renderer/components/onboarding/WelcomeStep.tsx
+@@ -13,7 +13,7 @@ interface WelcomeStepProps {
+  * WelcomeStep - Initial welcome screen for onboarding
+  *
+  * Shows different messaging for new vs existing users:
+- * - New users: Welcome to Craft Agents
++ * - New users: Welcome to MJCraft
+  * - Existing users: Update your API connection settings
+  */
+ export function WelcomeStep({
+@@ -28,7 +28,7 @@ export function WelcomeStep({
+           <CraftAgentsSymbol className="size-10 text-accent" />
+         </div>
+       }
+-      title={isExistingUser ? 'Update Settings' : 'Welcome to Craft Agents'}
++      title={isExistingUser ? 'Update Settings' : 'Welcome to MJCraft'}
+       description={
+         isExistingUser
+           ? 'Update your API connection or change your setup.'
+diff --git a/apps/electron/src/renderer/hooks/useNotifications.ts b/apps/electron/src/renderer/hooks/useNotifications.ts
+index 29ff20e..5e6e241 100644
+--- a/apps/electron/src/renderer/hooks/useNotifications.ts
++++ b/apps/electron/src/renderer/hooks/useNotifications.ts
+@@ -204,7 +204,7 @@ export function useNotifications({
+     const title = session.name || 'New message'
+ 
+     // Get message preview (truncate if needed)
+-    let body = messagePreview || 'Craft Agent has a new message for you'
++    let body = messagePreview || 'MJCraft has a new message for you'
+     if (body.length > 100) {
+       body = body.substring(0, 97) + '...'
+     }
+diff --git a/apps/electron/src/renderer/index.html b/apps/electron/src/renderer/index.html
+index f899ca5..0cdcd34 100644
+--- a/apps/electron/src/renderer/index.html
++++ b/apps/electron/src/renderer/index.html
+@@ -4,7 +4,7 @@
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' http://localhost:8097; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https: file: thumbnail:; connect-src 'self' https: ws://localhost:8097 http://localhost:8097; font-src 'self' https://fonts.gstatic.com; worker-src 'self' blob:; object-src 'self' file:;">
+-  <title>Craft Agents</title>
++  <title>MJCraft</title>
+   <link rel="preconnect" href="https://fonts.googleapis.com">
+   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+diff --git a/apps/electron/src/renderer/pages/ChatPage.tsx b/apps/electron/src/renderer/pages/ChatPage.tsx
+index 5074fca..8d35a19 100644
+--- a/apps/electron/src/renderer/pages/ChatPage.tsx
++++ b/apps/electron/src/renderer/pages/ChatPage.tsx
+@@ -196,12 +196,51 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+     }
+   }, [sessionId])
+ 
++  const handleDelegateToCodex = React.useCallback(async () => {
++    if (!activeWorkspaceId || !session) return
++
++    const codexConnection = llmConnections.find(c => c.slug === 'chatgpt-plus')
++      ?? llmConnections.find(c => c.providerType === 'pi')
++
++    if (!codexConnection) {
++      toast.error('Codex connection not found', { description: 'Add a ChatGPT Plus/Pro (Codex) connection in AI settings first.' })
++      return
++    }
++
++    const child = await window.electronAPI.createSubSession(activeWorkspaceId, session.id, {
++      name: `Codex Subagent · ${session.name || 'Session'}`,
++      llmConnection: codexConnection.slug,
++      model: codexConnection.defaultModel,
++      permissionMode: session.permissionMode,
++      workingDirectory: session.workingDirectory,
++      enabledSourceSlugs: session.enabledSourceSlugs,
++      labels: ['subagent', 'codex'],
++    })
++
++    toast.success('Codex subagent session created', {
++      description: child.name || child.id,
++      action: {
++        label: 'Open',
++        onClick: () => window.electronAPI.openSessionInNewWindow(activeWorkspaceId, child.id),
++      },
++    })
++  }, [activeWorkspaceId, session, llmConnections])
++
+   // Check if session's locked connection has been removed
+   const connectionUnavailable = React.useMemo(() =>
+     isSessionConnectionUnavailable(session?.llmConnection, llmConnections),
+     [session?.llmConnection, llmConnections]
+   )
+ 
++  const effectiveConnectionSlug = React.useMemo(() => {
++    if (connectionUnavailable) return session?.llmConnection
++    return resolveEffectiveConnectionSlug(session?.llmConnection, workspaceDefaultLlmConnection, llmConnections)
++  }, [connectionUnavailable, session?.llmConnection, workspaceDefaultLlmConnection, llmConnections])
++
++  const effectiveConnectionDetails = React.useMemo(() => {
++    return effectiveConnectionSlug ? llmConnections.find(c => c.slug === effectiveConnectionSlug) ?? null : null
++  }, [effectiveConnectionSlug, llmConnections])
++
+   // Effective model for this session (session-specific or global fallback)
+   const effectiveModel = React.useMemo(() => {
+     if (session?.model) return session.model
+@@ -209,13 +248,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+     // When connection is unavailable, don't resolve through a different connection
+     if (connectionUnavailable) return session?.model ?? ''
+ 
+-    const connectionSlug = resolveEffectiveConnectionSlug(
+-      session?.llmConnection, workspaceDefaultLlmConnection, llmConnections
+-    )
+-    const connection = connectionSlug ? llmConnections.find(c => c.slug === connectionSlug) : null
+-
+-    return connection?.defaultModel ?? ''
+-  }, [session?.id, session?.model, session?.llmConnection, workspaceDefaultLlmConnection, llmConnections, connectionUnavailable])
++    return effectiveConnectionDetails?.defaultModel ?? ''
++  }, [session?.id, session?.model, session?.llmConnection, effectiveConnectionDetails, connectionUnavailable])
+ 
+   // Working directory for this session
+   const workingDirectory = session?.workingDirectory
+@@ -266,6 +300,15 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+   // Get display title for header - use getSessionTitle for consistent fallback logic with SessionList
+   // Priority: name > first user message > preview > "New chat"
+   const displayTitle = session ? getSessionTitle(session) : (sessionMeta ? getSessionTitle(sessionMeta) : 'Session')
++  const agentModeBadge = React.useMemo(() => {
++    if (!effectiveConnectionDetails) return null
++    const isClaudeMain = effectiveConnectionDetails.providerType === 'anthropic'
++    if (isClaudeMain) {
++      return <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/5 text-foreground/70">Main: Claude · Sub: Codex</span>
++    }
++    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/5 text-foreground/70">Single Agent</span>
++  }, [effectiveConnectionDetails])
++
+   const isFlagged = session?.isFlagged || sessionMeta?.isFlagged || false
+   const isArchived = session?.isArchived || sessionMeta?.isArchived || false
+   const sharedUrl = session?.sharedUrl || sessionMeta?.sharedUrl || null
+@@ -457,6 +500,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+       onSessionStatusChange={handleSessionStatusChange}
+       onOpenInNewWindow={handleOpenInNewWindow}
+       onDelete={handleDelete}
++      onDelegateToCodex={handleDelegateToCodex}
+     />
+   ) : null, [
+     sessionMeta,
+@@ -472,6 +516,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+     handleSessionStatusChange,
+     handleOpenInNewWindow,
+     handleDelete,
++    handleDelegateToCodex,
+   ])
+ 
+   // Handle missing session - loading or deleted
+@@ -495,7 +540,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+       return (
+         <>
+           <div className="h-full flex flex-col">
+-            <PanelHeader  title={displayTitle} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
++            <PanelHeader  title={displayTitle} badge={agentModeBadge} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+             <div className="flex-1 flex flex-col min-h-0">
+               <ChatDisplay
+                 ref={chatDisplayRef}
+@@ -564,7 +609,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+   return (
+     <>
+       <div className="h-full flex flex-col">
+-        <PanelHeader  title={displayTitle} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
++        <PanelHeader  title={displayTitle} badge={agentModeBadge} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+         <div className="flex-1 flex flex-col min-h-0">
+           <ChatDisplay
+             ref={chatDisplayRef}
+diff --git a/apps/electron/src/renderer/pages/settings/PreferencesPage.tsx b/apps/electron/src/renderer/pages/settings/PreferencesPage.tsx
+index e61b35d..a12925e 100644
+--- a/apps/electron/src/renderer/pages/settings/PreferencesPage.tsx
++++ b/apps/electron/src/renderer/pages/settings/PreferencesPage.tsx
+@@ -197,7 +197,7 @@ export default function PreferencesPage() {
+           {/* Basic Info */}
+           <SettingsSection
+             title="Basic Info"
+-            description="Help Craft Agent personalize responses to you."
++            description="Help MJCraft personalize responses to you."
+           >
+             <SettingsCard divided>
+               <SettingsInput
+diff --git a/apps/electron/src/renderer/playground/registry/chat.tsx b/apps/electron/src/renderer/playground/registry/chat.tsx
+index c032bd4..662215a 100644
+--- a/apps/electron/src/renderer/playground/registry/chat.tsx
++++ b/apps/electron/src/renderer/playground/registry/chat.tsx
+@@ -491,7 +491,7 @@ function ActiveTasksBarContext({ tasks = sampleBackgroundTasks }: ActiveTasksBar
+ 
+         {/* Real InputContainer */}
+         <InputContainer
+-          placeholder="Message Craft Agent..."
++          placeholder="Message MJCraft..."
+           disabled={false}
+           isProcessing={false}
+           currentModel="claude-sonnet-4-5-20250929"
+@@ -599,7 +599,7 @@ function PermissionInputToggle({ autoToggle = false, autoToggleInterval = 3000,
+ 
+       {/* Real InputContainer - handles animation automatically */}
+       <InputContainer
+-        placeholder="Message Craft Agent..."
++        placeholder="Message MJCraft..."
+         disabled={false}
+         isProcessing={false}
+         currentModel="claude-sonnet-4-5-20250929"
+@@ -941,7 +941,7 @@ export const chatComponents: ComponentEntry[] = [
+         name: 'placeholder',
+         description: 'Textarea placeholder text',
+         control: { type: 'string', placeholder: 'Message...' },
+-        defaultValue: 'Message Craft Agent...',
++        defaultValue: 'Message MJCraft...',
+       },
+       {
+         name: 'currentModel',
+diff --git a/packages/session-mcp-server/src/index.ts b/packages/session-mcp-server/src/index.ts
+index 5d10ee4..e22c33b 100644
+--- a/packages/session-mcp-server/src/index.ts
++++ b/packages/session-mcp-server/src/index.ts
+@@ -433,6 +433,98 @@ async function handleSpawnSession(
+   );
+ }
+ 
++async function handleSendToSession(
++  args: Record<string, unknown>,
++  config: SessionConfig,
++): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
++  const precomputed = args?._precomputedResult as string | undefined;
++
++  if (precomputed) {
++    try {
++      const parsed = JSON.parse(precomputed);
++      if (parsed.error) {
++        return errorResponse(`send_to_session failed: ${parsed.error}`);
++      }
++      return {
++        content: [{ type: 'text' as const, text: JSON.stringify(parsed, null, 2) }],
++      };
++    } catch {
++      return errorResponse(`send_to_session: Failed to parse _precomputedResult: ${precomputed.slice(0, 200)}`);
++    }
++  }
++
++  if (config.callbackPort) {
++    try {
++      const resp = await fetch(`http://127.0.0.1:${config.callbackPort}/send-to-session`, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify(args),
++        signal: AbortSignal.timeout(CALLBACK_TOOL_TIMEOUT_MS),
++      });
++      const result = await resp.json() as Record<string, unknown>;
++      if (result.error) {
++        return errorResponse(`send_to_session failed: ${result.error}`);
++      }
++      return {
++        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
++      };
++    } catch (err) {
++      return errorResponse(`send_to_session callback failed: ${err instanceof Error ? err.message : String(err)}`);
++    }
++  }
++
++  return errorResponse(
++    'send_to_session requires either PreToolUse intercept (_precomputedResult) or ' +
++    'HTTP callback (CRAFT_LLM_CALLBACK_PORT). Neither is available.'
++  );
++}
++
++async function handleListSessions(
++  args: Record<string, unknown>,
++  config: SessionConfig,
++): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
++  const precomputed = args?._precomputedResult as string | undefined;
++
++  if (precomputed) {
++    try {
++      const parsed = JSON.parse(precomputed);
++      if (parsed.error) {
++        return errorResponse(`list_sessions failed: ${parsed.error}`);
++      }
++      return {
++        content: [{ type: 'text' as const, text: JSON.stringify(parsed, null, 2) }],
++      };
++    } catch {
++      return errorResponse(`list_sessions: Failed to parse _precomputedResult: ${precomputed.slice(0, 200)}`);
++    }
++  }
++
++  if (config.callbackPort) {
++    try {
++      const resp = await fetch(`http://127.0.0.1:${config.callbackPort}/list-sessions`, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify(args),
++        signal: AbortSignal.timeout(CALLBACK_TOOL_TIMEOUT_MS),
++      });
++      const result = await resp.json() as Record<string, unknown>;
++      if (result.error) {
++        return errorResponse(`list_sessions failed: ${result.error}`);
++      }
++      return {
++        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
++      };
++    } catch (err) {
++      return errorResponse(`list_sessions callback failed: ${err instanceof Error ? err.message : String(err)}`);
++    }
++  }
++
++  return errorResponse(
++    'list_sessions requires either PreToolUse intercept (_precomputedResult) or ' +
++    'HTTP callback (CRAFT_LLM_CALLBACK_PORT). Neither is available.'
++  );
++}
++
+ // ============================================================
+ // MCP Server Setup
+ // ============================================================
+@@ -529,6 +621,16 @@ async function main() {
+         return await handleSpawnSession(toolArgs as Record<string, unknown>, config);
+       }
+ 
++      // send_to_session has backend-specific execution (precomputed result / HTTP callback)
++      if (name === 'send_to_session') {
++        return await handleSendToSession(toolArgs as Record<string, unknown>, config);
++      }
++
++      // list_sessions has backend-specific execution (precomputed result / HTTP callback)
++      if (name === 'list_sessions') {
++        return await handleListSessions(toolArgs as Record<string, unknown>, config);
++      }
++
+       // Check canonical session tool registry first
+       const def = SESSION_TOOL_REGISTRY.get(name);
+       if (def?.handler) {
+diff --git a/packages/session-tools-core/src/tool-defs.ts b/packages/session-tools-core/src/tool-defs.ts
+index 431cdaa..3cce30e 100644
+--- a/packages/session-tools-core/src/tool-defs.ts
++++ b/packages/session-tools-core/src/tool-defs.ts
+@@ -142,6 +142,21 @@ export const SpawnSessionSchema = z.object({
+   })).optional().describe('Files to include with the prompt'),
+ });
+ 
++export const SendToSessionSchema = z.object({
++  targetSessionId: z.string().describe('Target session ID to receive the message'),
++  message: z.string().describe('Message to send to the target session'),
++  attachments: z.array(z.object({
++    path: z.string().describe('Absolute file path on disk'),
++    name: z.string().optional().describe('Display name (defaults to file basename)'),
++  })).optional().describe('Files to include with the message'),
++  waitForResponse: z.boolean().optional().describe('Wait for target session assistant response before returning (default: false)'),
++});
++
++export const ListSessionsSchema = z.object({
++  includeArchived: z.boolean().optional().describe('Include archived sessions in results (default: false)'),
++  limit: z.number().int().min(1).max(200).optional().describe('Maximum number of sessions to return (default: 50)'),
++});
++
+ // ============================================================
+ // Canonical Tool Descriptions (base — no DOC_REFS)
+ // ============================================================
+@@ -298,6 +313,19 @@ When spawning, the 'prompt' parameter is required.
+ 
+ The spawned session appears in the session list and runs fire-and-forget.
+ Only use 'attachments' for existing file paths on disk — the tool reads them automatically.`,
++
++  send_to_session: `Send a message to another session and optionally wait for a response.
++
++Use this when you need a different session to continue work, gather context, or answer a focused question.
++
++The target session must be in the same workspace.
++If waitForResponse=true, the call blocks until the target session returns an assistant response.`,
++
++  list_sessions: `List sessions available in the current workspace.
++
++Use this before send_to_session to discover valid targetSessionId values.
++
++Returns session metadata (id, name, status, last activity).`,
+ } as const;
+ 
+ // ============================================================
+@@ -336,6 +364,8 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
+   { name: 'render_template', description: TOOL_DESCRIPTIONS.render_template, inputSchema: RenderTemplateSchema, handler: handleRenderTemplate },
+   { name: 'call_llm', description: TOOL_DESCRIPTIONS.call_llm, inputSchema: CallLlmSchema, handler: null },
+   { name: 'spawn_session', description: TOOL_DESCRIPTIONS.spawn_session, inputSchema: SpawnSessionSchema, handler: null },
++  { name: 'send_to_session', description: TOOL_DESCRIPTIONS.send_to_session, inputSchema: SendToSessionSchema, handler: null },
++  { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, handler: null },
+ ];
+ 
+ // ============================================================
+diff --git a/packages/shared/src/agent/backend/pi/constants.ts b/packages/shared/src/agent/backend/pi/constants.ts
+index 6ad3891..6b908f9 100644
+--- a/packages/shared/src/agent/backend/pi/constants.ts
++++ b/packages/shared/src/agent/backend/pi/constants.ts
+@@ -11,12 +11,16 @@ import type { ThinkingLevel } from '../../thinking-levels.ts';
+ /**
+  * Map thinking levels to Pi thinking levels.
+  * Pi supports: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+- * Craft supports: "off" | "think" | "max"
++ * Craft supports: off/low/medium/high/xhigh (+ legacy think/max aliases)
+  */
+ export const THINKING_TO_PI: Record<ThinkingLevel, PiThinkingLevel> = {
+   off: 'off',
+   think: 'medium',
+-  max: 'high',
++  low: 'low',
++  medium: 'medium',
++  high: 'high',
++  max: 'xhigh',
++  xhigh: 'xhigh',
+ };
+ 
+ /**
+diff --git a/packages/shared/src/agent/backend/types.ts b/packages/shared/src/agent/backend/types.ts
+index 8fe2043..dad88d7 100644
+--- a/packages/shared/src/agent/backend/types.ts
++++ b/packages/shared/src/agent/backend/types.ts
+@@ -507,6 +507,12 @@ export interface AgentBackend {
+ 
+   /** Called when agent requests spawning a sub-session */
+   onSpawnSession: ((request: import('../base-agent.ts').SpawnSessionRequest) => Promise<import('../base-agent.ts').SpawnSessionResult>) | null;
++
++  /** Called when agent requests sending a message to another session */
++  onSendToSession: ((request: import('../base-agent.ts').SendToSessionRequest) => Promise<import('../base-agent.ts').SendToSessionResult>) | null;
++
++  /** Called when agent requests listing sessions in the current workspace */
++  onListSessions: ((request: import('../base-agent.ts').ListSessionsRequest) => Promise<import('../base-agent.ts').ListSessionsResult>) | null;
+ }
+ 
+ /**
+diff --git a/packages/shared/src/agent/base-agent.ts b/packages/shared/src/agent/base-agent.ts
+index e7d94a0..f4fde5f 100644
+--- a/packages/shared/src/agent/base-agent.ts
++++ b/packages/shared/src/agent/base-agent.ts
+@@ -128,6 +128,36 @@ export interface SpawnSessionHelpResult {
+   };
+ }
+ 
++export interface SendToSessionRequest {
++  targetSessionId: string;
++  message: string;
++  attachments?: Array<{ path: string; name?: string }>;
++  waitForResponse?: boolean;
++}
++
++export interface SendToSessionResult {
++  status: 'sent' | 'completed';
++  messageId: string;
++  response?: string;
++}
++
++export interface ListSessionsRequest {
++  includeArchived?: boolean;
++  limit?: number;
++}
++
++export interface ListSessionsResult {
++  sessions: Array<{
++    id: string;
++    name?: string;
++    status?: string;
++    isArchived?: boolean;
++    isProcessing?: boolean;
++    lastMessageAt?: number;
++    workspaceId?: string;
++  }>;
++}
++
+ /** Tool list for mini agents - quick config edits only */
+ export const MINI_AGENT_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'] as const;
+ 
+@@ -207,6 +237,8 @@ export abstract class BaseAgent implements AgentBackend {
+   onUsageUpdate: ((update: UsageUpdate) => void) | null = null;
+   onBackendAuthRequired: ((reason: string) => void) | null = null;
+   onSpawnSession: ((request: SpawnSessionRequest) => Promise<SpawnSessionResult>) | null = null;
++  onSendToSession: ((request: SendToSessionRequest) => Promise<SendToSessionResult>) | null = null;
++  onListSessions: ((request: ListSessionsRequest) => Promise<ListSessionsResult>) | null = null;
+ 
+   // ============================================================
+   // Constructor
+@@ -1103,6 +1135,54 @@ Please continue the conversation naturally from where we left off.
+     };
+   }
+ 
++  /**
++   * Pre-execute a send_to_session request: validate and delegate.
++   */
++  protected async preExecuteSendToSession(
++    input: Record<string, unknown>
++  ): Promise<SendToSessionResult> {
++    const targetSessionId = input.targetSessionId as string | undefined;
++    const message = input.message as string | undefined;
++
++    if (!targetSessionId?.trim()) {
++      throw new Error('targetSessionId is required.');
++    }
++    if (!message?.trim()) {
++      throw new Error('message is required.');
++    }
++
++    if (!this.onSendToSession) {
++      throw new Error('send_to_session is not available in this context.');
++    }
++
++    const request: SendToSessionRequest = {
++      targetSessionId,
++      message,
++      attachments: input.attachments as SendToSessionRequest['attachments'],
++      waitForResponse: (input.waitForResponse as boolean | undefined) ?? false,
++    };
++
++    return this.onSendToSession(request);
++  }
++
++  /**
++   * Pre-execute a list_sessions request: delegate with optional filters.
++   */
++  protected async preExecuteListSessions(
++    input: Record<string, unknown>
++  ): Promise<ListSessionsResult> {
++    if (!this.onListSessions) {
++      throw new Error('list_sessions is not available in this context.');
++    }
++
++    const request: ListSessionsRequest = {
++      includeArchived: (input.includeArchived as boolean | undefined) ?? false,
++      limit: (input.limit as number | undefined) ?? 50,
++    };
++
++    return this.onListSessions(request);
++  }
++
+   // ============================================================
+   // Title Generation (shared implementation using runMiniCompletion)
+   // ============================================================
+diff --git a/packages/shared/src/agent/claude-agent.ts b/packages/shared/src/agent/claude-agent.ts
+index 2f1df26..884bbbc 100644
+--- a/packages/shared/src/agent/claude-agent.ts
++++ b/packages/shared/src/agent/claude-agent.ts
+@@ -455,6 +455,8 @@ export class ClaudeAgent extends BaseAgent {
+       },
+       queryFn: (request) => this.queryLlm(request),
+       spawnSessionFn: (input) => this.preExecuteSpawnSession(input),
++      sendToSessionFn: (input) => this.preExecuteSendToSession(input),
++      listSessionsFn: (input) => this.preExecuteListSessions(input),
+     });
+ 
+     // Start config watcher for hot-reloading source changes
+@@ -907,6 +909,8 @@ export class ClaudeAgent extends BaseAgent {
+ 
+                 case 'call_llm_intercept':
+                 case 'spawn_session_intercept':
++                case 'send_to_session_intercept':
++                case 'list_sessions_intercept':
+                   // Claude's session tools run in-process via SDK — just allow
+                   return { continue: true };
+ 
+diff --git a/packages/shared/src/agent/core/__tests__/pre-tool-use-checks.test.ts b/packages/shared/src/agent/core/__tests__/pre-tool-use-checks.test.ts
+index 67bd59b..b344bba 100644
+--- a/packages/shared/src/agent/core/__tests__/pre-tool-use-checks.test.ts
++++ b/packages/shared/src/agent/core/__tests__/pre-tool-use-checks.test.ts
+@@ -329,10 +329,10 @@ describe('runPreToolUseChecks', () => {
+   });
+ 
+   // ============================================================
+-  // Step 4: call_llm interception
++  // Step 4: session tool interception
+   // ============================================================
+ 
+-  describe('step 4: call_llm interception', () => {
++  describe('step 4: session tool interception', () => {
+     it('intercepts mcp__session__call_llm', () => {
+       const input = { model: 'haiku', prompt: 'summarize' };
+       const result = runPreToolUseChecks(createInput({
+@@ -346,6 +346,45 @@ describe('runPreToolUseChecks', () => {
+       }
+     });
+ 
++    it('intercepts mcp__session__spawn_session', () => {
++      const input = { prompt: 'Run this task' };
++      const result = runPreToolUseChecks(createInput({
++        toolName: 'mcp__session__spawn_session',
++        input,
++      }));
++
++      expect(result.type).toBe('spawn_session_intercept');
++      if (result.type === 'spawn_session_intercept') {
++        expect(result.input).toEqual(input);
++      }
++    });
++
++    it('intercepts mcp__session__send_to_session', () => {
++      const input = { targetSessionId: 's-1', message: 'Ping' };
++      const result = runPreToolUseChecks(createInput({
++        toolName: 'mcp__session__send_to_session',
++        input,
++      }));
++
++      expect(result.type).toBe('send_to_session_intercept');
++      if (result.type === 'send_to_session_intercept') {
++        expect(result.input).toEqual(input);
++      }
++    });
++
++    it('intercepts mcp__session__list_sessions', () => {
++      const input = { includeArchived: true, limit: 10 };
++      const result = runPreToolUseChecks(createInput({
++        toolName: 'mcp__session__list_sessions',
++        input,
++      }));
++
++      expect(result.type).toBe('list_sessions_intercept');
++      if (result.type === 'list_sessions_intercept') {
++        expect(result.input).toEqual(input);
++      }
++    });
++
+     it('does not intercept other session tools', () => {
+       const result = runPreToolUseChecks(createInput({
+         toolName: 'mcp__session__SubmitPlan',
+diff --git a/packages/shared/src/agent/core/pre-tool-use.ts b/packages/shared/src/agent/core/pre-tool-use.ts
+index 5000357..74752a4 100644
+--- a/packages/shared/src/agent/core/pre-tool-use.ts
++++ b/packages/shared/src/agent/core/pre-tool-use.ts
+@@ -415,7 +415,9 @@ export type PreToolUseCheckResult =
+       description: string; command?: string; modifiedInput?: Record<string, unknown> }
+   | { type: 'source_activation_needed'; sourceSlug: string; sourceExists: boolean }
+   | { type: 'call_llm_intercept'; input: Record<string, unknown> }
+-  | { type: 'spawn_session_intercept'; input: Record<string, unknown> };
++  | { type: 'spawn_session_intercept'; input: Record<string, unknown> }
++  | { type: 'send_to_session_intercept'; input: Record<string, unknown> }
++  | { type: 'list_sessions_intercept'; input: Record<string, unknown> };
+ 
+ /**
+  * Input for `runPreToolUseChecks()`. Each agent builds this from its SDK-specific
+@@ -572,7 +574,7 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
+   }
+ 
+   // ============================================================
+-  // 4. CALL_LLM / SPAWN_SESSION INTERCEPTION
++  // 4. SESSION TOOL INTERCEPTION (backend-specific execution)
+   // ============================================================
+   if (toolName === 'mcp__session__call_llm') {
+     return { type: 'call_llm_intercept', input };
+@@ -580,6 +582,12 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
+   if (toolName === 'mcp__session__spawn_session') {
+     return { type: 'spawn_session_intercept', input };
+   }
++  if (toolName === 'mcp__session__send_to_session') {
++    return { type: 'send_to_session_intercept', input };
++  }
++  if (toolName === 'mcp__session__list_sessions') {
++    return { type: 'list_sessions_intercept', input };
++  }
+ 
+   // ============================================================
+   // 5. INPUT TRANSFORMS
+diff --git a/packages/shared/src/agent/pi-agent.ts b/packages/shared/src/agent/pi-agent.ts
+index dcfaefd..b5b4c7f 100644
+--- a/packages/shared/src/agent/pi-agent.ts
++++ b/packages/shared/src/agent/pi-agent.ts
+@@ -37,6 +37,7 @@ import type { Workspace } from '../config/storage.ts';
+ 
+ // Event adapter
+ import { PiEventAdapter } from './backend/pi/event-adapter.ts';
++import { THINKING_TO_PI } from './backend/pi/constants.ts';
+ import { EventQueue } from './backend/event-queue.ts';
+ 
+ // System prompt for Craft Agent context
+@@ -323,7 +324,9 @@ export class PiAgent extends BaseAgent {
+       apiKey: legacyApiKey || '',
+       model: this._model,
+       cwd,
+-      thinkingLevel: this._thinkingLevel,
++      // Normalize Craft levels to Pi/OpenAI reasoning effort levels.
++      // This keeps Ultrathink (`max`) aligned with GPT `xhigh`.
++      thinkingLevel: THINKING_TO_PI[this._thinkingLevel],
+       workspaceRootPath: this.config.workspace.rootPath,
+       sessionId,
+       sessionPath,
+@@ -828,6 +831,8 @@ export class PiAgent extends BaseAgent {
+ 
+       case 'call_llm_intercept':
+       case 'spawn_session_intercept':
++      case 'send_to_session_intercept':
++      case 'list_sessions_intercept':
+         // These tools are proxy tools handled via tool_execute_request — just allow
+         this.send({ type: 'pre_tool_use_response', requestId, action: 'allow' });
+         return;
+@@ -1016,6 +1021,28 @@ export class PiAgent extends BaseAgent {
+         }
+       }
+ 
++      // send_to_session uses the shared pre-execution pipeline from BaseAgent
++      if (toolName === 'send_to_session') {
++        try {
++          const result = await this.preExecuteSendToSession(args);
++          return { content: JSON.stringify(result, null, 2), isError: false };
++        } catch (error) {
++          const msg = error instanceof Error ? error.message : String(error);
++          return { content: `send_to_session failed: ${msg}`, isError: true };
++        }
++      }
++
++      // list_sessions uses the shared pre-execution pipeline from BaseAgent
++      if (toolName === 'list_sessions') {
++        try {
++          const result = await this.preExecuteListSessions(args);
++          return { content: JSON.stringify(result, null, 2), isError: false };
++        } catch (error) {
++          const msg = error instanceof Error ? error.message : String(error);
++          return { content: `list_sessions failed: ${msg}`, isError: true };
++        }
++      }
++
+       const def = SESSION_TOOL_REGISTRY.get(toolName);
+       if (!def?.handler) {
+         return { content: `Unknown session tool: ${toolName}`, isError: true };
+@@ -1131,6 +1158,9 @@ export class PiAgent extends BaseAgent {
+         onPlanSubmitted: (planPath) => this.onPlanSubmitted?.(planPath),
+         onAuthRequest: (request) => this.onAuthRequest?.(request),
+         queryFn: (request) => this.queryLlm(request),
++        spawnSessionFn: (input) => this.preExecuteSpawnSession(input),
++        sendToSessionFn: (input) => this.preExecuteSendToSession(input),
++        listSessionsFn: (input) => this.preExecuteListSessions(input),
+       });
+     }
+ 
+diff --git a/packages/shared/src/agent/session-scoped-tools.ts b/packages/shared/src/agent/session-scoped-tools.ts
+index 2429357..56773b5 100644
+--- a/packages/shared/src/agent/session-scoped-tools.ts
++++ b/packages/shared/src/agent/session-scoped-tools.ts
+@@ -33,6 +33,8 @@ import {
+ } from '@craft-agent/session-tools-core';
+ import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
+ import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
++import { createSendToSessionTool, type SendToSessionFn } from './send-to-session-tool.ts';
++import { createListSessionsTool, type ListSessionsFn } from './list-sessions-tool.ts';
+ 
+ // Re-export types for backward compatibility
+ export type {
+@@ -81,6 +83,16 @@ export interface SessionScopedToolCallbacks {
+    * Each agent backend delegates to its onSpawnSession callback.
+    */
+   spawnSessionFn?: SpawnSessionFn;
++
++  /**
++   * Callback for send_to_session tool — sends a message to an existing session.
++   */
++  sendToSessionFn?: SendToSessionFn;
++
++  /**
++   * Callback for list_sessions tool — lists sessions available to this workspace.
++   */
++  listSessionsFn?: ListSessionsFn;
+ }
+ 
+ // Registry of callbacks keyed by sessionId
+@@ -286,6 +298,28 @@ export function getSessionScopedTools(
+     }),
+   );
+ 
++  // Add send_to_session — backend-specific (not in registry handler)
++  tools.push(
++    createSendToSessionTool({
++      sessionId,
++      getSendToSessionFn: () => {
++        const callbacks = getSessionScopedToolCallbacks(sessionId);
++        return callbacks?.sendToSessionFn;
++      },
++    }),
++  );
++
++  // Add list_sessions — backend-specific (not in registry handler)
++  tools.push(
++    createListSessionsTool({
++      sessionId,
++      getListSessionsFn: () => {
++        const callbacks = getSessionScopedToolCallbacks(sessionId);
++        return callbacks?.listSessionsFn;
++      },
++    }),
++  );
++
+   // Create MCP server
+   cached = createSdkMcpServer({
+     name: 'session',
+diff --git a/packages/shared/src/agent/thinking-levels.ts b/packages/shared/src/agent/thinking-levels.ts
+index 4355420..4d811b8 100644
+--- a/packages/shared/src/agent/thinking-levels.ts
++++ b/packages/shared/src/agent/thinking-levels.ts
+@@ -1,16 +1,23 @@
+ /**
+- * Thinking Level Configuration
++ * Thinking/Effort Configuration
+  *
+- * Three-tier thinking system for extended reasoning:
+- * - OFF: No extended thinking (0 tokens)
+- * - Think: Standard reasoning (moderate token budget)
+- * - Max Think: Deep reasoning (maximum token budget)
++ * Provider-aligned effort levels:
++ * - GPT/Codex reasoning effort: low | medium | high | xhigh
++ * - Claude effort: low | medium | high | max
+  *
+- * Session-level setting with workspace defaults.
+- * Ultrathink override can boost to Max Think for a single message.
++ * Legacy compatibility:
++ * - think -> medium
++ * - max remains valid (Claude official + internal ultrathink override)
+  */
+ 
+-export type ThinkingLevel = 'off' | 'think' | 'max';
++export type ThinkingLevel =
++  | 'off'
++  | 'think' // legacy alias for medium
++  | 'low'
++  | 'medium'
++  | 'high'
++  | 'max'
++  | 'xhigh';
+ 
+ export interface ThinkingLevelDefinition {
+   id: ThinkingLevel;
+@@ -18,70 +25,76 @@ export interface ThinkingLevelDefinition {
+   description: string;
+ }
+ 
+-/**
+- * Available thinking levels with display metadata.
+- * Used in UI dropdowns and for validation.
+- *
+- * Labels are user-facing and should be consistent across all UI surfaces
+- * (model dropdown, workspace settings, etc.)
+- */
++/** Canonical levels shown in generic contexts */
+ export const THINKING_LEVELS: readonly ThinkingLevelDefinition[] = [
+   { id: 'off', name: 'No Thinking', description: 'Fastest responses, no reasoning' },
+-  { id: 'think', name: 'Thinking', description: 'Balanced speed and reasoning' },
+-  { id: 'max', name: 'Max Thinking', description: 'Deepest reasoning for complex tasks' },
++  { id: 'low', name: 'Low', description: 'Lower effort, faster and cheaper' },
++  { id: 'medium', name: 'Medium', description: 'Balanced effort' },
++  { id: 'high', name: 'High', description: 'Thorough reasoning' },
++  { id: 'xhigh', name: 'XHigh', description: 'Highest GPT reasoning effort' },
++  { id: 'max', name: 'Max', description: 'Highest Claude effort' },
++] as const;
++
++/** Provider-specific display levels */
++export const GPT_EFFORT_LEVELS: readonly ThinkingLevelDefinition[] = [
++  { id: 'low', name: 'Low', description: 'Official GPT reasoning effort: low' },
++  { id: 'medium', name: 'Medium', description: 'Official GPT reasoning effort: medium' },
++  { id: 'high', name: 'High', description: 'Official GPT reasoning effort: high' },
++  { id: 'xhigh', name: 'XHigh', description: 'Official GPT reasoning effort: xhigh' },
++] as const;
++
++export const CLAUDE_EFFORT_LEVELS: readonly ThinkingLevelDefinition[] = [
++  { id: 'low', name: 'Low', description: 'Official Claude effort: low' },
++  { id: 'medium', name: 'Medium', description: 'Official Claude effort: medium' },
++  { id: 'high', name: 'High', description: 'Official Claude effort: high (default)' },
++  { id: 'max', name: 'Max', description: 'Official Claude effort: max' },
+ ] as const;
+ 
+ /** Default thinking level for new sessions when workspace has no default */
+-export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'think';
++export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'medium';
+ 
+-/**
+- * Token budgets per model family.
+- *
+- * Haiku max is 8k per Anthropic docs.
+- * Sonnet/Opus can use up to 128k, but Anthropic recommends ≤32k for real-time use
+- * (above 32k, batch processing is suggested to avoid timeouts).
+- * Also, budget_tokens must be < max_tokens, so 64k leaves no room for response.
+- *
+- * "Think" level matches Claude Code's `think` trigger word budget.
+- * "Max Think" is the recommended max for real-time streaming.
+- */
+ const TOKEN_BUDGETS = {
+   haiku: {
+     off: 0,
+-    think: 4_000,
++    low: 2_000,
++    medium: 4_000,
++    high: 6_000,
+     max: 8_000,
+   },
+   default: {
+     off: 0,
+-    think: 10_000,
++    low: 4_000,
++    medium: 10_000,
++    high: 20_000,
+     max: 32_000,
+   },
+ } as const;
+ 
++/** Normalize legacy aliases to canonical internal levels. */
++export function normalizeThinkingLevel(level: ThinkingLevel): Exclude<ThinkingLevel, 'think' | 'xhigh'> | 'xhigh' {
++  if (level === 'think') return 'medium';
++  return level;
++}
++
+ /**
+- * Get the thinking token budget for a given level and model.
+- *
+- * @param level - The thinking level (off, think, max)
+- * @param modelId - The model ID (e.g., 'claude-haiku-4-5-20251001')
+- * @returns Number of thinking tokens to allocate
++ * Get the thinking token budget for Claude SDK thinking tokens.
++ * xhigh is mapped to max budget on Claude paths.
+  */
+ export function getThinkingTokens(level: ThinkingLevel, modelId: string): number {
++  const normalized = normalizeThinkingLevel(level);
++  const budgetLevel = normalized === 'xhigh' ? 'max' : normalized;
+   const isHaiku = modelId.toLowerCase().includes('haiku');
+   const budgets = isHaiku ? TOKEN_BUDGETS.haiku : TOKEN_BUDGETS.default;
+-  return budgets[level];
++  return budgets[budgetLevel as keyof typeof budgets];
+ }
+ 
+-/**
+- * Get display name for a thinking level.
+- */
+ export function getThinkingLevelName(level: ThinkingLevel): string {
+-  const def = THINKING_LEVELS.find((l) => l.id === level);
+-  return def?.name ?? level;
++  const normalized = normalizeThinkingLevel(level);
++  if (normalized === 'medium' && level === 'think') return 'Medium';
++  const def = THINKING_LEVELS.find((l) => l.id === normalized);
++  return def?.name ?? normalized;
+ }
+ 
+-/**
+- * Validate that a value is a valid ThinkingLevel.
+- */
+ export function isValidThinkingLevel(value: unknown): value is ThinkingLevel {
+-  return value === 'off' || value === 'think' || value === 'max';
++  return value === 'off' || value === 'think' || value === 'low' || value === 'medium' || value === 'high' || value === 'max' || value === 'xhigh';
+ }
+diff --git a/packages/shared/src/config/storage.ts b/packages/shared/src/config/storage.ts
+index 0e5c21e..8d55042 100644
+--- a/packages/shared/src/config/storage.ts
++++ b/packages/shared/src/config/storage.ts
+@@ -1238,7 +1238,7 @@ function migrateCodexCopilotToPi(config: StoredConfig): boolean {
+     if (providerStr === 'openai' && connection.authType === 'oauth') {
+       connection.providerType = 'pi';
+       connection.piAuthProvider = 'openai-codex';
+-      connection.name = 'ChatGPT Plus (via Pi)';
++      connection.name = 'ChatGPT Plus/Pro (via Pi)';
+       delete connAny.codexPath;
+       connection.defaultModel = undefined; // reset — backfill picks Pi default
+       connection.models = undefined;
+@@ -1291,7 +1291,7 @@ function backfillAllConnectionModels(config: StoredConfig): boolean {
+   let changed = false;
+   for (const connection of config.llmConnections) {
+     // Migrate pi-codex connections from 'openai' to 'openai-codex' provider.
+-    // 'openai-codex' uses the ChatGPT Plus backend (chatgpt.com/backend-api),
++    // 'openai-codex' uses the ChatGPT Plus/Pro backend (chatgpt.com/backend-api),
+     // while 'openai' is for regular API key auth (api.openai.com).
+     if (isPiProvider(connection.providerType) && connection.piAuthProvider === 'openai') {
+       connection.piAuthProvider = 'openai-codex';
+@@ -1610,7 +1610,7 @@ export function migrateLegacyLlmConnectionsConfig(): void {
+       // ChatGPT Plus OAuth → Pi backend
+       migrated = {
+         slug: 'codex',
+-        name: 'ChatGPT Plus (via Pi)',
++        name: 'ChatGPT Plus/Pro (via Pi)',
+         providerType: 'pi',
+         authType: 'oauth',
+         piAuthProvider: 'openai-codex',
+diff --git a/scripts/electron-build-main.ts b/scripts/electron-build-main.ts
+index b29978e..a36c1d1 100644
+--- a/scripts/electron-build-main.ts
++++ b/scripts/electron-build-main.ts
+@@ -214,13 +214,26 @@ async function buildPiAgentServer(): Promise<void> {
+     mkdirSync(distDir, { recursive: true });
+   }
+ 
++  const piSourceEntry = join(PI_AGENT_SERVER_DIR, "src/index.ts");
++
++  // OSS fallback: some snapshots may not include pi-agent-server source.
++  // If source is missing but a prebuilt dist file exists, reuse it.
++  if (!existsSync(piSourceEntry)) {
++    if (existsSync(PI_AGENT_SERVER_OUTPUT)) {
++      console.log("ℹ️ Pi agent server source missing; using existing dist/index.js");
++      return;
++    }
++    console.error("❌ Pi agent server source missing and no dist fallback found at", PI_AGENT_SERVER_OUTPUT);
++    process.exit(1);
++  }
++
+   // Use --target=bun --format=esm because the Pi SDK (@mariozechner/pi-coding-agent)
+   // is ESM-only. --target=node --format=cjs leaves ESM deps as external require()
+   // calls that fail at runtime since there are no node_modules relative to dist/.
+   const proc = spawn({
+     cmd: [
+       "bun", "build",
+-      join(PI_AGENT_SERVER_DIR, "src/index.ts"),
++      piSourceEntry,
+       "--outfile", PI_AGENT_SERVER_OUTPUT,
+       "--target", "bun",
+       "--format", "esm",
+diff --git a/scripts/electron-dev.ts b/scripts/electron-dev.ts
+index 6421887..33dda75 100644
+--- a/scripts/electron-dev.ts
++++ b/scripts/electron-dev.ts
+@@ -250,6 +250,17 @@ async function runEsbuild(
+ // Bun's bundler handles ESM→ESM bundling correctly.
+ async function buildPiAgentServer(): Promise<{ success: boolean; error?: string }> {
+   try {
++    const sourceEntry = join(PI_AGENT_SERVER_DIR, "src/index.ts");
++    const distEntry = join(PI_AGENT_SERVER_DIR, "dist/index.js");
++
++    // OSS fallback: if source is not present but prebuilt dist exists, reuse it.
++    if (!existsSync(sourceEntry)) {
++      if (existsSync(distEntry)) {
++        return { success: true };
++      }
++      return { success: false, error: `Missing ${sourceEntry} and fallback ${distEntry}` };
++    }
++
+     const proc = spawn({
+       cmd: ["bun", "build", "src/index.ts", "--outdir=dist", "--target=bun", "--format=esm"],
+       cwd: PI_AGENT_SERVER_DIR,
