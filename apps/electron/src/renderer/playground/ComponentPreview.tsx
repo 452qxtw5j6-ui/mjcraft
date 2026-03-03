@@ -168,7 +168,12 @@ export function ComponentPreview({ component, props }: ComponentPreviewProps) {
       </div>
 
       {/* Preview area */}
-      <div className="flex-1 overflow-auto p-4 flex items-center justify-center">
+      <div
+        className={cn(
+          'flex-1 overflow-auto p-4 flex',
+          component.layout === 'top' ? 'items-start justify-center' : 'items-center justify-center'
+        )}
+      >
         {/* Resizable container */}
         <div
           ref={containerRef}

@@ -81,6 +81,29 @@ function injectMetadataFields(
 }
 
 /**
+ * Normalize a tool schema so metadata can always be injected, including zero-arg
+ * tools whose schema may be `{ type: "object" }` without a `properties` key.
+ *
+ * Exported for focused unit tests.
+ */
+export function injectMetadataIntoToolSchema<T extends {
+  properties?: Record<string, unknown>;
+  required?: string[];
+  [key: string]: unknown;
+}>(
+  schema: T,
+): T & { properties: Record<string, unknown>; required: string[] } {
+  const normalizedProperties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
+  const normalizedRequired = Array.isArray(schema.required) ? schema.required : [];
+  const result = injectMetadataFields(normalizedProperties, normalizedRequired);
+  return {
+    ...schema,
+    properties: result.properties,
+    required: result.required,
+  };
+}
+
+/**
  * Extract _intent/_displayName from a parsed tool input and store in toolMetadataStore.
  * Shared by both SSE processors (Anthropic strips, OpenAI captures).
  *
@@ -157,7 +180,7 @@ const SSE_DATA_RE = /^data:\s*(.+)$/;
  * buffers tool_use input deltas, extracts _intent/_displayName into the metadata
  * store, and re-emits clean events without those fields.
  */
-function createAnthropicSseStrippingStream(): TransformStream<Uint8Array, Uint8Array> {
+export function createAnthropicSseStrippingStream(): TransformStream<Uint8Array, Uint8Array> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
@@ -298,7 +321,7 @@ function createAnthropicSseStrippingStream(): TransformStream<Uint8Array, Uint8A
 
         const dataMatch = trimmed.match(SSE_DATA_RE);
         if (dataMatch) {
-          currentData = dataMatch[1]!;
+          currentData = currentData ? `${currentData}\n${dataMatch[1]!}` : dataMatch[1]!;
           continue;
         }
       }
@@ -325,7 +348,7 @@ function createAnthropicSseStrippingStream(): TransformStream<Uint8Array, Uint8A
           }
           const dataMatch = trimmed.match(SSE_DATA_RE);
           if (dataMatch) {
-            currentData = dataMatch[1]!;
+            currentData = currentData ? `${currentData}\n${dataMatch[1]!}` : dataMatch[1]!;
           }
         }
 
@@ -368,17 +391,27 @@ const anthropicAdapter: ApiAdapter = {
     const richDescriptions = isRichToolDescriptionsEnabled();
     let modifiedCount = 0;
     for (const tool of tools) {
+      // MCP tools always get metadata regardless of the feature flag — they're
+      // lower-volume than built-in tools and the metadata drives source-specific
+      // UI (tool intents, display names in the sidebar).
       const isMcpTool = tool.name?.startsWith('mcp__');
       if (!richDescriptions && !isMcpTool) {
         continue;
       }
 
-      if (tool.input_schema?.properties) {
-        const result = injectMetadataFields(tool.input_schema.properties as Record<string, unknown>, tool.input_schema.required);
-        tool.input_schema.properties = result.properties;
-        tool.input_schema.required = result.required;
-        modifiedCount++;
+      if (!tool.input_schema || typeof tool.input_schema !== 'object') {
+        continue;
       }
+
+      const updatedSchema = injectMetadataIntoToolSchema(tool.input_schema);
+      tool.input_schema.properties = updatedSchema.properties;
+      tool.input_schema.required = updatedSchema.required;
+      // External MCP servers may set additionalProperties: false which would
+      // cause the API to reject _intent/_displayName in tool inputs.
+      if ((tool.input_schema as Record<string, unknown>).additionalProperties === false) {
+        delete (tool.input_schema as Record<string, unknown>).additionalProperties;
+      }
+      modifiedCount++;
     }
 
     if (modifiedCount > 0) {
@@ -408,16 +441,20 @@ const anthropicAdapter: ApiAdapter = {
       for (const block of message.content) {
         if (block.type !== 'tool_use' || !block.id || !block.input) continue;
 
-        if ('_intent' in block.input || '_displayName' in block.input) continue;
+        const hasIntent = '_intent' in block.input;
+        const hasDisplayName = '_displayName' in block.input;
+        if (hasIntent && hasDisplayName) continue;
 
         const stored = toolMetadataStore.get(block.id);
         if (stored) {
           const newInput: Record<string, unknown> = {};
-          if (stored.displayName) newInput._displayName = stored.displayName;
-          if (stored.intent) newInput._intent = stored.intent;
-          Object.assign(newInput, block.input);
-          block.input = newInput;
-          injectedCount++;
+          if (!hasDisplayName && stored.displayName) newInput._displayName = stored.displayName;
+          if (!hasIntent && stored.intent) newInput._intent = stored.intent;
+          if (Object.keys(newInput).length > 0) {
+            Object.assign(newInput, block.input);
+            block.input = newInput;
+            injectedCount++;
+          }
         }
       }
     }
@@ -460,22 +497,84 @@ const anthropicAdapter: ApiAdapter = {
 interface TrackedToolCall {
   id: string;
   name: string;
+  choiceIndex: number;
+  toolIndex: number;
   arguments: string;
 }
 
 /**
- * Creates a TransformStream that passes ALL SSE data through unchanged
- * while capturing tool call metadata from the stream.
+ * Creates a TransformStream that intercepts OpenAI SSE events,
+ * buffers tool_call argument deltas, extracts _intent/_displayName into the
+ * metadata store, and re-emits clean events without those fields.
+ *
+ * Mirrors the Anthropic stripping stream behavior:
+ * - Non-tool events pass through immediately
+ * - Tool call argument deltas are suppressed and buffered
+ * - On finish_reason, buffered args are parsed, metadata stripped, and
+ *   re-emitted as a single argument delta per tool call
  */
-function createOpenAiSseCaptureStream(): TransformStream<Uint8Array, Uint8Array> {
+export function createOpenAiSseStrippingStream(): TransformStream<Uint8Array, Uint8Array> {
+  const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
-  const trackedCalls = new Map<number, TrackedToolCall>();
+  const trackedCalls = new Map<string, TrackedToolCall>();
   let lineBuffer = '';
+  /** Track whether we're currently buffering tool_call argument deltas */
+  let bufferingToolCalls = false;
 
-  function processDataLine(dataStr: string): void {
+  function emitSseLine(dataStr: string, controller: TransformStreamDefaultController<Uint8Array>): void {
+    controller.enqueue(encoder.encode(`data: ${dataStr}\n\n`));
+  }
+
+  function flushTrackedCalls(controller: TransformStreamDefaultController<Uint8Array>): void {
+    for (const tc of trackedCalls.values()) {
+      if (!tc.arguments) continue;
+
+      try {
+        const parsed = JSON.parse(tc.arguments);
+        captureMetadataFromInput(tc.id, tc.name, parsed);
+        delete parsed._intent;
+        delete parsed._displayName;
+        const cleanArgs = JSON.stringify(parsed);
+
+        // Re-emit as a single argument delta with the clean JSON
+        const deltaEvent = {
+          choices: [{
+            index: tc.choiceIndex,
+            delta: {
+              tool_calls: [{
+                index: tc.toolIndex,
+                function: { arguments: cleanArgs },
+              }],
+            },
+          }],
+        };
+        emitSseLine(JSON.stringify(deltaEvent), controller);
+      } catch {
+        debugLog(`[OpenAI SSE] Failed to parse arguments for ${tc.name} (${tc.id}), passing through`);
+        // Emit original buffered arguments on parse failure
+        const deltaEvent = {
+          choices: [{
+            index: tc.choiceIndex,
+            delta: {
+              tool_calls: [{
+                index: tc.toolIndex,
+                function: { arguments: tc.arguments },
+              }],
+            },
+          }],
+        };
+        emitSseLine(JSON.stringify(deltaEvent), controller);
+      }
+    }
+    trackedCalls.clear();
+    bufferingToolCalls = false;
+  }
+
+  function processDataLine(dataStr: string, controller: TransformStreamDefaultController<Uint8Array>): void {
     if (dataStr === '[DONE]') {
-      flushTrackedCalls();
+      flushTrackedCalls(controller);
+      emitSseLine(dataStr, controller);
       return;
     }
 
@@ -483,6 +582,7 @@ function createOpenAiSseCaptureStream(): TransformStream<Uint8Array, Uint8Array>
     try {
       data = JSON.parse(dataStr);
     } catch {
+      emitSseLine(dataStr, controller);
       return;
     }
 
@@ -502,23 +602,56 @@ function createOpenAiSseCaptureStream(): TransformStream<Uint8Array, Uint8Array>
       finish_reason?: string | null;
     }> | undefined;
 
-    if (!choices || choices.length === 0) return;
+    if (!choices || choices.length === 0) {
+      emitSseLine(dataStr, controller);
+      return;
+    }
 
-    const choice = choices[0];
-    if (!choice) return;
+    let handledToolCalls = false;
 
-    if (choice.delta?.tool_calls) {
+    // Buffer tool_call argument deltas (across all choices)
+    for (const choice of choices) {
+      if (!choice?.delta?.tool_calls) continue;
+      handledToolCalls = true;
+
+      const choiceIndex = choice.index ?? 0;
       for (const tc of choice.delta.tool_calls) {
-        const idx = tc.index ?? 0;
+        const toolIndex = tc.index ?? 0;
+        const key = `${choiceIndex}:${toolIndex}`;
 
         if (tc.id) {
-          trackedCalls.set(idx, {
+          // First chunk for a tool call — has id, name, maybe initial args
+          trackedCalls.set(key, {
             id: tc.id,
             name: tc.function?.name || 'unknown',
+            choiceIndex,
+            toolIndex,
             arguments: tc.function?.arguments || '',
           });
+          bufferingToolCalls = true;
+
+          // Emit the initial tool_call event WITHOUT arguments (preserves id/name/type)
+          const initEvent = {
+            ...data,
+            choices: [{
+              ...choice,
+              delta: {
+                ...choice.delta,
+                tool_calls: [{
+                  ...tc,
+                  function: {
+                    name: tc.function?.name,
+                    // Omit arguments from initial event — we'll emit clean args on flush
+                    arguments: '',
+                  },
+                }],
+              },
+            }],
+          };
+          emitSseLine(JSON.stringify(initEvent), controller);
         } else {
-          const existing = trackedCalls.get(idx);
+          // Subsequent argument delta — buffer and suppress
+          const existing = trackedCalls.get(key);
           if (existing && tc.function?.arguments) {
             existing.arguments += tc.function.arguments;
           }
@@ -526,50 +659,54 @@ function createOpenAiSseCaptureStream(): TransformStream<Uint8Array, Uint8Array>
       }
     }
 
-    if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
-      flushTrackedCalls();
+    // Suppress original tool_call delta payloads (we re-emit cleaned payloads later)
+    if (handledToolCalls) {
+      return;
     }
-  }
 
-  function flushTrackedCalls(): void {
-    for (const [, tc] of trackedCalls) {
-      if (!tc.arguments) continue;
-
-      try {
-        const parsed = JSON.parse(tc.arguments);
-        captureMetadataFromInput(tc.id, tc.name, parsed);
-      } catch {
-        debugLog(`[OpenAI SSE] Failed to parse arguments for ${tc.name} (${tc.id})`);
+    // On finish, flush buffered tool calls with clean args BEFORE emitting finish event
+    const hasFinish = choices.some(choice => choice?.finish_reason === 'tool_calls' || choice?.finish_reason === 'stop');
+    if (hasFinish) {
+      if (bufferingToolCalls) {
+        flushTrackedCalls(controller);
       }
+      emitSseLine(dataStr, controller);
+      return;
     }
-    trackedCalls.clear();
+
+    // Non-tool events pass through
+    emitSseLine(dataStr, controller);
   }
 
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      // ALWAYS pass through unchanged — capture only
-      controller.enqueue(chunk);
-
       const text = lineBuffer + decoder.decode(chunk, { stream: true });
       const lines = text.split('\n');
       lineBuffer = lines.pop() ?? '';
 
       for (const line of lines) {
         const trimmed = line.trim();
+        if (trimmed === '') continue;
         if (trimmed.startsWith('data: ')) {
-          processDataLine(trimmed.slice(6));
+          processDataLine(trimmed.slice(6), controller);
+        } else {
+          // Pass through non-data SSE lines (comments, event types, etc.)
+          controller.enqueue(encoder.encode(trimmed + '\n'));
         }
       }
     },
 
-    flush() {
+    flush(controller) {
       if (lineBuffer.trim()) {
         const trimmed = lineBuffer.trim();
         if (trimmed.startsWith('data: ')) {
-          processDataLine(trimmed.slice(6));
+          processDataLine(trimmed.slice(6), controller);
         }
       }
-      flushTrackedCalls();
+      // Flush any remaining tracked calls on stream end
+      if (trackedCalls.size > 0) {
+        flushTrackedCalls(controller);
+      }
       lineBuffer = '';
     },
   });
@@ -603,17 +740,25 @@ const openAiAdapter: ApiAdapter = {
     let modifiedCount = 0;
 
     for (const tool of tools) {
-      if (tool.type !== 'function' || !tool.function?.parameters?.properties) continue;
+      if (tool.type !== 'function' || !tool.function?.parameters) continue;
 
+      // MCP tools always get metadata regardless of the feature flag — they're
+      // lower-volume than built-in tools and the metadata drives source-specific
+      // UI (tool intents, display names in the sidebar).
       const isMcpTool = tool.function.name?.startsWith('mcp__');
       if (!richDescriptions && !isMcpTool) {
         continue;
       }
 
       const params = tool.function.parameters;
-      const result = injectMetadataFields(params.properties as Record<string, unknown>, params.required);
-      params.properties = result.properties;
-      params.required = result.required;
+      const updatedSchema = injectMetadataIntoToolSchema(params);
+      params.properties = updatedSchema.properties;
+      params.required = updatedSchema.required;
+      // External MCP servers may set additionalProperties: false which would
+      // cause validation to reject _intent/_displayName in tool inputs.
+      if ((params as Record<string, unknown>).additionalProperties === false) {
+        delete (params as Record<string, unknown>).additionalProperties;
+      }
       modifiedCount++;
     }
 
@@ -654,16 +799,20 @@ const openAiAdapter: ApiAdapter = {
           continue;
         }
 
-        if ('_intent' in args || '_displayName' in args) continue;
+        const hasIntent = '_intent' in args;
+        const hasDisplayName = '_displayName' in args;
+        if (hasIntent && hasDisplayName) continue;
 
         const stored = toolMetadataStore.get(tc.id);
         if (stored) {
           const newArgs: Record<string, unknown> = {};
-          if (stored.displayName) newArgs._displayName = stored.displayName;
-          if (stored.intent) newArgs._intent = stored.intent;
-          Object.assign(newArgs, args);
-          tc.function.arguments = JSON.stringify(newArgs);
-          injectedCount++;
+          if (!hasDisplayName && stored.displayName) newArgs._displayName = stored.displayName;
+          if (!hasIntent && stored.intent) newArgs._intent = stored.intent;
+          if (Object.keys(newArgs).length > 0) {
+            Object.assign(newArgs, args);
+            tc.function.arguments = JSON.stringify(newArgs);
+            injectedCount++;
+          }
         }
       }
     }
@@ -676,23 +825,257 @@ const openAiAdapter: ApiAdapter = {
   },
 
   createSseProcessor(): TransformStream<Uint8Array, Uint8Array> {
-    return createOpenAiSseCaptureStream();
+    return createOpenAiSseStrippingStream();
   },
 
-  stripsSseMetadata: false,
+  stripsSseMetadata: true,
+};
+
+/**
+ * Creates a TransformStream for OpenAI Responses API SSE.
+ *
+ * We capture metadata and strip it at the stable "done" boundaries where full
+ * function-call arguments are available as JSON strings:
+ * - response.function_call_arguments.done
+ * - response.output_item.done (item.type === 'function_call')
+ */
+export function createOpenAiResponsesSseStrippingStream(): TransformStream<Uint8Array, Uint8Array> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  let lineBuffer = '';
+
+  function emitSseLine(dataStr: string, controller: TransformStreamDefaultController<Uint8Array>): void {
+    controller.enqueue(encoder.encode(`data: ${dataStr}\n\n`));
+  }
+
+  function processDataLine(dataStr: string, controller: TransformStreamDefaultController<Uint8Array>): void {
+    if (dataStr === '[DONE]') {
+      emitSseLine(dataStr, controller);
+      return;
+    }
+
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(dataStr);
+    } catch {
+      emitSseLine(dataStr, controller);
+      return;
+    }
+
+    const eventType = data.type;
+    if (eventType === 'response.function_call_arguments.done') {
+      const callId = typeof data.call_id === 'string' ? data.call_id : undefined;
+      const argsStr = typeof data.arguments === 'string' ? data.arguments : undefined;
+      if (callId && argsStr) {
+        try {
+          const parsed = JSON.parse(argsStr) as Record<string, unknown>;
+          captureMetadataFromInput(callId, 'response:function_call', parsed);
+          delete parsed._intent;
+          delete parsed._displayName;
+          data.arguments = JSON.stringify(parsed);
+        } catch {
+          // pass through unchanged
+        }
+      }
+      emitSseLine(JSON.stringify(data), controller);
+      return;
+    }
+
+    if (eventType === 'response.output_item.done') {
+      const item = data.item as {
+        type?: string;
+        call_id?: string;
+        name?: string;
+        arguments?: string;
+      } | undefined;
+
+      if (item?.type === 'function_call' && typeof item.arguments === 'string') {
+        const toolId = typeof item.call_id === 'string' ? item.call_id : undefined;
+        const toolName = typeof item.name === 'string' ? item.name : 'response:function_call';
+        if (toolId) {
+          try {
+            const parsed = JSON.parse(item.arguments) as Record<string, unknown>;
+            captureMetadataFromInput(toolId, toolName, parsed);
+            delete parsed._intent;
+            delete parsed._displayName;
+            item.arguments = JSON.stringify(parsed);
+          } catch {
+            // pass through unchanged
+          }
+        }
+      }
+
+      emitSseLine(JSON.stringify(data), controller);
+      return;
+    }
+
+    emitSseLine(dataStr, controller);
+  }
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const text = lineBuffer + decoder.decode(chunk, { stream: true });
+      const lines = text.split('\n');
+      lineBuffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed === '') continue;
+        if (trimmed.startsWith('data: ')) {
+          processDataLine(trimmed.slice(6), controller);
+        } else {
+          controller.enqueue(encoder.encode(trimmed + '\n'));
+        }
+      }
+    },
+
+    flush(controller) {
+      if (lineBuffer.trim()) {
+        const trimmed = lineBuffer.trim();
+        if (trimmed.startsWith('data: ')) {
+          processDataLine(trimmed.slice(6), controller);
+        }
+      }
+      lineBuffer = '';
+    },
+  });
+}
+
+const openAiResponsesAdapter: ApiAdapter = {
+  name: 'openai-responses',
+
+  shouldIntercept(url: string): boolean {
+    return url.includes('/responses');
+  },
+
+  addMetadataToTools(body: Record<string, unknown>): Record<string, unknown> {
+    const tools = body.tools as Array<{
+      type?: string;
+      name?: string;
+      parameters?: {
+        type?: string;
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+    }> | undefined;
+
+    if (!tools || !Array.isArray(tools)) return body;
+
+    const richDescriptions = isRichToolDescriptionsEnabled();
+    let modifiedCount = 0;
+
+    for (const tool of tools) {
+      if (tool.type !== 'function' || !tool.parameters) continue;
+
+      const isMcpTool = tool.name?.startsWith('mcp__');
+      if (!richDescriptions && !isMcpTool) continue;
+
+      const params = tool.parameters;
+      const updatedSchema = injectMetadataIntoToolSchema(params);
+      params.properties = updatedSchema.properties;
+      params.required = updatedSchema.required;
+      if ((params as Record<string, unknown>).additionalProperties === false) {
+        delete (params as Record<string, unknown>).additionalProperties;
+      }
+      modifiedCount++;
+    }
+
+    if (modifiedCount > 0) {
+      debugLog(`[OpenAI Responses Schema] Added _intent and _displayName to ${modifiedCount} tools`);
+    }
+
+    return body;
+  },
+
+  injectMetadataIntoHistory(body: Record<string, unknown>): Record<string, unknown> {
+    const input = body.input as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(input)) return body;
+
+    let injectedCount = 0;
+
+    for (const entry of input) {
+      if (entry.type !== 'function_call' || typeof entry.call_id !== 'string' || typeof entry.arguments !== 'string') continue;
+
+      let args: Record<string, unknown>;
+      try {
+        args = JSON.parse(entry.arguments) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      const hasIntent = '_intent' in args;
+      const hasDisplayName = '_displayName' in args;
+      if (hasIntent && hasDisplayName) continue;
+
+      const stored = toolMetadataStore.get(entry.call_id);
+      if (!stored) continue;
+
+      const newArgs: Record<string, unknown> = {};
+      if (!hasDisplayName && stored.displayName) newArgs._displayName = stored.displayName;
+      if (!hasIntent && stored.intent) newArgs._intent = stored.intent;
+      if (Object.keys(newArgs).length > 0) {
+        Object.assign(newArgs, args);
+        entry.arguments = JSON.stringify(newArgs);
+        injectedCount++;
+      }
+    }
+
+    if (injectedCount > 0) {
+      debugLog(`[OpenAI Responses History] Re-injected metadata into ${injectedCount} function_call items`);
+    }
+
+    return body;
+  },
+
+  createSseProcessor(): TransformStream<Uint8Array, Uint8Array> {
+    return createOpenAiResponsesSseStrippingStream();
+  },
+
+  stripsSseMetadata: true,
 };
 
 // ============================================================================
 // ADAPTER REGISTRY
 // ============================================================================
 
-const adapters: ApiAdapter[] = [anthropicAdapter, openAiAdapter];
+const adapters: ApiAdapter[] = [anthropicAdapter, openAiResponsesAdapter, openAiAdapter];
 
 /**
- * Find the matching adapter for a URL.
- * Returns undefined if no adapter matches (request passes through unchanged).
+ * Resolve Pi model API hint (if provided by pi-agent-server).
+ * Example values: anthropic-messages, openai-completions, openai-responses.
+ */
+function getPiApiHint(): string | undefined {
+  const hint = process.env.CRAFT_PI_MODEL_API?.trim();
+  return hint || undefined;
+}
+
+/**
+ * Map Pi API hint to adapter name.
+ * Exported for focused unit testing.
+ */
+export function resolveAdapterNameFromPiApiHint(piApiHint?: string): 'anthropic' | 'openai' | 'openai-responses' | undefined {
+  if (!piApiHint) return undefined;
+  if (piApiHint === 'anthropic-messages') return 'anthropic';
+  if (piApiHint === 'openai-completions') return 'openai';
+  if (piApiHint === 'openai-responses' || piApiHint === 'azure-openai-responses' || piApiHint === 'openai-codex-responses') {
+    return 'openai-responses';
+  }
+  return undefined;
+}
+
+/**
+ * Find the matching adapter for a request.
+ * Priority:
+ * 1) Pi API hint (robust, provider-native)
+ * 2) URL pattern fallback (legacy/non-Pi requests)
  */
 function findAdapter(url: string): ApiAdapter | undefined {
+  const piApiHint = getPiApiHint();
+  const hintedAdapter = resolveAdapterNameFromPiApiHint(piApiHint);
+  if (hintedAdapter === 'anthropic') return anthropicAdapter;
+  if (hintedAdapter === 'openai') return openAiAdapter;
+  if (hintedAdapter === 'openai-responses') return openAiResponsesAdapter;
+
   return adapters.find(a => a.shouldIntercept(url));
 }
 
@@ -932,5 +1315,8 @@ const fetchProxy = new Proxy(interceptedFetch, {
   },
 });
 
-(globalThis as unknown as { fetch: unknown }).fetch = fetchProxy;
-debugLog('Unified fetch interceptor installed');
+// Auto-install in runtime subprocesses. Tests can disable this side effect.
+if (process.env.CRAFT_INTERCEPTOR_DISABLE_AUTO_INSTALL !== '1') {
+  (globalThis as unknown as { fetch: unknown }).fetch = fetchProxy;
+  debugLog('Unified fetch interceptor installed');
+}

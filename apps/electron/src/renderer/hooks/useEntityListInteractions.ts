@@ -60,6 +60,13 @@ export interface UseEntityListInteractionsOptions<T> {
     state: MultiSelect.MultiSelectState
     setState: (fn: MultiSelect.MultiSelectState | ((prev: MultiSelect.MultiSelectState) => MultiSelect.MultiSelectState)) => void
   }
+
+  /**
+   * Override which item ID is considered "selected" for highlighting.
+   * When provided, `getRowProps` uses this instead of `selectionState.selected`.
+   * Used by multi-panel focus tracking where the focused panel determines selection.
+   */
+  selectedIdOverride?: string | null
 }
 
 export interface EntityListInteractions<T> {
@@ -115,6 +122,7 @@ export function useEntityListInteractions<T>({
   multiSelect: multiSelectEnabled = false,
   search,
   selectionStore,
+  selectedIdOverride,
 }: UseEntityListInteractionsOptions<T>): EntityListInteractions<T> {
   // ---- Search filtering ----
   const items = useMemo(() => {
@@ -281,8 +289,11 @@ export function useEntityListInteractions<T>({
   const getRowProps = useCallback((item: T, index: number) => {
     const id = getId(item)
     const itemProps = getItemProps(item, index)
+    const effectiveSelected = selectedIdOverride !== undefined
+      ? selectedIdOverride
+      : selectionState.selected
     const isSelected = multiSelectEnabled
-      ? selectionState.selected === id
+      ? effectiveSelected === id
       : index === activeIndex
     const isInMultiSelect = multiSelectEnabled && isMultiSelectActive && selectionState.selectedIds.has(id)
 
@@ -300,7 +311,7 @@ export function useEntityListInteractions<T>({
       isInMultiSelect,
       onMouseDown: getRowMouseDown(item, index),
     }
-  }, [getId, getItemProps, multiSelectEnabled, selectionState, activeIndex, isMultiSelectActive, getRowMouseDown])
+  }, [getId, getItemProps, multiSelectEnabled, selectionState, activeIndex, isMultiSelectActive, getRowMouseDown, selectedIdOverride])
 
   return {
     items,

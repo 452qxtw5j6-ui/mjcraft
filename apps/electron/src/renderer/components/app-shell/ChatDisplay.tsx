@@ -9,10 +9,10 @@ import {
   CircleAlert,
   ExternalLink,
   Info,
-  PenLine,
   X,
 } from "lucide-react"
 import { motion, AnimatePresence } from "motion/react"
+import { toast } from "sonner"
 
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
@@ -25,6 +25,8 @@ import {
   parseGrepResult,
   parseGlobResult,
   extractOverlayData,
+  extractOverlayCards,
+  ActivityCardsOverlay,
   CodePreviewOverlay,
   MultiDiffPreviewOverlay,
   TerminalPreviewOverlay,
@@ -33,7 +35,6 @@ import {
   DocumentFormattedMarkdownOverlay,
   detectLanguage,
   type ActivityItem,
-  type OverlayData,
   type FileChange,
   type DiffViewerSettings,
 } from "@craft-agent/ui"
@@ -45,13 +46,16 @@ import { type ThinkingLevel, DEFAULT_THINKING_LEVEL } from "@craft-agent/shared/
 import { TurnCard, UserMessageBubble, groupMessagesByTurn, formatTurnAsMarkdown, formatActivityAsMarkdown, type Turn, type AssistantTurn, type UserTurn, type SystemTurn, type AuthRequestTurn } from "@craft-agent/ui"
 import { MemoizedAuthRequestCard } from "@/components/chat/AuthRequestCard"
 import { ActiveOptionBadges } from "./ActiveOptionBadges"
-import { InputContainer, type StructuredInputState, type StructuredResponse, type PermissionResponse } from "./input"
+import { InputContainer, type StructuredInputState, type StructuredResponse, type PermissionResponse, type AdminApprovalResponse } from "./input"
 import type { RichTextInputHandle } from "@/components/ui/rich-text-input"
 import { useBackgroundTasks } from "@/hooks/useBackgroundTasks"
 import { useTurnCardExpansion } from "@/hooks/useTurnCardExpansion"
-import type { SessionMeta } from "@/atoms/sessions"
+import { useNavigation } from "@/contexts/NavigationContext"
+import { useAppShellContext } from "@/context/AppShellContext"
+import { routes } from "@/lib/navigate"
 import { CHAT_LAYOUT } from "@/config/layout"
 import { flattenLabels } from "@craft-agent/shared/labels"
+import { resolveBranchNewPanelOption } from "./branching"
 
 // ============================================================================
 // Overlay State Types
@@ -81,14 +85,9 @@ type OverlayState =
   | MarkdownOverlayState
   | null
 
-/**
- * Checks if a file path is in a plans folder and is a markdown file.
- * Used to conditionally show the PLAN header in DocumentFormattedMarkdownOverlay.
- */
-function isPlanFilePath(filePath: string | undefined): boolean {
-  if (!filePath) return false
-  return (filePath.includes('/plans/') || filePath.startsWith('plans/')) &&
-         filePath.endsWith('.md')
+function isStackedActivityTool(activity: ActivityItem): boolean {
+  const toolName = activity.toolName?.toLowerCase() || ''
+  return toolName === 'bash' || toolName.startsWith('mcp__') || toolName.startsWith('browser_')
 }
 
 interface ChatDisplayProps {
@@ -109,7 +108,13 @@ interface ChatDisplayProps {
   /** Pending permission request for this session */
   pendingPermission?: PermissionRequest
   /** Callback to respond to permission request */
-  onRespondToPermission?: (sessionId: string, requestId: string, allowed: boolean, alwaysAllow: boolean) => void
+  onRespondToPermission?: (
+    sessionId: string,
+    requestId: string,
+    allowed: boolean,
+    alwaysAllow: boolean,
+    options?: import('../../../shared/types').PermissionResponseOptions
+  ) => void
   /** Pending credential request for this session */
   pendingCredential?: CredentialRequest
   /** Callback to respond to credential request */
@@ -429,6 +434,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Connection unavailable
   connectionUnavailable = false,
 }, ref) {
+  // Panel focus state (for multi-panel auto-scroll behavior)
+  const appShellContext = useAppShellContext()
+  const isFocusedPanel = appShellContext?.isFocusedPanel ?? true
+
   // Input is only disabled when explicitly disabled (e.g., agent needs activation)
   // User can type during streaming - submitting will stop the stream and send
   const isInputDisabled = disabled
@@ -440,20 +449,29 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const [visibleTurnCount, setVisibleTurnCount] = React.useState(TURNS_PER_PAGE)
   // Sticky-bottom: When true, auto-scroll on content changes. Toggled by user scroll behavior.
   const isStickToBottomRef = React.useRef(true)
+  // Mirror isFocusedPanel into a ref so the ResizeObserver closure reads the latest value
+  const isFocusedPanelRef = React.useRef(isFocusedPanel)
+  isFocusedPanelRef.current = isFocusedPanel
   // Skip smooth scroll briefly after session switch (instant scroll already happened)
   const skipSmoothScrollUntilRef = React.useRef(0)
   const internalTextareaRef = React.useRef<RichTextInputHandle>(null)
   const textareaRef = externalTextareaRef || internalTextareaRef
+
+  // Navigation for session branching
+  const { navigate, navigateToSession } = useNavigation()
 
   // Get isDark from useTheme hook for overlay theme
   // This accounts for scenic themes (like Haze) that force dark mode
   const { isDark } = useTheme()
 
   // Register as focus zone - when zone gains focus, focus the textarea
+  // Guard with isFocusedPanelRef so only the focused panel responds in multi-panel layouts
   const { zoneRef, isFocused } = useFocusZone({
     zoneId: 'chat',
     focusFirst: () => {
-      textareaRef.current?.focus()
+      if (isFocusedPanelRef.current) {
+        textareaRef.current?.focus()
+      }
     },
   })
 
@@ -500,11 +518,12 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Does NOT auto-focus just because session changed (that would steal focus from SessionList)
   // Uses isSearchModeActive (prop) instead of isSearchActive (query-based) to prevent
   // focus stealing when search is open but query is empty
+  // In multi-panel layouts, only the focused panel should auto-focus its textarea
   useEffect(() => {
-    if (session && !isSearchModeActive && isFocused) {
+    if (session && !isSearchModeActive && isFocused && isFocusedPanel) {
       textareaRef.current?.focus()
     }
-  }, [session?.id, isFocused, isSearchModeActive])
+  }, [session?.id, isFocused, isSearchModeActive, isFocusedPanel])
 
   // Reset match state when session or search query changes
   useEffect(() => {
@@ -995,11 +1014,22 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     setOverlayState(null)
   }, [])
 
-  // Extract overlay data for activity-based overlays
-  // Uses the shared extractOverlayData parser from @craft-agent/ui
-  const overlayData: OverlayData | null = useMemo(() => {
+  // Extract overlay cards for activity-based overlays (Input/Output, future extensible)
+  const overlayCards = useMemo(() => {
+    if (!overlayState || overlayState.type !== 'activity') return []
+    return extractOverlayCards(overlayState.activity)
+  }, [overlayState])
+
+  // Parsed output data for legacy output-only activity overlays
+  const activityOutputOverlayData = useMemo(() => {
     if (!overlayState || overlayState.type !== 'activity') return null
     return extractOverlayData(overlayState.activity)
+  }, [overlayState])
+
+  // Stacked input/output cards are only enabled for Bash and MCP tools
+  const useStackedActivityOverlay = useMemo(() => {
+    if (!overlayState || overlayState.type !== 'activity') return false
+    return isStackedActivityTool(overlayState.activity)
   }, [overlayState])
 
   // Pop-out handler - opens message in overlay (read-only markdown)
@@ -1014,8 +1044,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Helper to collect Edit/Write activities into FileChange array
   // Used by both onOpenActivityDetails and onOpenMultiFileDiff
-  // Supports both Claude Code format (file_path, old_string, new_string) and
-  // Codex format (changes array with path and diff fields)
+  // Supports:
+  // - Claude Code format: { file_path, old_string, new_string }
+  // - PI format: { path, oldText, newText }
+  // - Codex format: { changes: Array<{ path, kind, diff }> }
   const collectFileChanges = useCallback((activities: ActivityItem[]): FileChange[] => {
     const changes: FileChange[] = []
     for (const a of activities) {
@@ -1036,20 +1068,20 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
             })
           }
         } else {
-          // Claude Code format: { file_path, old_string, new_string }
+          // Claude fields take precedence; PI fields are additive fallbacks
           changes.push({
             id: a.id,
-            filePath: (input.file_path as string) || 'unknown',
+            filePath: (input.file_path as string) || (input.path as string) || 'unknown',
             toolType: 'Edit',
-            original: (input.old_string as string) || '',
-            modified: (input.new_string as string) || '',
+            original: (input.old_string as string) || (input.oldText as string) || '',
+            modified: (input.new_string as string) || (input.newText as string) || '',
             error: a.error || undefined,
           })
         }
       } else if (a.toolName === 'Write' && input) {
         changes.push({
           id: a.id,
-          filePath: (input.file_path as string) || 'unknown',
+          filePath: (input.file_path as string) || (input.path as string) || 'unknown',
           toolType: 'Write',
           original: '',
           modified: (input.content as string) || '',
@@ -1123,6 +1155,13 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
     const resizeObserver = new ResizeObserver(() => {
+      // Unfocused panels: always scroll to bottom instantly (user isn't reading them)
+      if (!isFocusedPanelRef.current) {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
+        return
+      }
+
+      // Focused panel: respect sticky-bottom preference
       if (!isStickToBottomRef.current) return
 
       // Clear pending scroll and wait for layout to settle
@@ -1181,13 +1220,25 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Handle structured input responses (permissions and credentials)
   const handleStructuredResponse = (response: StructuredResponse) => {
-    if (response.type === 'permission' && pendingPermission && onRespondToPermission) {
-      const permResponse = response as PermissionResponse
+    if ((response.type === 'permission' || response.type === 'admin_approval') && pendingPermission && onRespondToPermission) {
+      if (response.type === 'permission') {
+        const permResponse = response as PermissionResponse
+        onRespondToPermission(
+          pendingPermission.sessionId,
+          pendingPermission.requestId,
+          permResponse.allowed,
+          permResponse.alwaysAllow
+        )
+        return
+      }
+
+      const adminResponse = response as AdminApprovalResponse
       onRespondToPermission(
         pendingPermission.sessionId,
         pendingPermission.requestId,
-        permResponse.allowed,
-        permResponse.alwaysAllow
+        adminResponse.approved,
+        false,
+        { rememberForMinutes: adminResponse.rememberForMinutes }
       )
     } else if (response.type === 'credential' && pendingCredential && onRespondToCredential) {
       const credResponse = response as CredentialResponse
@@ -1202,6 +1253,19 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Build structured input state from pending requests (permissions take priority)
   const structuredInput: StructuredInputState | undefined = React.useMemo(() => {
     if (pendingPermission) {
+      if (pendingPermission.type === 'admin_approval') {
+        return {
+          type: 'admin_approval',
+          data: {
+            appName: pendingPermission.appName || pendingPermission.toolName || 'System action',
+            reason: pendingPermission.reason || pendingPermission.description,
+            impact: pendingPermission.impact,
+            command: pendingPermission.command || '',
+            requiresSystemPrompt: pendingPermission.requiresSystemPrompt ?? true,
+            rememberForMinutes: pendingPermission.rememberForMinutes ?? 10,
+          },
+        }
+      }
       return { type: 'permission', data: pendingPermission }
     }
     if (pendingCredential) {
@@ -1417,6 +1481,33 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                         onOpenUrl={onOpenUrl}
                         isLastResponse={isLastResponse}
                         compactMode={compactMode}
+                        onBranch={session?.supportsBranching ? async (messageId: string, options?: { newPanel?: boolean }) => {
+                          if (!session) return
+                          try {
+                            const child = await appShellContext.onCreateSession(
+                              session.workspaceId,
+                              {
+                                branchFromMessageId: messageId,
+                                branchFromSessionId: session.id,
+                                name: `Branch of ${session.name || 'Untitled'}`,
+                                // Keep branch on the same backend/provider by inheriting parent session settings.
+                                llmConnection: session.llmConnection,
+                                model: session.model,
+                                permissionMode: session.permissionMode,
+                                workingDirectory: session.workingDirectory,
+                                enabledSourceSlugs: session.enabledSourceSlugs,
+                              }
+                            )
+                            navigate(routes.view.allSessions(child.id), { newPanel: resolveBranchNewPanelOption(options) })
+                          } catch (error) {
+                            const rawMessage = error instanceof Error ? error.message : 'Failed to create branch'
+                            const message = rawMessage.includes('source and target providers must match')
+                              || rawMessage.includes('same provider/backend')
+                              ? 'Branching is only supported within the same provider/backend. Switch this panel connection and try again.'
+                              : rawMessage
+                            toast.error('Could not create branch', { description: message })
+                          }
+                        } : undefined}
                         onAcceptPlan={() => {
                           window.dispatchEvent(new CustomEvent('craft:approve-plan', {
                             detail: { text: 'Plan approved, please execute.', sessionId: session?.id }
@@ -1476,7 +1567,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                               })
                             }
                           } else {
-                            // All other tools → Use extractOverlayData for appropriate overlay
+                            // All other tools → open generic activity cards overlay (Input/Output)
                             setOverlayState({ type: 'activity', activity })
                           }
                         }}
@@ -1535,6 +1626,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               onPermissionModeChange={onPermissionModeChange}
               tasks={backgroundTasks}
               sessionId={session.id}
+              sessionFolderPath={sessionFolderPath}
               onKillTask={(taskId) => killTask(taskId, backgroundTasks.find(t => t.id === taskId)?.type ?? 'shell')}
               onInsertMessage={onInputChange}
               sessionLabels={session.labels}
@@ -1620,21 +1712,95 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       {/* Preview Overlays - Rendered outside the main chat flow            */}
       {/* ================================================================== */}
 
-      {/* Code preview overlay (Read tool) */}
-      {overlayData?.type === 'code' && (
-        <CodePreviewOverlay
-          isOpen={!!overlayState}
+      {/* Activity details overlay */}
+      {overlayState?.type === 'activity' && useStackedActivityOverlay && (
+        <ActivityCardsOverlay
+          isOpen={true}
           onClose={handleCloseOverlay}
-          content={overlayData.content}
-          filePath={overlayData.filePath}
-          mode={overlayData.mode}
-          startLine={overlayData.startLine}
-          totalLines={overlayData.totalLines}
-          numLines={overlayData.numLines}
+          cards={overlayCards}
+          title={overlayState.activity.displayName || overlayState.activity.toolName || 'Activity'}
           theme={isDark ? 'dark' : 'light'}
-          error={overlayData.error}
-          command={overlayData.command}
+          onOpenUrl={onOpenUrl}
+          onOpenFile={onOpenFile}
         />
+      )}
+
+      {/* Legacy output-only activity overlay for non-bash/non-mcp tools */}
+      {overlayState?.type === 'activity' && !useStackedActivityOverlay && activityOutputOverlayData && (
+        activityOutputOverlayData.type === 'code' ? (
+          <CodePreviewOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            content={activityOutputOverlayData.content}
+            filePath={activityOutputOverlayData.filePath}
+            mode={activityOutputOverlayData.mode}
+            startLine={activityOutputOverlayData.startLine}
+            totalLines={activityOutputOverlayData.totalLines}
+            numLines={activityOutputOverlayData.numLines}
+            command={activityOutputOverlayData.command}
+            error={activityOutputOverlayData.error}
+            theme={isDark ? 'dark' : 'light'}
+          />
+        ) : activityOutputOverlayData.type === 'terminal' ? (
+          <TerminalPreviewOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            command={activityOutputOverlayData.command}
+            output={activityOutputOverlayData.output}
+            exitCode={activityOutputOverlayData.exitCode}
+            toolType={activityOutputOverlayData.toolType}
+            description={activityOutputOverlayData.description}
+            error={activityOutputOverlayData.error}
+            theme={isDark ? 'dark' : 'light'}
+          />
+        ) : activityOutputOverlayData.type === 'json' ? (
+          <JSONPreviewOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            data={activityOutputOverlayData.data}
+            title={activityOutputOverlayData.title}
+            error={activityOutputOverlayData.error}
+            theme={isDark ? 'dark' : 'light'}
+          />
+        ) : activityOutputOverlayData.type === 'document' ? (
+          <DocumentFormattedMarkdownOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            content={activityOutputOverlayData.content}
+            onOpenUrl={onOpenUrl}
+            onOpenFile={onOpenFile}
+            filePath={activityOutputOverlayData.filePath}
+            typeBadge={{
+              icon: Info,
+              label: activityOutputOverlayData.toolName,
+              variant: 'blue',
+            }}
+            error={activityOutputOverlayData.error}
+          />
+        ) : detectLanguage(activityOutputOverlayData.content) === 'markdown' ? (
+          <DocumentFormattedMarkdownOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            content={activityOutputOverlayData.content}
+            onOpenUrl={onOpenUrl}
+            onOpenFile={onOpenFile}
+            typeBadge={{
+              icon: Info,
+              label: overlayState.activity.displayName || overlayState.activity.toolName || 'Activity',
+              variant: 'blue',
+            }}
+            error={activityOutputOverlayData.error}
+          />
+        ) : (
+          <GenericOverlay
+            isOpen={true}
+            onClose={handleCloseOverlay}
+            content={activityOutputOverlayData.content}
+            title={activityOutputOverlayData.title}
+            error={activityOutputOverlayData.error}
+            theme={isDark ? 'dark' : 'light'}
+          />
+        )
       )}
 
       {/* Multi-diff preview overlay (Edit/Write tools) */}
@@ -1648,48 +1814,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
           theme={isDark ? 'dark' : 'light'}
           diffViewerSettings={diffViewerSettings}
           onDiffViewerSettingsChange={handleDiffViewerSettingsChange}
-        />
-      )}
-
-      {/* Terminal preview overlay (Bash/Grep/Glob tools) */}
-      {overlayData?.type === 'terminal' && (
-        <TerminalPreviewOverlay
-          isOpen={!!overlayState}
-          onClose={handleCloseOverlay}
-          command={overlayData.command}
-          output={overlayData.output}
-          exitCode={overlayData.exitCode}
-          toolType={overlayData.toolType}
-          description={overlayData.description}
-          theme={isDark ? 'dark' : 'light'}
-          error={overlayData.error}
-        />
-      )}
-
-      {/* JSON preview overlay (MCP tools, WebSearch, etc.) */}
-      {overlayData?.type === 'json' && (
-        <JSONPreviewOverlay
-          isOpen={!!overlayState}
-          onClose={handleCloseOverlay}
-          data={overlayData.data}
-          title={overlayData.title}
-          theme={isDark ? 'dark' : 'light'}
-          error={overlayData.error}
-        />
-      )}
-
-      {/* Document overlay (Write tool → .md/.txt files) — rendered markdown with tool badge */}
-      {overlayData?.type === 'document' && (
-        <DocumentFormattedMarkdownOverlay
-          isOpen={!!overlayState}
-          onClose={handleCloseOverlay}
-          content={overlayData.content}
-          filePath={overlayData.filePath}
-          typeBadge={{ icon: PenLine, label: overlayData.toolName, variant: 'write' }}
-          onOpenUrl={onOpenUrl}
-          onOpenFile={onOpenFile}
-          error={overlayData.error}
-          variant={isPlanFilePath(overlayData.filePath) ? 'plan' : 'response'}
         />
       )}
 
@@ -1714,29 +1838,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
             content={overlayState.content}
             onOpenUrl={onOpenUrl}
             onOpenFile={onOpenFile}
-          />
-        )
-      )}
-
-      {/* Generic overlay for unknown tool types - route markdown to fullscreen viewer */}
-      {overlayData?.type === 'generic' && (
-        detectLanguage(overlayData.content) === 'markdown' ? (
-          <DocumentFormattedMarkdownOverlay
-            isOpen={true}
-            onClose={handleCloseOverlay}
-            content={overlayData.content}
-            onOpenUrl={onOpenUrl}
-            onOpenFile={onOpenFile}
-            error={overlayData.error}
-          />
-        ) : (
-          <GenericOverlay
-            isOpen={!!overlayState}
-            onClose={handleCloseOverlay}
-            content={overlayData.content}
-            title={overlayData.title}
-            theme={isDark ? 'dark' : 'light'}
-            error={overlayData.error}
           />
         )
       )}

@@ -28,6 +28,12 @@ mock.module('../../mode-manager.ts', () => ({
   shouldAllowToolInMode: (a: any, b: any, c: any, d?: any) => mockShouldAllowToolInMode(a, b, c, d),
   isApiEndpointAllowed: (a: any, b: any, c?: any) => mockIsApiEndpointAllowed(a, b, c),
   isReadOnlyBashCommandWithConfig: (a: any, b: any) => mockIsReadOnlyBashCommandWithConfig(a, b),
+  getPermissionModeDiagnostics: () => ({
+    permissionMode: 'safe',
+    modeVersion: 7,
+    lastChangedAt: '2026-02-28T18:00:00.000Z',
+    lastChangedBy: 'user',
+  }),
 }));
 
 // Mock permissionsConfigCache for read-only bash pattern checks
@@ -109,6 +115,7 @@ function createInput(overrides?: Partial<PreToolUseInput>): PreToolUseInput {
   return {
     toolName: 'Read',
     input: { file_path: '/test/file.ts' },
+    sessionId: 'test-session',
     permissionMode: 'allow-all',
     workspaceRootPath: '/test/workspace',
     workspaceId: 'test-ws',
@@ -154,7 +161,9 @@ describe('runPreToolUseChecks', () => {
 
       expect(result.type).toBe('block');
       if (result.type === 'block') {
-        expect(result.reason).toBe('Bash is not allowed in Explore mode');
+        expect(result.reason).toContain('Bash is not allowed in Explore mode');
+        expect(result.reason).toContain('Effective mode: Explore');
+        expect(result.reason).toContain('Last mode change: user at 2026-02-28T18:00:00.000Z (modeVersion=7)');
       }
     });
 
@@ -573,7 +582,8 @@ describe('runPreToolUseChecks', () => {
 
       expect(result.type).toBe('block');
       if (result.type === 'block') {
-        expect(result.reason).toBe('Not allowed');
+        expect(result.reason).toContain('Not allowed');
+        expect(result.reason).toContain('Effective mode: Explore');
       }
     });
 

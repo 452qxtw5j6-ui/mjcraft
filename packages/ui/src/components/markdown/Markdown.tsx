@@ -1,9 +1,11 @@
 import * as React from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
 import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import 'katex/dist/katex.min.css'
 import { cn } from '../../lib/utils'
-import { FILE_EXTENSIONS_PATTERN } from '../../lib/file-classification'
 import { CodeBlock, InlineCode } from './CodeBlock'
 import { MarkdownDiffBlock } from './MarkdownDiffBlock'
 import { MarkdownJsonBlock } from './MarkdownJsonBlock'
@@ -11,12 +13,16 @@ import { MarkdownMermaidBlock } from './MarkdownMermaidBlock'
 import { MarkdownDatatableBlock } from './MarkdownDatatableBlock'
 import { MarkdownSpreadsheetBlock } from './MarkdownSpreadsheetBlock'
 import { MarkdownHtmlBlock } from './MarkdownHtmlBlock'
+import { MarkdownImageBlock } from './MarkdownImageBlock'
+import { MarkdownLatexBlock } from './MarkdownLatexBlock'
 import { MarkdownPdfBlock } from './MarkdownPdfBlock'
 import { preprocessLinks } from './linkify'
+import { classifyMarkdownLinkTarget } from './link-target'
 import remarkCollapsibleSections from './remarkCollapsibleSections'
 import { CollapsibleSection } from './CollapsibleSection'
 import { useCollapsibleMarkdown } from './CollapsibleMarkdownContext'
 import { wrapWithSafeProxy } from './safe-components'
+import { MARKDOWN_MATH_OPTIONS } from './math-options'
 
 /**
  * Render modes for markdown content:
@@ -73,10 +79,6 @@ interface CollapsibleContext {
   toggleSection: (id: string) => void
 }
 
-// File path detection regex - matches absolute, home-relative, explicit-relative, and bare relative paths.
-// Excludes URLs (http://, mailto:, etc.). Extensions derived from file-classification.ts to stay in sync.
-const FILE_PATH_REGEX = new RegExp(`^(?!https?://|mailto:|ftp://|data:)(?:[\\w~]|\\./)[\\w\\-./@]*\\.(?:${FILE_EXTENSIONS_PATTERN})$`, 'i')
-
 /**
  * Create custom components based on render mode.
  *
@@ -124,13 +126,22 @@ function createComponents(
     a: ({ href, children }) => {
       const handleClick = (e: React.MouseEvent) => {
         e.preventDefault()
-        if (href) {
-          // Check if it's a file path
-          if (FILE_PATH_REGEX.test(href) && onFileClick) {
-            onFileClick(href)
-          } else if (onUrlClick) {
-            onUrlClick(href)
-          }
+
+        // Some AI outputs include raw HTML anchors with empty href but path text content.
+        // Fallback to the anchor text when href is missing/empty.
+        const fallbackText = React.Children.toArray(children)
+          .map((child) => (typeof child === 'string' ? child : ''))
+          .join('')
+          .trim()
+
+        const target = (href?.trim() || fallbackText)
+        if (!target) return
+
+        const targetType = classifyMarkdownLinkTarget(target)
+        if (targetType === 'file' && onFileClick) {
+          onFileClick(target)
+        } else if (onUrlClick) {
+          onUrlClick(target)
         }
       }
 
@@ -207,6 +218,14 @@ function createComponents(
           // PDF preview blocks → inline first page with expand to full viewer
           if (match?.[1] === 'pdf-preview') {
             return <MarkdownPdfBlock code={code} className="my-2" />
+          }
+          // Image preview blocks → inline image with expand to full viewer
+          if (match?.[1] === 'image-preview') {
+            return <MarkdownImageBlock code={code} className="my-2" />
+          }
+          // LaTeX/math code blocks → KaTeX rendered display math
+          if (match?.[1] === 'latex' || match?.[1] === 'math') {
+            return <MarkdownLatexBlock code={code} className="my-2" />
           }
           // Mermaid code blocks → zinc-styled SVG diagram.
           // Hide the inline expand button when the mermaid block is the first
@@ -303,6 +322,14 @@ function createComponents(
         // PDF preview blocks → inline first page with expand to full viewer
         if (match?.[1] === 'pdf-preview') {
           return <MarkdownPdfBlock code={code} className="my-2" />
+        }
+        // Image preview blocks → inline image with expand to full viewer
+        if (match?.[1] === 'image-preview') {
+          return <MarkdownImageBlock code={code} className="my-2" />
+        }
+        // LaTeX/math code blocks → KaTeX rendered display math
+        if (match?.[1] === 'latex' || match?.[1] === 'math') {
+          return <MarkdownLatexBlock code={code} className="my-2" />
         }
         // Mermaid code blocks → zinc-styled SVG diagram.
         // (Same first-block detection as minimal mode — see comment above.)
@@ -439,9 +466,19 @@ export function Markdown({
     [children]
   )
 
-  // Conditionally include the collapsible sections plugin
+  // Conditionally include the collapsible sections plugin.
+  // IMPORTANT: Disable single-dollar inline math so currency like $2M–$4M
+  // stays plain text. Math should use $$...$$ delimiters.
   const remarkPlugins = React.useMemo(
-    () => collapsible ? [remarkGfm, remarkCollapsibleSections] : [remarkGfm],
+    () => {
+      const mathPlugin: [typeof remarkMath, typeof MARKDOWN_MATH_OPTIONS] = [
+        remarkMath,
+        MARKDOWN_MATH_OPTIONS
+      ]
+      return collapsible
+        ? [remarkGfm, mathPlugin, remarkCollapsibleSections]
+        : [remarkGfm, mathPlugin]
+    },
     [collapsible]
   )
 
@@ -449,7 +486,7 @@ export function Markdown({
     <div className={cn('markdown-content', className)}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
-        rehypePlugins={[rehypeRaw]}
+        rehypePlugins={[rehypeKatex, rehypeRaw]}
         components={components}
       >
         {processedContent}

@@ -32,6 +32,7 @@ import { handleCredentialPrompt } from './handlers/credential-prompt.ts';
 import { handleUpdatePreferences } from './handlers/update-preferences.ts';
 import { handleTransformData } from './handlers/transform-data.ts';
 import { handleRenderTemplate } from './handlers/render-template.ts';
+import { handleSendDeveloperFeedback } from './handlers/send-developer-feedback.ts';
 
 // ============================================================
 // Canonical Zod Schemas
@@ -124,6 +125,18 @@ export const RenderTemplateSchema = z.object({
   source: z.string().describe('Source slug (e.g., "linear", "gmail")'),
   template: z.string().describe('Template ID (e.g., "issue-detail", "issue-list")'),
   data: z.record(z.string(), z.unknown()).describe('JSON data to render into the template'),
+});
+
+export const SendDeveloperFeedbackSchema = z.object({
+  message: z.string().describe('Freeform markdown feedback — be detailed, use headings, lists, code blocks. Include what happened, what you expected, what would help, or any ideas/suggestions.'),
+});
+
+// Browser tool schema (single CLI-like tool for all browser actions)
+export const BrowserToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Browser command as a string (e.g., "click @e1") or array (e.g., ["evaluate", "var x = 1; x + 2"]). Array mode preserves semicolons and whitespace in arguments.'),
 });
 
 export const SpawnSessionSchema = z.object({
@@ -266,11 +279,11 @@ The user will see a secure input UI with appropriate fields based on the auth mo
 
   transform_data: `Transform data files using a script and write structured output for datatable/spreadsheet blocks, or extract HTML content for html-preview blocks.
 
-Use this tool when you need to transform large datasets (20+ rows) into structured JSON for display, or extract/decode HTML content for rendering. Write a transform script that reads the input file and produces an output file, then reference it via \`"src"\` in your datatable/spreadsheet/html-preview/pdf-preview block.
+Use this tool when you need to transform large datasets (20+ rows) into structured JSON for display, or extract/decode content for rich previews. Write a transform script that reads the input file and produces an output file, then reference it via \`"src"\` in your datatable/spreadsheet/html-preview/pdf-preview/image-preview block.
 
 **Workflow:**
 1. Call \`transform_data\` with a script that reads input files and writes output
-2. Output a datatable/spreadsheet block with \`"src": "data/output.json"\`, an html-preview block with \`"src": "data/output.html"\`, or a pdf-preview block with \`"src": "data/output.pdf"\`
+2. Output a datatable/spreadsheet block with \`"src": "data/output.json"\`, an html-preview block with \`"src": "data/output.html"\`, a pdf-preview block with \`"src": "data/output.pdf"\`, or an image-preview block with \`"src": "data/output.png"\`
 
 **Script conventions:**
 - Input file paths are passed as command-line arguments (last arg = output file path)
@@ -294,6 +307,51 @@ Use this when a source provides HTML templates for rich rendering of its data (e
 
 Templates use Mustache syntax — the tool handles rendering and writes the output HTML to the session data folder.`,
 
+  browser_tool: `Run browser actions using a CLI-like command (string or array input).
+
+All browser interactions use this single tool with strict validation and actionable feedback.
+String mode supports batching with semicolons: \`fill @e1 value; fill @e2 value; click @e3\`
+Batch stops after navigation commands (click, navigate, back, forward) since page state may change.
+
+Array mode bypasses string parsing and preserves raw arguments exactly (recommended for semicolons, tabs, and newlines):
+- \`["evaluate", "var x = 1; var y = 2; x + y"]\`
+- \`["paste", "Name\\tAge\\nAlice\\t30"]\`
+
+Examples:
+- \`--help\`
+- \`open\`
+- \`navigate https://example.com\`
+- \`snapshot\`
+- \`find login button\` — search elements by keyword
+- \`click @e12\`
+- \`click-at 350 200\` — click at pixel coordinates (for canvas elements)
+- \`fill @e5 user@example.com\`
+- \`type Hello World\` — type into currently focused element (no ref needed)
+- \`select @e3 optionValue\`
+- \`select @e75 CNAME --assert-text Target --timeout 3000\`
+- \`set-clipboard Name\\tAge\\nAlice\\t30\` — write text to clipboard
+- \`get-clipboard\` — read clipboard text content
+- \`paste Name\\tAge\\nAlice\\t30\` — set clipboard and trigger Ctrl/Cmd+V
+- \`scroll down 800\`
+- \`evaluate document.title\`
+- \`console 50 error\`
+- \`screenshot\` — raw screenshot
+- \`screenshot --annotated\` — screenshot with @eN labels overlaid on interactive elements
+- \`screenshot-region 100 200 640 480\`
+- \`screenshot-region --ref @e12 --padding 8\`
+- \`screenshot-region --selector div[data-testid="chart"]\`
+- \`window-resize 1440 900\`
+- \`network 50 failed\`
+- \`wait network-idle 8000\`
+- \`key Enter\`
+- \`key k meta\`
+- \`downloads wait 15000\`
+- \`focus [windowId]\` — focus existing browser window (no new window)
+- \`windows\` — list current browser windows and ownership state
+- \`release\` — dismiss the agent control overlay when done
+- \`close\` — close and destroy the browser window
+- \`hide\` — hide the window while preserving state`,
+
   call_llm: `Invoke a secondary LLM for focused subtasks. Use for:
 - Cost optimization: use a smaller model for simple tasks (summarization, classification)
 - Structured output: JSON schema compliance via prompt instructions
@@ -304,7 +362,7 @@ Put text/content directly in the 'prompt' parameter. Do NOT pass inline text via
 Only use 'attachments' for existing file paths on disk - the tool loads file content automatically.
 For large files (>2000 lines), use {path, startLine, endLine} to select a portion.`,
 
-  spawn_session: `Create a new sub-session that runs independently with its own prompt, connection, model, and sources.
+  spawn_session: `Create a new session that runs independently with its own prompt, connection, model, and sources.
 
 Use this to delegate tasks to parallel sessions — research, analysis, drafts, or any work that benefits from separate context.
 
@@ -326,6 +384,10 @@ If waitForResponse=true, the call blocks until the target session returns an ass
 Use this before send_to_session to discover valid targetSessionId values.
 
 Returns session metadata (id, name, status, last activity).`,
+
+  send_developer_feedback: `Send freeform feedback to the Craft Agent development team.
+
+Use this to share anything that would help improve the product — issues you hit, ideas for better tools, suggestions for improved workflows, or patterns you notice. Write in markdown with as much detail as possible. This is your direct line to the developers.`,
 } as const;
 
 // ============================================================
@@ -335,38 +397,107 @@ Returns session metadata (id, name, status, last activity).`,
 /** Handler function signature for session tools. */
 export type SessionToolHandler = (ctx: SessionToolContext, args: any) => Promise<ToolResult>;
 
-/** A single session tool definition combining name, description, schema, and handler. */
-export interface SessionToolDef {
+/** Where a session tool is executed. */
+export type SessionToolExecutionMode = 'registry' | 'backend';
+
+interface SessionToolDefBase {
   name: string;
   description: string;
   inputSchema: z.ZodObject<z.ZodRawShape>;
-  /** Handler function, or null for backend-specific tools (e.g., call_llm). */
-  handler: SessionToolHandler | null;
 }
+
+/** Tool executed from the canonical registry (requires a concrete handler). */
+export interface RegistrySessionToolDef extends SessionToolDefBase {
+  executionMode: 'registry';
+  handler: SessionToolHandler;
+}
+
+/** Tool executed by backend-specific adapters (Pi/Claude/session-mcp-server). */
+export interface BackendSessionToolDef extends SessionToolDefBase {
+  executionMode: 'backend';
+  handler: null;
+}
+
+/** A single session tool definition combining name, description, schema, mode, and handler. */
+export type SessionToolDef = RegistrySessionToolDef | BackendSessionToolDef;
 
 // ============================================================
 // Canonical Tool Registry
 // ============================================================
 
 export const SESSION_TOOL_DEFS: SessionToolDef[] = [
-  { name: 'SubmitPlan', description: TOOL_DESCRIPTIONS.SubmitPlan, inputSchema: SubmitPlanSchema, handler: handleSubmitPlan },
-  { name: 'config_validate', description: TOOL_DESCRIPTIONS.config_validate, inputSchema: ConfigValidateSchema, handler: handleConfigValidate },
-  { name: 'skill_validate', description: TOOL_DESCRIPTIONS.skill_validate, inputSchema: SkillValidateSchema, handler: handleSkillValidate },
-  { name: 'mermaid_validate', description: TOOL_DESCRIPTIONS.mermaid_validate, inputSchema: MermaidValidateSchema, handler: handleMermaidValidate },
-  { name: 'source_test', description: TOOL_DESCRIPTIONS.source_test, inputSchema: SourceTestSchema, handler: handleSourceTest },
-  { name: 'source_oauth_trigger', description: TOOL_DESCRIPTIONS.source_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, handler: handleSourceOAuthTrigger },
-  { name: 'source_google_oauth_trigger', description: TOOL_DESCRIPTIONS.source_google_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, handler: handleGoogleOAuthTrigger },
-  { name: 'source_slack_oauth_trigger', description: TOOL_DESCRIPTIONS.source_slack_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, handler: handleSlackOAuthTrigger },
-  { name: 'source_microsoft_oauth_trigger', description: TOOL_DESCRIPTIONS.source_microsoft_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, handler: handleMicrosoftOAuthTrigger },
-  { name: 'source_credential_prompt', description: TOOL_DESCRIPTIONS.source_credential_prompt, inputSchema: CredentialPromptSchema, handler: handleCredentialPrompt },
-  { name: 'update_user_preferences', description: TOOL_DESCRIPTIONS.update_user_preferences, inputSchema: UpdatePreferencesSchema, handler: handleUpdatePreferences },
-  { name: 'transform_data', description: TOOL_DESCRIPTIONS.transform_data, inputSchema: TransformDataSchema, handler: handleTransformData },
-  { name: 'render_template', description: TOOL_DESCRIPTIONS.render_template, inputSchema: RenderTemplateSchema, handler: handleRenderTemplate },
-  { name: 'call_llm', description: TOOL_DESCRIPTIONS.call_llm, inputSchema: CallLlmSchema, handler: null },
-  { name: 'spawn_session', description: TOOL_DESCRIPTIONS.spawn_session, inputSchema: SpawnSessionSchema, handler: null },
-  { name: 'send_to_session', description: TOOL_DESCRIPTIONS.send_to_session, inputSchema: SendToSessionSchema, handler: null },
-  { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, handler: null },
+  { name: 'SubmitPlan', description: TOOL_DESCRIPTIONS.SubmitPlan, inputSchema: SubmitPlanSchema, executionMode: 'registry', handler: handleSubmitPlan },
+  { name: 'config_validate', description: TOOL_DESCRIPTIONS.config_validate, inputSchema: ConfigValidateSchema, executionMode: 'registry', handler: handleConfigValidate },
+  { name: 'skill_validate', description: TOOL_DESCRIPTIONS.skill_validate, inputSchema: SkillValidateSchema, executionMode: 'registry', handler: handleSkillValidate },
+  { name: 'mermaid_validate', description: TOOL_DESCRIPTIONS.mermaid_validate, inputSchema: MermaidValidateSchema, executionMode: 'registry', handler: handleMermaidValidate },
+  { name: 'source_test', description: TOOL_DESCRIPTIONS.source_test, inputSchema: SourceTestSchema, executionMode: 'registry', handler: handleSourceTest },
+  { name: 'source_oauth_trigger', description: TOOL_DESCRIPTIONS.source_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, executionMode: 'registry', handler: handleSourceOAuthTrigger },
+  { name: 'source_google_oauth_trigger', description: TOOL_DESCRIPTIONS.source_google_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, executionMode: 'registry', handler: handleGoogleOAuthTrigger },
+  { name: 'source_slack_oauth_trigger', description: TOOL_DESCRIPTIONS.source_slack_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, executionMode: 'registry', handler: handleSlackOAuthTrigger },
+  { name: 'source_microsoft_oauth_trigger', description: TOOL_DESCRIPTIONS.source_microsoft_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, executionMode: 'registry', handler: handleMicrosoftOAuthTrigger },
+  { name: 'source_credential_prompt', description: TOOL_DESCRIPTIONS.source_credential_prompt, inputSchema: CredentialPromptSchema, executionMode: 'registry', handler: handleCredentialPrompt },
+  { name: 'update_user_preferences', description: TOOL_DESCRIPTIONS.update_user_preferences, inputSchema: UpdatePreferencesSchema, executionMode: 'registry', handler: handleUpdatePreferences },
+  { name: 'transform_data', description: TOOL_DESCRIPTIONS.transform_data, inputSchema: TransformDataSchema, executionMode: 'registry', handler: handleTransformData },
+  { name: 'render_template', description: TOOL_DESCRIPTIONS.render_template, inputSchema: RenderTemplateSchema, executionMode: 'registry', handler: handleRenderTemplate },
+  { name: 'send_developer_feedback', description: TOOL_DESCRIPTIONS.send_developer_feedback, inputSchema: SendDeveloperFeedbackSchema, executionMode: 'registry', handler: handleSendDeveloperFeedback },
+  { name: 'call_llm', description: TOOL_DESCRIPTIONS.call_llm, inputSchema: CallLlmSchema, executionMode: 'backend', handler: null },
+  { name: 'spawn_session', description: TOOL_DESCRIPTIONS.spawn_session, inputSchema: SpawnSessionSchema, executionMode: 'backend', handler: null },
+  { name: 'send_to_session', description: TOOL_DESCRIPTIONS.send_to_session, inputSchema: SendToSessionSchema, executionMode: 'backend', handler: null },
+  { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, executionMode: 'backend', handler: null },
+  // Browser tool (backend-specific — requires BrowserPaneManager in Electron)
+  // Single CLI-like tool that handles all browser actions via command string.
+  { name: 'browser_tool', description: TOOL_DESCRIPTIONS.browser_tool, inputSchema: BrowserToolSchema, executionMode: 'backend', handler: null },
 ];
+
+export interface SessionToolFilterOptions {
+  /** Include the experimental send_developer_feedback tool. */
+  includeDeveloperFeedback?: boolean;
+}
+
+/**
+ * Return session tools with optional feature filtering.
+ *
+ * Callers should use this helper instead of filtering ad hoc so tool visibility
+ * stays consistent across Claude, Pi, and session-mcp-server backends.
+ */
+export function getSessionToolDefs(options?: SessionToolFilterOptions): SessionToolDef[] {
+  const includeDeveloperFeedback = options?.includeDeveloperFeedback ?? true;
+
+  return SESSION_TOOL_DEFS.filter(def => {
+    if (!includeDeveloperFeedback && def.name === 'send_developer_feedback') {
+      return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Build a name->definition registry with optional feature filtering.
+ */
+export function getSessionToolRegistry(options?: SessionToolFilterOptions): Map<string, SessionToolDef> {
+  return new Map(getSessionToolDefs(options).map(def => [def.name, def]));
+}
+
+/**
+ * Return session tool names with optional feature filtering.
+ */
+export function getSessionToolNames(options?: SessionToolFilterOptions): Set<string> {
+  return new Set(getSessionToolDefs(options).map(def => def.name));
+}
+
+/**
+ * Return backend-executed tool names with optional feature filtering.
+ */
+export function getSessionBackendToolNames(options?: SessionToolFilterOptions): Set<string> {
+  return new Set(getSessionToolDefs(options).filter(d => d.executionMode === 'backend').map(d => d.name));
+}
+
+/**
+ * Return registry-executed tool names with optional feature filtering.
+ */
+export function getSessionRegistryToolNames(options?: SessionToolFilterOptions): Set<string> {
+  return new Set(getSessionToolDefs(options).filter(d => d.executionMode === 'registry').map(d => d.name));
+}
 
 // ============================================================
 // Derived Lookups
@@ -374,6 +505,16 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
 
 /** Set of session tool names for quick membership checks. */
 export const SESSION_TOOL_NAMES = new Set(SESSION_TOOL_DEFS.map(d => d.name));
+
+/** Session tool names that must be handled by backend-specific adapters (Pi/Claude/session-mcp-server). */
+export const SESSION_BACKEND_TOOL_NAMES = new Set(
+  SESSION_TOOL_DEFS.filter(d => d.executionMode === 'backend').map(d => d.name)
+);
+
+/** Session tool names that are always executable from the canonical registry. */
+export const SESSION_REGISTRY_TOOL_NAMES = new Set(
+  SESSION_TOOL_DEFS.filter(d => d.executionMode === 'registry').map(d => d.name)
+);
 
 /** Map from tool name → definition for O(1) lookup. */
 export const SESSION_TOOL_REGISTRY = new Map(SESSION_TOOL_DEFS.map(d => [d.name, d]));
@@ -389,14 +530,20 @@ export interface JsonSchemaToolDef {
 }
 
 /**
- * Convert all session tool definitions to JSON Schema format.
+ * Convert session tool definitions to JSON Schema format.
  *
  * @param opts.prefix - Optional prefix for tool names (e.g., 'mcp__session__' for Pi)
+ * @param opts.includeDeveloperFeedback - Include experimental feedback tool in output
  * @returns Array of tool definitions with JSON Schema inputSchema
  */
-export function getToolDefsAsJsonSchema(opts?: { prefix?: string }): JsonSchemaToolDef[] {
+export function getToolDefsAsJsonSchema(opts?: {
+  prefix?: string;
+  includeDeveloperFeedback?: boolean;
+}): JsonSchemaToolDef[] {
   const prefix = opts?.prefix || '';
-  return SESSION_TOOL_DEFS.map(def => {
+  const defs = getSessionToolDefs({ includeDeveloperFeedback: opts?.includeDeveloperFeedback });
+
+  return defs.map(def => {
     // Explicit `as any` avoids TS2589 ("type instantiation is excessively deep")
     // caused by zodToJsonSchema inferring deep generic chains from union schemas.
     const jsonSchema = zodToJsonSchema(def.inputSchema as any, { $refStrategy: 'none' }) as Record<string, unknown>;

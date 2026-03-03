@@ -20,6 +20,7 @@ import {
   ListTodo,
   Pencil,
   FilePenLine,
+  GitBranch,
 } from 'lucide-react'
 import * as ReactDOM from 'react-dom'
 import { cn } from '../../lib/utils'
@@ -32,6 +33,12 @@ import { TurnCardActionsMenu } from './TurnCardActionsMenu'
 import { computeLastChildSet, groupActivitiesByParent, isActivityGroup, formatDuration, formatTokens, deriveTurnPhase, shouldShowThinkingIndicator, type ActivityGroup, type AssistantTurn } from './turn-utils'
 import { DocumentFormattedMarkdownOverlay } from '../overlay'
 import { AcceptPlanDropdown } from './AcceptPlanDropdown'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  StyledDropdownMenuContent,
+  StyledDropdownMenuItem,
+} from '../ui/StyledDropdown'
 
 // ============================================================================
 // Utilities
@@ -208,6 +215,8 @@ export interface ResponseContent {
   streamStartTime?: number
   /** Whether this response is a plan (renders with plan variant) */
   isPlan?: boolean
+  /** ID of the underlying message (for branching) */
+  messageId?: string
 }
 
 // ============================================================================
@@ -271,6 +280,8 @@ export interface TurnCardProps {
   animateResponse?: boolean
   /** Hide footers for compact embedding (EditPopover) */
   compactMode?: boolean
+  /** Callback to branch the session from a specific message */
+  onBranch?: (messageId: string, options?: { newPanel?: boolean }) => void
 }
 
 // ============================================================================
@@ -1306,6 +1317,49 @@ export interface ResponseCardProps {
   showAcceptPlan?: boolean
   /** Hide footer for compact embedding (EditPopover) */
   compactMode?: boolean
+  /** Callback to branch the session from this response */
+  onBranch?: (options?: { newPanel?: boolean }) => void
+}
+
+interface BranchDropdownProps {
+  onBranch: (options?: { newPanel?: boolean }) => void
+}
+
+function BranchDropdown({ onBranch }: BranchDropdownProps) {
+  const handleBranchClick = () => {
+    onBranch({ newPanel: true })
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Branch options"
+          title="Branch"
+          className={cn(
+            "p-1 rounded-[4px] transition-colors select-none",
+            "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
+            "data-[state=open]:text-foreground data-[state=open]:bg-foreground/5",
+            "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          )}
+        >
+          <GitBranch className={SIZE_CONFIG.iconSize} />
+        </button>
+      </DropdownMenuTrigger>
+
+      <StyledDropdownMenuContent align="end" minWidth="min-w-64" sideOffset={6}>
+        <StyledDropdownMenuItem onClick={handleBranchClick} className="items-start py-2">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[13px] leading-tight">Branch From This message</span>
+            <span className="max-w-[220px] whitespace-normal text-xs leading-tight text-muted-foreground">
+              Explore an alternate direction without disrupting this conversation’s flow.
+            </span>
+          </div>
+        </StyledDropdownMenuItem>
+      </StyledDropdownMenuContent>
+    </DropdownMenu>
+  )
 }
 
 const MAX_HEIGHT = 540
@@ -1339,6 +1393,7 @@ export function ResponseCard({
   isLastResponse = true,
   showAcceptPlan = true,
   compactMode = false,
+  onBranch,
 }: ResponseCardProps) {
   // Throttled content for display - updates every CONTENT_THROTTLE_MS during streaming
   const [displayedText, setDisplayedText] = useState(text)
@@ -1449,7 +1504,7 @@ export function ResponseCard({
 
           {/* Scrollable content area with subtle fade at edges (dark mode only) */}
           <div
-            className="pl-[22px] pr-[16px] py-3 text-sm overflow-y-auto"
+            className="pl-[22px] pr-[16px] py-3 text-sm overflow-y-auto scrollbar-hover"
             style={{
               maxHeight: MAX_HEIGHT,
               // Subtle fade at top and bottom edges (16px) - only in dark mode for better contrast
@@ -1511,25 +1566,26 @@ export function ResponseCard({
                 )}
               </div>
 
-              {/* Right side - Accept Plan dropdown (only shown for plan variant when it's the last response) */}
-              {isPlan && showAcceptPlan && onAccept && onAcceptWithCompact && (
-                <div
-                  className={cn(
-                    "flex items-center gap-3 transition-all duration-200",
-                    isLastResponse
-                      ? "opacity-100 translate-x-0"
-                      : "opacity-0 translate-x-2 pointer-events-none"
-                  )}
-                >
-                  <span className="text-xs text-muted-foreground">
-                    Type your feedback in chat or
-                  </span>
-                  <AcceptPlanDropdown
-                    onAccept={onAccept}
-                    onAcceptWithCompact={onAcceptWithCompact}
-                  />
-                </div>
-              )}
+              {/* Right side */}
+              <div className="flex items-center gap-3">
+                {/* Accept Plan dropdown (plan variant only, last response) */}
+                {isPlan && showAcceptPlan && onAccept && onAcceptWithCompact && (
+                  <div
+                    className={cn(
+                      "flex items-center gap-3 transition-all duration-200",
+                      isLastResponse
+                        ? "opacity-100 translate-x-0"
+                        : "opacity-0 translate-x-2 pointer-events-none"
+                    )}
+                  >
+                    <AcceptPlanDropdown
+                      onAccept={onAccept}
+                      onAcceptWithCompact={onAcceptWithCompact}
+                    />
+                  </div>
+                )}
+                {onBranch && <BranchDropdown onBranch={onBranch} />}
+              </div>
             </div>
           )}
         </div>
@@ -1549,11 +1605,11 @@ export function ResponseCard({
 
   // Streaming response - show throttled content with spinner
   return (
-    <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden">
+    <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden group">
       {/* Content area - uses displayedText (throttled) for performance */}
       {/* Subtle fade at top and bottom edges (dark mode only) */}
       <div
-        className="pl-[22px] pr-4 py-3 text-sm overflow-y-auto"
+        className="pl-[22px] pr-4 py-3 text-sm overflow-y-auto scrollbar-hover"
         style={{
           maxHeight: MAX_HEIGHT,
           // Subtle fade at top and bottom edges (16px) - only in dark mode for better contrast
@@ -1704,6 +1760,7 @@ export const TurnCard = React.memo(function TurnCard({
   displayMode = 'detailed',
   animateResponse = false,
   compactMode = false,
+  onBranch,
 }: TurnCardProps) {
   // Derive the turn phase from props using the state machine.
   // This provides a single source of truth for lifecycle state,
@@ -1936,7 +1993,7 @@ export const TurnCard = React.memo(function TurnCard({
                   ref={activitiesContainerRef}
                   className={cn(
                     "pl-4 pr-2 py-0 space-y-0.5 border-l-2 border-muted ml-[13px]",
-                    sortedActivities.length > SIZE_CONFIG.maxVisibleActivities && "rounded-r-md overflow-y-auto py-1.5"
+                    sortedActivities.length > SIZE_CONFIG.maxVisibleActivities && "rounded-r-md overflow-y-auto scrollbar-hover py-1.5"
                   )}
                   style={{
                     maxHeight: sortedActivities.length > SIZE_CONFIG.maxVisibleActivities
@@ -2054,6 +2111,7 @@ export const TurnCard = React.memo(function TurnCard({
             onAcceptWithCompact={onAcceptPlanWithCompact}
             isLastResponse={isLastResponse && index === planActivities.length - 1}
             compactMode={compactMode}
+            onBranch={onBranch ? (options?: { newPanel?: boolean }) => onBranch(planActivity.id, options) : undefined}
           />
         </div>
       ))}
@@ -2081,6 +2139,7 @@ export const TurnCard = React.memo(function TurnCard({
                 onAcceptWithCompact={onAcceptPlanWithCompact}
                 isLastResponse={isLastResponse}
                 compactMode={compactMode}
+                onBranch={onBranch && response.messageId ? (options?: { newPanel?: boolean }) => onBranch(response.messageId!, options) : undefined}
               />
             </motion.div>
           )}
@@ -2101,6 +2160,7 @@ export const TurnCard = React.memo(function TurnCard({
             onAcceptWithCompact={onAcceptPlanWithCompact}
             isLastResponse={isLastResponse}
             compactMode={compactMode}
+            onBranch={onBranch && response.messageId ? (options?: { newPanel?: boolean }) => onBranch(response.messageId!, options) : undefined}
           />
         </div>
       )}

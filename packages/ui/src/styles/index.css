@@ -291,6 +291,24 @@ html[data-font="inter"] {
     display: none;
   }
 
+  /* Hide scrollbar until parent .group is hovered */
+  .scrollbar-hover::-webkit-scrollbar {
+    width: 4px;
+  }
+  .scrollbar-hover::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-hover::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 4px;
+  }
+  .group:hover .scrollbar-hover::-webkit-scrollbar-thumb {
+    background: var(--border);
+  }
+  .group:hover .scrollbar-hover::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+  }
+
   /* Custom shadow utilities */
   .shadow-minimal {
     box-shadow:

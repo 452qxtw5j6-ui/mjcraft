@@ -30,8 +30,9 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { isDeveloperFeedbackEnabled } from '@craft-agent/shared/feature-flags';
 // Import from session-tools-core
 import {
   type SessionToolContext,
@@ -41,7 +42,7 @@ import {
   type LoadedSource,
   type CredentialManagerInterface,
   // Registry
-  SESSION_TOOL_REGISTRY,
+  getSessionToolRegistry,
   getToolDefsAsJsonSchema,
   // Helpers
   loadSourceConfig as loadSourceConfigFromHelpers,
@@ -239,6 +240,15 @@ function createCodexContext(config: SessionConfig): SessionToolContext {
       }
     },
 
+    // Developer feedback: write one JSON file per entry to {configDir}/feedback/
+    submitFeedback: (feedback) => {
+      const configDir = process.env.CRAFT_CONFIG_DIR || join(workspaceRootPath, '..', '..');
+      const feedbackDir = join(configDir, 'feedback');
+      mkdirSync(feedbackDir, { recursive: true });
+      const filePath = join(feedbackDir, `${feedback.id}.json`);
+      writeFileSync(filePath, JSON.stringify(feedback, null, 2), 'utf-8');
+    },
+
     // Note: saveSourceConfig, validators, renderMermaid
     // are not available in Codex context (require Electron internals)
   };
@@ -248,8 +258,10 @@ function createCodexContext(config: SessionConfig): SessionToolContext {
 // Tool Definitions (from canonical registry)
 // ============================================================
 
-function createSessionTools(): Tool[] {
-  return getToolDefsAsJsonSchema().map(def => ({
+function createSessionTools(includeDeveloperFeedback: boolean): Tool[] {
+  return getToolDefsAsJsonSchema({
+    includeDeveloperFeedback,
+  }).map(def => ({
     name: def.name,
     description: def.description,
     inputSchema: def.inputSchema as Tool['inputSchema'],
@@ -585,6 +597,9 @@ async function main() {
   // Create the Codex context
   const ctx = createCodexContext(config);
 
+  const includeDeveloperFeedback = isDeveloperFeedbackEnabled();
+  const sessionToolRegistry = getSessionToolRegistry({ includeDeveloperFeedback });
+
   // Create MCP server
   const server = new Server(
     {
@@ -603,7 +618,7 @@ async function main() {
 
   // Handle tool listing — session tools + docs upstream tools
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...createSessionTools(), ...docsTools],
+    tools: [...createSessionTools(includeDeveloperFeedback), ...docsTools],
   }));
 
   // Handle tool calls — route via canonical registry, call_llm, or docs upstream
@@ -631,8 +646,8 @@ async function main() {
         return await handleListSessions(toolArgs as Record<string, unknown>, config);
       }
 
-      // Check canonical session tool registry first
-      const def = SESSION_TOOL_REGISTRY.get(name);
+      // Check canonical session tool registry first (feature-filtered)
+      const def = sessionToolRegistry.get(name);
       if (def?.handler) {
         return await def.handler(ctx, toolArgs);
       }
@@ -654,7 +669,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  console.error(`Session MCP Server started for session ${sessionId}`);
+  console.error(`Session MCP Server started for session ${sessionId} (developerFeedback=${includeDeveloperFeedback})`);
 }
 
 main().catch((error) => {

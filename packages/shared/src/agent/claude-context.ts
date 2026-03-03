@@ -8,8 +8,9 @@
  * Claude's full feature set.
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, mkdirSync } from 'fs';
 import { join, basename } from 'path';
+import { CONFIG_DIR } from '../config/paths.ts';
 import type {
   SessionToolContext,
   SessionToolCallbacks,
@@ -23,6 +24,7 @@ import type {
   McpValidationResult,
   ApiTestResult,
   SourceConfig,
+  DeveloperFeedback,
 } from '@craft-agent/session-tools-core';
 import {
   validateConfig,
@@ -249,6 +251,13 @@ export function createClaudeContext(options: ClaudeContextOptions): SessionToolC
     credentialManager,
     updatePreferences: (updates: Record<string, unknown>) => {
       updatePreferencesImpl(updates as any);
+    },
+    submitFeedback: (feedback: DeveloperFeedback) => {
+      const feedbackDir = join(CONFIG_DIR, 'feedback');
+      mkdirSync(feedbackDir, { recursive: true });
+      const filePath = join(feedbackDir, `${feedback.id}.json`);
+      writeFileSync(filePath, JSON.stringify(feedback, null, 2), 'utf-8');
+      debug('claude-context', `Developer feedback written to ${filePath}`);
     },
     // Source management
     loadSourceConfig: (sourceSlug: string): SourceConfig | null => {

@@ -7,7 +7,8 @@
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { AUTOMATIONS_CONFIG_FILE } from '@craft-agent/shared/automations';
+
+const AUTOMATIONS_CONFIG_FILE = 'automations.json';
 import type { SessionToolContext } from '../context.ts';
 import type { ToolResult } from '../types.ts';
 import { successResponse, errorResponse } from '../response.ts';

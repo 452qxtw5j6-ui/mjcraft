@@ -90,8 +90,10 @@ export function getDocPath(filename: string): string {
   return join(DOCS_DIR, filename);
 }
 
-// App root path reference for use in prompts
-// Using ~ for display since actual path varies per system/instance
+// App root path reference for prompt/display text only.
+// IMPORTANT: This is intentionally a human-readable, non-instance-aware path.
+// Do NOT use APP_ROOT for real filesystem reads/writes.
+// For runtime filesystem paths, use CONFIG_DIR from config/paths.ts.
 export const APP_ROOT = '~/.craft-agent';
 
 /**
@@ -114,7 +116,9 @@ export const DOC_REFS = {
   dataTables: `${APP_ROOT}/docs/data-tables.md`,
   htmlPreview: `${APP_ROOT}/docs/html-preview.md`,
   pdfPreview: `${APP_ROOT}/docs/pdf-preview.md`,
+  imagePreview: `${APP_ROOT}/docs/image-preview.md`,
   llmTool: `${APP_ROOT}/docs/llm-tool.md`,
+  browserTools: `${APP_ROOT}/docs/browser-tools.md`,
   docsDir: `${APP_ROOT}/docs/`,
 } as const;
 

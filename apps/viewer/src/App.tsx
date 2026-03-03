@@ -143,14 +143,17 @@ export function App() {
   const handleActivityClick = useCallback((activity: ActivityItem) => {
     if (activity.toolName === 'Edit' || activity.toolName === 'Write') {
       const input = activity.toolInput as Record<string, unknown> | undefined
+      // Claude fields are primary; PI fields are additive fallbacks.
       const filePath = (input?.file_path as string) || (input?.path as string) || 'unknown'
       const change: FileChange = {
         id: activity.id,
         filePath,
         toolType: activity.toolName,
-        original: activity.toolName === 'Edit' ? ((input?.old_string as string) || '') : '',
+        original: activity.toolName === 'Edit'
+          ? ((input?.old_string as string) || (input?.oldText as string) || '')
+          : '',
         modified: activity.toolName === 'Edit'
-          ? ((input?.new_string as string) || '')
+          ? ((input?.new_string as string) || (input?.newText as string) || '')
           : ((input?.content as string) || ''),
         error: activity.error || undefined,
       }

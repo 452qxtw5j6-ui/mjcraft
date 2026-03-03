@@ -23,6 +23,8 @@ export interface SidebarContextMenuConfig {
   labelId?: string
   /** Handler for "Configure Statuses" action - for allSessions/status/flagged types */
   onConfigureStatuses?: () => void
+  /** Handler for "Mark All Read" action - for allSessions type */
+  onMarkAllRead?: () => void
   /** Handler for "Configure Labels" action - receives labelId when triggered from a specific label */
   onConfigureLabels?: (labelId?: string) => void
   /** Handler for "Add New Label" action - creates a label (parentId passed from labelId) */
@@ -235,6 +237,7 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
                         statusId={link.contextMenu.statusId}
                         labelId={link.contextMenu.labelId}
                         onConfigureStatuses={link.contextMenu.onConfigureStatuses}
+                        onMarkAllRead={link.contextMenu.onMarkAllRead}
                         onConfigureLabels={link.contextMenu.onConfigureLabels}
                         onAddLabel={link.contextMenu.onAddLabel}
                         onDeleteLabel={link.contextMenu.onDeleteLabel}
@@ -301,12 +304,20 @@ function renderExpandedContent(
 ): React.ReactNode {
   // Flat sortable (e.g., statuses): wrap items in SortableList
   if (link.sortable && link.items) {
+    // Split at first separator: items before are sortable, items after are trailing (non-sortable)
+    const separatorIndex = link.items.findIndex(isSeparatorItem)
+    const sortableItems = separatorIndex >= 0 ? link.items.slice(0, separatorIndex) : link.items
+    const trailingItems = separatorIndex >= 0
+      ? link.items.slice(separatorIndex + 1).filter((item): item is LinkItem => !isSeparatorItem(item))
+      : []
+
     return (
       <SortableStatusList
-        items={link.items}
+        items={sortableItems}
         onReorder={link.sortable.onReorder}
         getItemProps={getItemProps}
         focusedItemId={focusedItemId}
+        trailingItems={trailingItems.length > 0 ? trailingItems : undefined}
       />
     )
   }
@@ -332,9 +343,11 @@ interface SortableStatusListProps {
   onReorder: (orderedIds: string[]) => void
   getItemProps: LeftSidebarProps['getItemProps']
   focusedItemId: string | null | undefined
+  /** Non-sortable items rendered after the sortable list (e.g., Flagged, Archived) */
+  trailingItems?: LinkItem[]
 }
 
-function SortableStatusList({ items, onReorder, getItemProps, focusedItemId }: SortableStatusListProps) {
+function SortableStatusList({ items, onReorder, getItemProps, focusedItemId, trailingItems }: SortableStatusListProps) {
   // Filter to LinkItems only (separators don't participate in DnD)
   const linkItems = items.filter((item): item is LinkItem => !isSeparatorItem(item))
 
@@ -383,6 +396,7 @@ function SortableStatusList({ items, onReorder, getItemProps, focusedItemId }: S
                         statusId={item.contextMenu.statusId}
                         labelId={item.contextMenu.labelId}
                         onConfigureStatuses={item.contextMenu.onConfigureStatuses}
+                        onMarkAllRead={item.contextMenu.onMarkAllRead}
                         onConfigureLabels={item.contextMenu.onConfigureLabels}
                         onAddLabel={item.contextMenu.onAddLabel}
                         onDeleteLabel={item.contextMenu.onDeleteLabel}
@@ -412,6 +426,24 @@ function SortableStatusList({ items, onReorder, getItemProps, focusedItemId }: S
             />
           )}
         />
+        {/* Non-sortable trailing items (e.g., Flagged, Archived) */}
+        {trailingItems && trailingItems.length > 0 && (
+          <>
+            <div className="my-1 ml-2" aria-hidden="true">
+              <div className="h-px bg-foreground/5" />
+            </div>
+            <div className="grid gap-0.5">
+              {trailingItems.map(item => (
+                <div key={item.id} className="group/section">
+                  <SidebarButton
+                    link={item}
+                    itemProps={getItemProps?.(item.id)}
+                  />
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

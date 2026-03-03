@@ -503,6 +503,116 @@ describe('PiEventAdapter', () => {
       });
     });
 
+    it('should fallback to args metadata when store has no entry', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+      const events = collect(adapter.adaptEvent({
+        type: 'tool_execution_start',
+        toolCallId: 'call_no_store',
+        toolName: 'bash',
+        args: {
+          command: 'npm test',
+          _intent: 'Run unit tests',
+          _displayName: 'Run Tests',
+        },
+      } as any));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'tool_start',
+        toolName: 'Bash',
+        toolUseId: 'call_no_store',
+        intent: 'Run unit tests',
+        displayName: 'Run Tests',
+      });
+    });
+
+    it('should prefer store metadata over args metadata when both exist', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+
+      toolMetadataStore.set('call_store_wins', {
+        intent: 'Stored intent',
+        displayName: 'Stored name',
+        timestamp: Date.now(),
+      });
+
+      const events = collect(adapter.adaptEvent({
+        type: 'tool_execution_start',
+        toolCallId: 'call_store_wins',
+        toolName: 'bash',
+        args: {
+          command: 'npm test',
+          _intent: 'Args intent',
+          _displayName: 'Args name',
+        },
+      } as any));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'tool_start',
+        toolUseId: 'call_store_wins',
+        intent: 'Stored intent',
+        displayName: 'Stored name',
+      });
+    });
+
+    it('should use canonical metadata from event payload', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+
+      const events = collect(adapter.adaptEvent({
+        type: 'tool_execution_start',
+        toolCallId: 'call_canonical',
+        toolName: 'bash',
+        args: { command: 'npm test' },
+        toolMetadata: {
+          intent: 'Canonical intent',
+          displayName: 'Canonical name',
+          source: 'interceptor',
+        },
+      } as any));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'tool_start',
+        toolUseId: 'call_canonical',
+        intent: 'Canonical intent',
+        displayName: 'Canonical name',
+      });
+    });
+
+    it('should prefer canonical metadata over store and args', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+
+      toolMetadataStore.set('call_canonical_wins', {
+        intent: 'Stored intent',
+        displayName: 'Stored name',
+        timestamp: Date.now(),
+      });
+
+      const events = collect(adapter.adaptEvent({
+        type: 'tool_execution_start',
+        toolCallId: 'call_canonical_wins',
+        toolName: 'bash',
+        args: {
+          command: 'npm test',
+          _intent: 'Args intent',
+          _displayName: 'Args name',
+        },
+        toolMetadata: {
+          intent: 'Canonical intent',
+          displayName: 'Canonical name',
+          source: 'interceptor',
+        },
+      } as any));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'tool_start',
+        toolUseId: 'call_canonical_wins',
+        intent: 'Canonical intent',
+        displayName: 'Canonical name',
+      });
+    });
+
     it('should resolve Pi lowercase tool names to PascalCase', () => {
       collect(adapter.adaptEvent({ type: 'turn_start' } as any));
 

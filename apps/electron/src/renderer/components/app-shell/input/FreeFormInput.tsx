@@ -68,7 +68,7 @@ import { PERMISSION_MODE_ORDER } from '@craft-agent/shared/agent/modes'
 import { type ThinkingLevel, CLAUDE_EFFORT_LEVELS, GPT_EFFORT_LEVELS, getThinkingLevelName, normalizeThinkingLevel, DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { hasOpenOverlay } from '@/lib/overlay-detection'
-import { EscapeInterruptOverlay } from './EscapeInterruptOverlay'
+import { ToolbarStatusSlot } from './ToolbarStatusSlot'
 
 /**
  * Format token count for display (e.g., 1500 -> "1.5k", 200000 -> "200k")
@@ -387,11 +387,17 @@ export function FreeFormInput({
     return extractWorkspaceSlugFromPath(workspaceRootPath, workspaceId ?? '')
   }, [workspaceRootPath, workspaceId])
 
+  // Read panel focus state from context (for multi-panel unfocused styling)
+  const appShellContext = useOptionalAppShellContext()
+  const isFocusedPanel = appShellContext?.isFocusedPanel ?? true
+
   // Shuffle placeholder order once per mount so each session feels fresh
+  // Hide placeholder entirely when panel is unfocused in multi-panel layout
   const shuffledPlaceholder = React.useMemo(
     () => Array.isArray(placeholder) ? shuffleArray(placeholder) : placeholder,
     [] // eslint-disable-line react-hooks/exhaustive-deps -- intentionally shuffle only on mount
   )
+  const effectivePlaceholder = isFocusedPanel ? shuffledPlaceholder : ''
 
   // Performance optimization: Always use internal state for typing to avoid parent re-renders
   // Sync FROM parent on mount/change (for restoring drafts)
@@ -1127,20 +1133,6 @@ export function FreeFormInput({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Shift+Tab cycles through enabled permission modes
-    if (e.key === 'Tab' && e.shiftKey) {
-      e.preventDefault()
-      e.stopPropagation()
-      // Use enabled modes or fallback to all modes
-      const modes = enabledModes.length >= 2 ? enabledModes : PERMISSION_MODE_ORDER
-      const currentIndex = modes.indexOf(permissionMode)
-      // If current mode not in enabled list, jump to first enabled mode
-      const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % modes.length
-      const nextMode = modes[nextIndex]
-      onPermissionModeChange?.(nextMode)
-      return
-    }
-
     // Don't submit when mention menu is open AND has visible content
     if (inlineMention.isOpen) {
       // Only intercept navigation/selection keys if menu actually shows items or is loading
@@ -1430,7 +1422,7 @@ export function FreeFormInput({
             setIsFocused(false)
             onFocusChange?.(false)
           }}
-          placeholder={shuffledPlaceholder}
+          placeholder={effectivePlaceholder}
           disabled={disabled}
           skills={skills}
           sources={sources}
@@ -1442,10 +1434,13 @@ export function FreeFormInput({
         />
         )}
 
-        {/* Bottom Row: Controls - wrapped in relative container for escape overlay */}
+        {/* Bottom Row: Controls - wrapped in relative container for status slot overlay */}
         <div className="relative">
-          {/* Escape interrupt overlay - shown on first Esc press during processing */}
-          <EscapeInterruptOverlay isVisible={isProcessing && showEscapeOverlay} />
+          {/* Status slot overlay - escape interrupt (highest priority), browser status, etc. */}
+          <ToolbarStatusSlot
+            showEscapeOverlay={isProcessing && showEscapeOverlay}
+            sessionId={sessionId}
+          />
 
           <div className={cn("flex items-center gap-1 px-2 py-2", !compactMode && "border-t border-border/50")}>
           {/* Left side: Context badges - shrinkable so model + send always stay visible */}

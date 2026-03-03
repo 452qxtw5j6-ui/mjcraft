@@ -11,7 +11,8 @@
  */
 
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { resolve, join } from 'node:path';
 import { expandPath } from './path-processor.ts';
 
 // ============================================================
@@ -25,6 +26,8 @@ export interface PrerequisiteRule {
   resolveRequiredPath: (toolName: string, workspaceRootPath: string) => string | null;
   /** Block message template. {filePath} is replaced with the required path. */
   blockMessage: string;
+  /** If true, always block until file is read (no graceful fallback). */
+  strict?: boolean;
 }
 
 export interface PrerequisiteCheckResult {
@@ -43,6 +46,9 @@ export interface PrerequisiteManagerConfig {
 
 /** Slugs that are exempt from prerequisite checks (internal sources) */
 const EXEMPT_SLUGS = new Set(['session', 'craft-agents-docs']);
+
+/** Global browser tools docs path required before browser tool usage. */
+const BROWSER_TOOLS_DOC_PATH = resolve(join(homedir(), '.craft-agent', 'docs', 'browser-tools.md'));
 
 // ============================================================
 // Rules
@@ -86,6 +92,19 @@ const RULES: PrerequisiteRule[] = [
     },
     blockMessage:
       'You must read the source guide before using this tool. Please read the file at {filePath} first, then retry.',
+  },
+
+  // Browser tools and command wrapper: require browser-tools.md first
+  {
+    toolMatcher: (toolName: string) => {
+      return toolName.startsWith('browser_') || toolName.startsWith('mcp__session__browser_');
+    },
+    resolveRequiredPath: () => {
+      return existsSync(BROWSER_TOOLS_DOC_PATH) ? BROWSER_TOOLS_DOC_PATH : null;
+    },
+    blockMessage:
+      'You must read the browser tools guide before using browser automation. Please read the file at {filePath} first, then retry.',
+    strict: true,
   },
 ];
 
@@ -141,8 +160,14 @@ export class PrerequisiteManager {
         const count = (this.rejectionCounts.get(requiredPath) ?? 0) + 1;
         this.rejectionCounts.set(requiredPath, count);
 
+        const blockReason = rule.blockMessage.replace('{filePath}', requiredPath);
+
+        if (rule.strict) {
+          this.onDebug?.(`Prerequisite blocked (strict): ${toolName} requires ${requiredPath}`);
+          return { allowed: false, blockReason };
+        }
+
         if (count <= PrerequisiteManager.MAX_REJECTIONS) {
-          const blockReason = rule.blockMessage.replace('{filePath}', requiredPath);
           this.onDebug?.(`Prerequisite blocked (${count}/${PrerequisiteManager.MAX_REJECTIONS}): ${toolName} requires ${requiredPath}`);
           return { allowed: false, blockReason };
         }

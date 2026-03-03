@@ -393,7 +393,7 @@ export function UserMessageBubble({
                   </div>
                 ) : (
                   /* DOCUMENT: Bubble with thumbnail/icon + 2-line text */
-                  <div className="flex items-center gap-2.5 rounded-[8px] bg-foreground/5 pl-1.5 pr-3 py-1.5">
+                  <div className="flex items-center gap-2.5 rounded-[8px] bg-user-message-bubble pl-1.5 pr-3 py-1.5">
                     <div className="h-11 w-8 rounded-[6px] overflow-hidden bg-background shadow-minimal flex items-center justify-center shrink-0">
                       {hasThumbnail ? (
                         <img
@@ -434,7 +434,7 @@ export function UserMessageBubble({
       {/* Text content bubble */}
       <div
         className={cn(
-          "max-w-[80%] bg-foreground/5 rounded-[16px] break-words min-w-0 select-text [&_p]:m-0",
+          "max-w-[80%] bg-user-message-bubble rounded-[16px] break-words min-w-0 select-text [&_p]:m-0",
           compactMode ? "px-4 py-2" : "px-5 py-3.5",
           isPending && "animate-shimmer"
         )}

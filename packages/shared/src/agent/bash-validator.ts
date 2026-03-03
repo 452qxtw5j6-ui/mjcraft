@@ -133,6 +133,29 @@ const DANGEROUS_COMMAND_ARGS: Record<string, Set<string>> = {
   find: new Set(['-exec', '-execdir', '-ok', '-okdir', '-delete']),
 };
 
+const AWK_COMMANDS = new Set(['awk', 'gawk', 'mawk', 'nawk']);
+
+function getDangerousAwkReason(commandParts: string[]): string | null {
+  // commandParts[0] is awk/gawk/mawk/nawk - inspect script/args only
+  const scriptText = commandParts.slice(1).join(' ');
+
+  if (/\bsystem\s*\(/i.test(scriptText)) {
+    return 'awk system() executes arbitrary shell commands';
+  }
+
+  // command | getline executes an external command and reads from it
+  if (/\|\s*getline\b/i.test(scriptText)) {
+    return 'awk command pipes to getline execute external commands';
+  }
+
+  // print ... | "cmd" (or with quoted command forms) executes external commands
+  if (/\bprint\b[^\n]*\|\s*["'`]/i.test(scriptText)) {
+    return 'awk print-to-command pipes execute external commands';
+  }
+
+  return null;
+}
+
 // ============================================================
 // Validation Logic
 // ============================================================
@@ -318,14 +341,16 @@ function validateCommand(
   // e.g., `find -exec touch file \;` — the `-exec` flag runs arbitrary commands.
   // These are program-level features invisible to the shell AST.
   const cmdName = node.name?.text;
-  if (cmdName && DANGEROUS_COMMAND_ARGS[cmdName]) {
-    const dangerousArgs = DANGEROUS_COMMAND_ARGS[cmdName];
-    for (const part of commandParts) {
-      if (dangerousArgs.has(part)) {
+  if (cmdName) {
+    const normalizedCmd = cmdName.toLowerCase();
+
+    if (AWK_COMMANDS.has(normalizedCmd)) {
+      const awkReason = getDangerousAwkReason(commandParts);
+      if (awkReason) {
         const subResult: SubcommandResult = {
           command: commandParts.join(' '),
           allowed: false,
-          reason: `Argument "${part}" executes subcommands or performs writes`,
+          reason: awkReason,
         };
         results.push(subResult);
         return {
@@ -333,9 +358,31 @@ function validateCommand(
           reason: {
             type: 'unsafe_command',
             command: commandParts.join(' '),
-            explanation: `"${part}" allows arbitrary command execution or file modification within "${cmdName}"`,
+            explanation: awkReason,
           },
         };
+      }
+    }
+
+    if (DANGEROUS_COMMAND_ARGS[normalizedCmd]) {
+      const dangerousArgs = DANGEROUS_COMMAND_ARGS[normalizedCmd];
+      for (const part of commandParts) {
+        if (dangerousArgs.has(part)) {
+          const subResult: SubcommandResult = {
+            command: commandParts.join(' '),
+            allowed: false,
+            reason: `Argument "${part}" executes subcommands or performs writes`,
+          };
+          results.push(subResult);
+          return {
+            allowed: false,
+            reason: {
+              type: 'unsafe_command',
+              command: commandParts.join(' '),
+              explanation: `"${part}" allows arbitrary command execution or file modification within "${normalizedCmd}"`,
+            },
+          };
+        }
       }
     }
   }

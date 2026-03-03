@@ -136,6 +136,21 @@ export interface AuthResult {
 }
 
 // ============================================================
+// Developer Feedback
+// ============================================================
+
+/**
+ * Freeform feedback from the agent to the development team.
+ * Persisted as individual JSON files for later review/batch-send.
+ */
+export interface DeveloperFeedback {
+  id: string;
+  timestamp: string;
+  sessionId: string;
+  message: string;
+}
+
+// ============================================================
 // Callback Message (IPC)
 // ============================================================
 

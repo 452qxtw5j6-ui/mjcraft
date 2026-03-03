@@ -52,8 +52,10 @@ import { refreshChatGptTokens } from '../auth/chatgpt-oauth.ts';
 // Session-scoped tool callbacks (for SubmitPlan, source auth, etc.)
 import {
   registerSessionScopedToolCallbacks,
+  mergeSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
   setLastPlanFilePath,
+  getSessionScopedToolCallbacks,
 } from './session-scoped-tools.ts';
 
 // Session tool proxy definitions (for registering with subprocess)
@@ -61,10 +63,12 @@ import { getSessionToolProxyDefs, SESSION_TOOL_NAMES } from './backend/pi/sessio
 
 // Session tool registry (for executing proxy tool calls)
 import {
+  SESSION_BACKEND_TOOL_NAMES,
   SESSION_TOOL_REGISTRY,
   type ToolResult as SessionToolResult,
 } from '@craft-agent/session-tools-core';
 import { createClaudeContext, type SessionToolContext } from './claude-context.ts';
+import { getPermissionModeDiagnostics } from './mode-manager.ts';
 
 // call_llm pre-execution pipeline
 
@@ -76,7 +80,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 
 // Session storage (plans folder path)
-import { getSessionPlansPath } from '../sessions/storage.ts';
+import { getSessionPath, getSessionPlansPath } from '../sessions/storage.ts';
 
 // Error typing
 import { parseError, type AgentError } from './errors.ts';
@@ -89,10 +93,19 @@ import { extractWorkspaceSlug } from '../utils/workspace.ts';
 
 // LLM tool types
 import { LLM_QUERY_TIMEOUT_MS, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
+import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
+import { saveBinaryResponse } from '../utils/binary-detection.ts';
 
 // ============================================================
 // PiAgent Implementation
 // ============================================================
+
+/** Backend-executed session tools currently supported by PiAgent. */
+export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
+  'call_llm',
+  'spawn_session',
+  'browser_tool',
+]);
 
 /**
  * Backend implementation using the Pi coding agent SDK via subprocess.
@@ -148,6 +161,24 @@ export class PiAgent extends BaseAgent {
     reject: (error: Error) => void;
   }> = new Map();
 
+  // Pending ensure_session_ready requests (branch preflight handshake)
+  private pendingEnsureSessionReady: Map<string, {
+    resolve: (sessionId: string | null) => void;
+    reject: (error: Error) => void;
+  }> = new Map();
+
+  // Pending compact requests (manual compaction RPC)
+  private pendingCompactions: Map<string, {
+    resolve: (result: { summary: string; firstKeptEntryId: string; tokensBefore: number } | null) => void;
+    reject: (error: Error) => void;
+  }> = new Map();
+
+  // Pending auto-compaction toggle requests
+  private pendingAutoCompactionToggles: Map<string, {
+    resolve: (enabled: boolean) => void;
+    reject: (error: Error) => void;
+  }> = new Map();
+
   // Current user message (for context in summarization)
   private currentUserMessage: string = '';
 
@@ -182,6 +213,8 @@ export class PiAgent extends BaseAgent {
     const modelDef = getModelById(resolvedModel);
     super(config, resolvedModel, modelDef?.contextWindow);
 
+    this._supportsBranching = true;
+
     this.piSessionId = config.session?.sdkSessionId || null;
     this.adapter = new PiEventAdapter();
     if (modelDef?.contextWindow) {
@@ -198,6 +231,22 @@ export class PiAgent extends BaseAgent {
 
     if (!config.isHeadless) {
       this.startConfigWatcher();
+    }
+  }
+
+  /**
+   * Guardrail: ensure every backend-mode session tool from core is implemented here.
+   * This fails fast in development/CI instead of surfacing as runtime "Unknown session tool".
+   */
+  private assertBackendSessionToolParity(): void {
+    const missing = [...SESSION_BACKEND_TOOL_NAMES].filter(
+      (name) => !PI_BACKEND_SESSION_TOOL_NAMES.has(name),
+    );
+
+    if (missing.length > 0) {
+      throw new Error(
+        `PiAgent missing backend session tool implementations: ${missing.join(', ')}`,
+      );
     }
   }
 
@@ -337,15 +386,28 @@ export class PiAgent extends BaseAgent {
       authType: this.config.authType,
       workspaceId: this.config.workspace.id,
       piAuth,
+      // Branch params for Pi SDK session fork
+      branchFromSdkSessionId: this.config.session?.branchFromSdkSessionId,
+      branchFromSessionPath: this.config.session?.branchFromSessionPath,
     });
 
     // Wait for subprocess to report ready
     await this.subprocessReady;
     this.debug('Pi subprocess is ready');
 
+    // Ensure auto-compaction is explicitly enabled for embedded sessions.
+    // PI defaults this to enabled, but we set it proactively for clarity and resilience.
+    try {
+      const enabled = await this.requestSetAutoCompaction(true);
+      this.debug(`PI auto-compaction enabled: ${enabled}`);
+    } catch (error) {
+      this.debug(`Failed to configure PI auto-compaction (continuing): ${error instanceof Error ? error.message : String(error)}`);
+    }
+
     // Register session-scoped tools as proxy tools in the subprocess.
     // These tools (SubmitPlan, config_validate, source auth, call_llm, etc.)
     // are executed in the main process when the LLM calls them.
+    this.assertBackendSessionToolParity();
     const sessionToolDefs = getSessionToolProxyDefs();
 
     // Patch call_llm description with provider-specific model hint
@@ -618,6 +680,21 @@ export class PiAgent extends BaseAgent {
         this.handleMiniCompletionResult(msg);
         break;
 
+      case 'ensure_session_ready_result':
+        // Response to an ensure_session_ready request
+        this.handleEnsureSessionReadyResult(msg);
+        break;
+
+      case 'compact_result':
+        // Response to a compact request
+        this.handleCompactResult(msg);
+        break;
+
+      case 'set_auto_compaction_result':
+        // Response to an auto-compaction toggle request
+        this.handleSetAutoCompactionResult(msg);
+        break;
+
       case 'session_id_update':
         // Pi session ID changed
         if (msg.sessionId) {
@@ -649,6 +726,20 @@ export class PiAgent extends BaseAgent {
         for (const [id, pending] of this.pendingMiniCompletions) {
           pending.reject(new Error(String(msg.message)));
           this.pendingMiniCompletions.delete(id);
+        }
+        // Reject pending ensure_session_ready requests (used by branch preflight)
+        for (const [id, pending] of this.pendingEnsureSessionReady) {
+          pending.reject(new Error(String(msg.message)));
+          this.pendingEnsureSessionReady.delete(id);
+        }
+        // Reject pending compact/toggle requests
+        for (const [id, pending] of this.pendingCompactions) {
+          pending.reject(new Error(String(msg.message)));
+          this.pendingCompactions.delete(id);
+        }
+        for (const [id, pending] of this.pendingAutoCompactionToggles) {
+          pending.reject(new Error(String(msg.message)));
+          this.pendingAutoCompactionToggles.delete(id);
         }
         this.eventQueue.enqueue({
           type: 'error',
@@ -747,6 +838,7 @@ export class PiAgent extends BaseAgent {
     const checkResult = runPreToolUseChecks({
       toolName,
       input,
+      sessionId,
       permissionMode: this.permissionManager.getPermissionMode(),
       workspaceRootPath: this.workingDirectory,
       workspaceId: workspaceSlug,
@@ -769,9 +861,20 @@ export class PiAgent extends BaseAgent {
         this.send({ type: 'pre_tool_use_response', requestId, action: 'modify', input: checkResult.input });
         return;
 
-      case 'block':
+      case 'block': {
+        const diagnostics = getPermissionModeDiagnostics(sessionId);
+        this.debug(`__PERMISSION_BLOCK__${JSON.stringify({
+          sessionId,
+          toolName,
+          effectiveMode: diagnostics.permissionMode,
+          modeVersion: diagnostics.modeVersion,
+          changedBy: diagnostics.lastChangedBy,
+          changedAt: diagnostics.lastChangedAt,
+          reason: checkResult.reason,
+        })}`);
         this.send({ type: 'pre_tool_use_response', requestId, action: 'block', reason: checkResult.reason });
         return;
+      }
 
       case 'source_activation_needed': {
         const { sourceSlug, sourceExists } = checkResult;
@@ -806,6 +909,7 @@ export class PiAgent extends BaseAgent {
         const postResult = runPreToolUseChecks({
           toolName,
           input,
+          sessionId,
           permissionMode: this.permissionManager.getPermissionMode(),
           workspaceRootPath: this.workingDirectory,
           workspaceId: workspaceSlug,
@@ -865,6 +969,13 @@ export class PiAgent extends BaseAgent {
           command: checkResult.command,
           description: checkResult.description,
           type: checkResult.promptType,
+          appName: checkResult.appName,
+          reason: checkResult.reason,
+          impact: checkResult.impact,
+          requiresSystemPrompt: checkResult.requiresSystemPrompt,
+          rememberForMinutes: checkResult.rememberForMinutes,
+          commandHash: checkResult.commandHash,
+          approvalTtlSeconds: checkResult.approvalTtlSeconds,
         });
 
         const allowed = await permissionPromise;
@@ -1043,9 +1154,61 @@ export class PiAgent extends BaseAgent {
         }
       }
 
+      // browser_tool — single CLI-like tool for all browser actions
+      if (toolName === 'browser_tool') {
+        const callbacks = getSessionScopedToolCallbacks(this._sessionId);
+        const browserFns = callbacks?.browserPaneFns;
+        if (!browserFns) {
+          return { content: 'Browser window controls are not available. This tool requires the desktop app.', isError: true };
+        }
+
+        try {
+          const result = await executeBrowserToolCommand({
+            command: (args.command as string | string[]) ?? '',
+            fns: browserFns,
+            sessionId: this._sessionId,
+          });
+
+          let content = result.output;
+          if (result.image) {
+            const sessionPath = getSessionPath(this.config.workspace.rootPath, this._sessionId);
+            const imageBuffer = Buffer.from(result.image.data, 'base64');
+            const ext = result.image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+            const saved = saveBinaryResponse(sessionPath, `browser-screenshot.${ext}`, imageBuffer, result.image.mimeType);
+
+            if (saved.type === 'file_download') {
+              content += [
+                '',
+                `Saved screenshot: ${saved.path}`,
+                '',
+                '```image-preview',
+                JSON.stringify({
+                  src: saved.path,
+                  title: 'Browser Screenshot',
+                }, null, 2),
+                '```',
+              ].join('\n');
+            } else {
+              content += `\n\n[Screenshot captured (${Math.round(result.image.sizeBytes / 1024)}KB ${result.image.mimeType}) but failed to save: ${saved.error}]`;
+            }
+          }
+
+          return { content, isError: false };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return { content: msg, isError: true };
+        }
+      }
+
       const def = SESSION_TOOL_REGISTRY.get(toolName);
-      if (!def?.handler) {
+      if (!def) {
         return { content: `Unknown session tool: ${toolName}`, isError: true };
+      }
+      if (!def.handler) {
+        return {
+          content: `Session tool '${toolName}' is backend-executed (${def.executionMode}) but has no PiAgent adapter implementation.`,
+          isError: true,
+        };
       }
 
       const ctx = this.getSessionToolContext();
@@ -1093,6 +1256,69 @@ export class PiAgent extends BaseAgent {
   }
 
   /**
+   * Handle ensure_session_ready_result from subprocess.
+   */
+  private handleEnsureSessionReadyResult(msg: Record<string, unknown>): void {
+    const id = msg.id as string;
+    const sessionId = (msg.sessionId as string | null) ?? null;
+    const pending = this.pendingEnsureSessionReady.get(id);
+    if (!pending) return;
+
+    this.pendingEnsureSessionReady.delete(id);
+    if (sessionId && this.piSessionId !== sessionId) {
+      this.piSessionId = sessionId;
+      this.config.onSdkSessionIdUpdate?.(sessionId);
+    }
+    pending.resolve(sessionId);
+  }
+
+  /**
+   * Handle compact_result from subprocess.
+   */
+  private handleCompactResult(msg: Record<string, unknown>): void {
+    const id = msg.id as string;
+    const success = Boolean(msg.success);
+    const pending = this.pendingCompactions.get(id);
+    if (!pending) return;
+
+    this.pendingCompactions.delete(id);
+    if (!success) {
+      pending.reject(new Error(String(msg.errorMessage || 'Compaction failed')));
+      return;
+    }
+
+    const raw = msg.result as Record<string, unknown> | undefined;
+    if (!raw) {
+      pending.resolve(null);
+      return;
+    }
+
+    pending.resolve({
+      summary: String(raw.summary || ''),
+      firstKeptEntryId: String(raw.firstKeptEntryId || ''),
+      tokensBefore: Number(raw.tokensBefore || 0),
+    });
+  }
+
+  /**
+   * Handle set_auto_compaction_result from subprocess.
+   */
+  private handleSetAutoCompactionResult(msg: Record<string, unknown>): void {
+    const id = msg.id as string;
+    const success = Boolean(msg.success);
+    const pending = this.pendingAutoCompactionToggles.get(id);
+    if (!pending) return;
+
+    this.pendingAutoCompactionToggles.delete(id);
+    if (!success) {
+      pending.reject(new Error(String(msg.errorMessage || 'Failed to set auto-compaction')));
+      return;
+    }
+
+    pending.resolve(Boolean(msg.enabled));
+  }
+
+  /**
    * Handle subprocess exit.
    */
   private handleSubprocessExit(code: number | null, signal: string | null): void {
@@ -1121,11 +1347,144 @@ export class PiAgent extends BaseAgent {
     }
     this.pendingMiniCompletions.clear();
 
+    // Reject pending ensure_session_ready requests
+    for (const [, pending] of this.pendingEnsureSessionReady) {
+      pending.reject(new Error(`Pi subprocess exited unexpectedly (${exitReason})`));
+    }
+    this.pendingEnsureSessionReady.clear();
+
+    // Reject pending compact/toggle requests
+    for (const [, pending] of this.pendingCompactions) {
+      pending.reject(new Error(`Pi subprocess exited unexpectedly (${exitReason})`));
+    }
+    this.pendingCompactions.clear();
+
+    for (const [, pending] of this.pendingAutoCompactionToggles) {
+      pending.reject(new Error(`Pi subprocess exited unexpectedly (${exitReason})`));
+    }
+    this.pendingAutoCompactionToggles.clear();
+
     // Reject all pending tool executions
     for (const [, pending] of this.pendingToolExecutions) {
       pending.reject(new Error('Pi subprocess exited'));
     }
     this.pendingToolExecutions.clear();
+  }
+
+  /**
+   * Ask subprocess to create/verify the primary session (without sending a prompt)
+   * and return the active Pi session ID.
+   */
+  private async requestEnsureSessionReady(): Promise<string | null> {
+    await this.ensureSubprocess();
+
+    const id = `ensure-ready-${++this.rpcIdCounter}`;
+    const timeoutMs = 15_000;
+
+    return new Promise<string | null>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingEnsureSessionReady.delete(id);
+        reject(new Error(`ensure_session_ready timed out after ${Math.floor(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+
+      this.pendingEnsureSessionReady.set(id, {
+        resolve: (sessionId) => {
+          clearTimeout(timer);
+          resolve(sessionId);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+
+      this.send({ type: 'ensure_session_ready', id });
+    });
+  }
+
+  /**
+   * Ask subprocess to compact the active session context.
+   */
+  private async requestCompact(customInstructions?: string): Promise<{ summary: string; firstKeptEntryId: string; tokensBefore: number } | null> {
+    await this.ensureSubprocess();
+
+    const id = `compact-${++this.rpcIdCounter}`;
+    const timeoutMs = 60_000;
+
+    return new Promise<{ summary: string; firstKeptEntryId: string; tokensBefore: number } | null>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCompactions.delete(id);
+        reject(new Error(`compact timed out after ${Math.floor(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+
+      this.pendingCompactions.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+
+      this.send({ type: 'compact', id, customInstructions });
+    });
+  }
+
+  /**
+   * Ask subprocess to enable/disable auto-compaction.
+   */
+  private async requestSetAutoCompaction(enabled: boolean): Promise<boolean> {
+    await this.ensureSubprocess();
+
+    const id = `set-auto-compaction-${++this.rpcIdCounter}`;
+    const timeoutMs = 15_000;
+
+    return new Promise<boolean>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAutoCompactionToggles.delete(id);
+        reject(new Error(`set_auto_compaction timed out after ${Math.floor(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+
+      this.pendingAutoCompactionToggles.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+
+      this.send({ type: 'set_auto_compaction', id, enabled });
+    });
+  }
+
+  /**
+   * Ensure branched Pi sessions are backend-ready before first user message.
+   * Called by SessionManager during branch creation to avoid creating
+   * transcript-only branches without real Pi session context.
+   */
+  override async ensureBranchReady(): Promise<void> {
+    const isBranchedSession = !!this.config.session?.branchFromMessageId;
+    if (!isBranchedSession) return;
+
+    // Branched sessions must include parent session path metadata for Pi forking.
+    if (!this.config.session?.branchFromSessionPath) {
+      throw new Error('Pi branch preflight failed: missing branchFromSessionPath metadata');
+    }
+
+    const sessionId = await this.requestEnsureSessionReady();
+    if (!sessionId) {
+      throw new Error('Pi branch preflight failed: subprocess did not provide a session ID');
+    }
+
+    if (this.piSessionId !== sessionId) {
+      this.piSessionId = sessionId;
+      this.config.onSdkSessionIdUpdate?.(sessionId);
+    }
   }
 
   // ============================================================
@@ -1151,10 +1510,12 @@ export class PiAgent extends BaseAgent {
       prompt: message,
     });
 
-    // Register session-scoped tool callbacks (for SubmitPlan, source auth, etc.)
+    // Refresh session-scoped tool callbacks (for SubmitPlan, source auth, etc.)
+    // IMPORTANT: merge (don't replace) so SessionManager-provided browserPaneFns
+    // survives across turns.
     const sessionId = this.config.session?.id;
     if (sessionId) {
-      registerSessionScopedToolCallbacks(sessionId, {
+      mergeSessionScopedToolCallbacks(sessionId, {
         onPlanSubmitted: (planPath) => this.onPlanSubmitted?.(planPath),
         onAuthRequest: (request) => this.onAuthRequest?.(request),
         queryFn: (request) => this.queryLlm(request),
@@ -1188,6 +1549,23 @@ export class PiAgent extends BaseAgent {
         } else {
           throw subprocessError;
         }
+      }
+
+      const trimmedMessage = message.trim();
+      const compactMatch = trimmedMessage.match(/^\/compact(?:\s+([\s\S]+))?$/i);
+      if (compactMatch) {
+        const customInstructions = compactMatch[1]?.trim() || undefined;
+        const compactResult = await this.requestCompact(customInstructions);
+        if (compactResult) {
+          yield {
+            type: 'info',
+            message: `Compacted context to fit within limits (from ~${compactResult.tokensBefore.toLocaleString()} tokens)`,
+          };
+        } else {
+          yield { type: 'info', message: 'Compacted context to fit within limits' };
+        }
+        yield { type: 'complete' };
+        return;
       }
 
       // Build system prompt

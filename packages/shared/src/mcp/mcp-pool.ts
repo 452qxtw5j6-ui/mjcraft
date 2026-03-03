@@ -20,6 +20,11 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { isLocalMcpEnabled } from '../workspaces/storage.ts';
 import { guardLargeResult } from '../utils/large-response.ts';
+import {
+  saveBinaryResponse,
+  detectExtensionFromMagic,
+  sanitizeFilename,
+} from '../utils/binary-detection.ts';
 
 /**
  * Configuration for an in-process API source server.
@@ -337,17 +342,44 @@ export class McpClientPool {
 
     try {
       const result = await client.callTool(originalName, args) as {
-        content?: Array<{ type: string; text?: string }>;
+        content?: Array<{ type: string; text?: unknown; data?: string; mimeType?: string }>;
         isError?: boolean;
       };
 
-      // Extract text from MCP result
-      const textParts = (result.content || [])
-        .filter((c: { type: string }) => c.type === 'text')
-        .map((c: { text?: string }) => c.text || '');
-      const text = textParts.join('\n') || JSON.stringify(result);
+      const contentBlocks = result.content || [];
+      const parts: string[] = [];
 
-      // Handle large results — save + summarize before returning
+      // 1. Process each content block — handle text, image, audio
+      for (const block of contentBlocks) {
+        if (block.type === 'text') {
+          // Handle non-string text fields (e.g., objects from non-conforming servers)
+          if (typeof block.text === 'string') {
+            parts.push(block.text);
+          } else if (block.text !== undefined && block.text !== null) {
+            parts.push(JSON.stringify(block.text, null, 2));
+          }
+        } else if ((block.type === 'image' || block.type === 'audio') && block.data && this.sessionPath) {
+          // Decode base64 binary content and save to downloads/
+          try {
+            const buffer = Buffer.from(block.data, 'base64');
+            const ext = detectExtensionFromMagic(buffer) || '.bin';
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const safeName = sanitizeFilename(proxyName);
+            const filename = `${safeName}_${timestamp}${ext}`;
+            const saved = saveBinaryResponse(this.sessionPath, filename, buffer, block.mimeType ?? null);
+            if (saved.type === 'file_download') {
+              parts.push(`[${block.type.charAt(0).toUpperCase() + block.type.slice(1)} saved: ${saved.path} (${saved.sizeHuman})]`);
+            }
+          } catch {
+            // Base64 decode failed — skip this block
+          }
+        }
+      }
+
+      // 2. Combine parts (fallback to JSON.stringify if no content extracted)
+      const text = parts.join('\n') || JSON.stringify(result);
+
+      // 3. Centralized binary + large response handling
       if (!result.isError && this.sessionPath) {
         const guarded = await guardLargeResult(text, {
           sessionPath: this.sessionPath,
