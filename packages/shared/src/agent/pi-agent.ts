@@ -104,6 +104,8 @@ import { saveBinaryResponse } from '../utils/binary-detection.ts';
 export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
+  'send_to_session',
+  'list_sessions',
   'browser_tool',
 ]);
 
