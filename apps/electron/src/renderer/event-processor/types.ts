@@ -311,6 +311,7 @@ export interface LLMConnectionChangedEvent {
   sessionId: string
   connectionSlug: string
   supportsBranching?: boolean
+  connectionLocked?: boolean
 }
 
 /**

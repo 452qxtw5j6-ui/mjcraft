@@ -98,9 +98,26 @@ function buildBackendHostRuntimeContext(): BackendHostRuntimeContext {
  * - Pi/Codex family: XHigh
  * - Claude family: High
  */
+function isPiProviderType(providerType: string | undefined): boolean {
+  return providerType === 'pi' || providerType === 'pi_compat'
+}
+
 function getProviderDefaultThinkingLevel(connection: ReturnType<typeof getLlmConnection> | null | undefined): ThinkingLevel {
-  if (connection?.providerType === 'pi') return 'xhigh'
+  if (isPiProviderType(connection?.providerType)) return 'xhigh'
   return 'high'
+}
+
+function normalizeThinkingLevelForProvider(
+  providerType: string | undefined,
+  thinkingLevel: ThinkingLevel,
+): ThinkingLevel {
+  const normalized = normalizeThinkingLevel(thinkingLevel)
+  if (isPiProviderType(providerType)) {
+    return normalized === 'max' ? 'xhigh' : normalized
+  }
+  // Claude/UI policy: official effort levels are low/medium/high.
+  // Legacy xhigh/max values are coerced to high for non-Pi providers.
+  return normalized === 'xhigh' || normalized === 'max' ? 'high' : normalized
 }
 
 /**
@@ -112,9 +129,10 @@ function resolveDefaultThinkingLevel(
   configuredDefault: ThinkingLevel,
   connection: ReturnType<typeof getLlmConnection> | null | undefined,
 ): ThinkingLevel {
-  return normalizeThinkingLevel(configuredDefault) === 'medium'
+  const preferred = normalizeThinkingLevel(configuredDefault) === 'medium'
     ? getProviderDefaultThinkingLevel(connection)
     : configuredDefault
+  return normalizeThinkingLevelForProvider(connection?.providerType, preferred)
 }
 
 const SUBAGENT_RUNS_LOG_FILE = 'subagent-runs.jsonl'
@@ -123,11 +141,7 @@ function resolveProviderReasoningLevel(
   providerType: string | undefined,
   thinkingLevel: ThinkingLevel,
 ): string {
-  const normalized = normalizeThinkingLevel(thinkingLevel)
-  // Pi/OpenAI family supports xhigh; map Claude's max -> xhigh for apples-to-apples logs.
-  if (providerType === 'pi') return normalized === 'max' ? 'xhigh' : normalized
-  // Claude family supports max; map GPT xhigh -> max for comparable effort level.
-  return normalized === 'xhigh' ? 'max' : normalized
+  return normalizeThinkingLevelForProvider(providerType, thinkingLevel)
 }
 
 function parseSubagentUsage(result: string | undefined): {
@@ -2398,6 +2412,7 @@ export class SessionManager {
           sessionId: managed.id,
           connectionSlug: connection.slug,
           supportsBranching: resolveSupportsBranching(managed),
+          connectionLocked: true,
         }, managed.workspace.id)
       }
 
@@ -3546,6 +3561,7 @@ export class SessionManager {
       sessionId,
       connectionSlug,
       supportsBranching: resolveSupportsBranching(managed),
+      connectionLocked: managed.connectionLocked,
     }, managed.workspace.id)
   }
 
@@ -5314,15 +5330,25 @@ To view this task's output:
   setSessionThinkingLevel(sessionId: string, level: ThinkingLevel): void {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      const workspaceConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+      const resolvedConnection = resolveSessionConnection(
+        managed.llmConnection,
+        workspaceConfig?.defaults?.defaultLlmConnection,
+      )
+      const normalizedLevel = normalizeThinkingLevelForProvider(resolvedConnection?.providerType, level)
+
       // Update thinking level in managed session
-      managed.thinkingLevel = level
+      managed.thinkingLevel = normalizedLevel
 
       // Update the agent's thinking level if it exists
       if (managed.agent) {
-        managed.agent.setThinkingLevel(level)
+        managed.agent.setThinkingLevel(normalizedLevel)
       }
 
-      sessionLog.info(`Session ${sessionId}: thinking level set to ${level}`)
+      sessionLog.info(
+        `Session ${sessionId}: thinking level set to ${normalizedLevel}` +
+        (normalizedLevel !== level ? ` (requested: ${level})` : ''),
+      )
       // Persist to disk
       this.persistSession(managed)
     }
