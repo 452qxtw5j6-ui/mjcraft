@@ -1325,6 +1325,24 @@ function backfillAllConnectionModels(config: StoredConfig): boolean {
       }
     }
 
+    // Remove duplicate model IDs while preserving order.
+    // This heals historical migrations that could leave duplicate entries
+    // with the same canonical ID (e.g., Opus 4.6 shown twice).
+    if (connection.models && connection.models.length > 1) {
+      const deduped: typeof connection.models = [];
+      const seen = new Set<string>();
+      for (const model of connection.models) {
+        const id = typeof model === 'string' ? model : model.id;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        deduped.push(model);
+      }
+      if (deduped.length !== connection.models.length) {
+        connection.models = deduped;
+        changed = true;
+      }
+    }
+
     if (!connection.defaultModel && defaultModel) {
       connection.defaultModel = defaultModel;
       changed = true;

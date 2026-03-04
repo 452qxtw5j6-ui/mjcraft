@@ -107,6 +107,82 @@ function shuffleArray<T>(array: T[]): T[] {
   return shuffled
 }
 
+type ChatModelEntry = ModelDefinition | string
+
+function getChatModelId(model: ChatModelEntry): string {
+  return typeof model === 'string' ? model : model.id
+}
+
+function getChatModelName(model: ChatModelEntry): string {
+  return typeof model === 'string' ? getModelDisplayName(model) : model.name
+}
+
+function isPiConnection(providerType?: string | null): boolean {
+  return providerType === 'pi' || providerType === 'pi_compat'
+}
+
+function normalizeThinkingLevelForProvider(
+  providerType: string | undefined,
+  level: ThinkingLevel,
+): ThinkingLevel {
+  const normalized = normalizeThinkingLevel(level)
+  if (isPiConnection(providerType)) {
+    return normalized === 'max' ? 'xhigh' : normalized
+  }
+  // Claude/UI policy: official effort levels are low/medium/high.
+  // Legacy xhigh/max values are shown as high for non-Pi providers.
+  return normalized === 'xhigh' || normalized === 'max' ? 'high' : normalized
+}
+
+function getVisibleChatModels(
+  models: ChatModelEntry[],
+  providerType: string | undefined,
+  defaultModel?: string | null,
+): ChatModelEntry[] {
+  if (models.length === 0) return models
+
+  const uniqueById: ChatModelEntry[] = []
+  const seenIds = new Set<string>()
+  for (const model of models) {
+    const id = getChatModelId(model)
+    if (!id || seenIds.has(id)) continue
+    seenIds.add(id)
+    uniqueById.push(model)
+  }
+
+  if (isPiConnection(providerType)) {
+    const codex53 = uniqueById.filter((model) => {
+      const lower = getChatModelId(model).toLowerCase()
+      return lower.includes('gpt-5.3-codex') && !lower.includes('spark')
+    })
+    if (codex53.length > 0) return [codex53[0]]
+
+    if (defaultModel) {
+      const fallback = uniqueById.find((model) => getChatModelId(model) === defaultModel)
+      if (fallback) return [fallback]
+    }
+
+    return uniqueById.slice(0, 1)
+  }
+
+  const nonHaiku = uniqueById.filter((model) => {
+    const id = getChatModelId(model).toLowerCase()
+    const name = getChatModelName(model).toLowerCase()
+    return !id.includes('haiku') && !name.includes('haiku')
+  })
+
+  const source = nonHaiku.length > 0 ? nonHaiku : uniqueById
+  const dedupedByName: ChatModelEntry[] = []
+  const seenNames = new Set<string>()
+  for (const model of source) {
+    const key = getChatModelName(model).toLowerCase()
+    if (seenNames.has(key)) continue
+    seenNames.add(key)
+    dedupedByName.push(model)
+  }
+  return dedupedByName
+}
+
 export interface FreeFormInputProps {
   /** Placeholder text(s) for the textarea - can be array for rotation */
   placeholder?: string | string[]
@@ -302,6 +378,14 @@ export function FreeFormInput({
     return llmConnections.find(c => c.slug === effectiveConnection) ?? null
   }, [llmConnections, effectiveConnection])
 
+  const visibleModels = React.useMemo(() => {
+    return getVisibleChatModels(
+      availableModels,
+      effectiveConnectionDetails?.providerType,
+      effectiveConnectionDetails?.defaultModel,
+    )
+  }, [availableModels, effectiveConnectionDetails?.providerType, effectiveConnectionDetails?.defaultModel])
+
   // Disable effort selector when the current model explicitly doesn't support it
   const thinkingDisabled = React.useMemo(() => {
     const model = availableModels.find(m => typeof m !== 'string' && m.id === currentModel)
@@ -313,20 +397,23 @@ export function FreeFormInput({
     if (thinkingDisabled) return []
     const providerType = effectiveConnectionDetails?.providerType
     // Pi(OpenAI/Codex): low/medium/high/xhigh
-    if (providerType === 'pi') return GPT_EFFORT_LEVELS
-    // Anthropic/Claude: low/medium/high/max
+    if (isPiConnection(providerType)) return GPT_EFFORT_LEVELS
+    // Anthropic/Claude: low/medium/high
     return CLAUDE_EFFORT_LEVELS
   }, [thinkingDisabled, effectiveConnectionDetails])
 
   const effortLabel = React.useMemo(() => {
-    return effectiveConnectionDetails?.providerType === 'pi' ? 'Reasoning effort' : 'Effort'
+    return isPiConnection(effectiveConnectionDetails?.providerType) ? 'Reasoning effort' : 'Effort'
   }, [effectiveConnectionDetails])
 
+  const effectiveThinkingLevel = React.useMemo(() => {
+    return normalizeThinkingLevelForProvider(effectiveConnectionDetails?.providerType, thinkingLevel)
+  }, [effectiveConnectionDetails?.providerType, thinkingLevel])
+
   const currentThinkingDisplayName = React.useMemo(() => {
-    const normalized = normalizeThinkingLevel(thinkingLevel)
-    const def = availableThinkingLevels.find((l) => l.id === normalized)
-    return def?.name ?? getThinkingLevelName(thinkingLevel)
-  }, [thinkingLevel, availableThinkingLevels])
+    const def = availableThinkingLevels.find((l) => l.id === effectiveThinkingLevel)
+    return def?.name ?? getThinkingLevelName(effectiveThinkingLevel)
+  }, [effectiveThinkingLevel, availableThinkingLevels])
 
   // Always-visible reasoning/effort indicator next to model name
   const inlineReasoningStatus = React.useMemo(() => {
@@ -1738,7 +1825,11 @@ Model
                           {isAuthenticated && (
                             <StyledDropdownMenuSubContent className="min-w-[220px]">
                               {/* Show models for this connection - use provider-specific models as fallback */}
-                              {(conn.models || ANTHROPIC_MODELS).map((model) => {
+                              {getVisibleChatModels(
+                                conn.models || ANTHROPIC_MODELS,
+                                conn.providerType,
+                                conn.defaultModel,
+                              ).map((model) => {
                                 const modelId = typeof model === 'string' ? model : model.id
                                 const modelName = typeof model === 'string' ? getModelShortName(model) : model.name
                                 const isSelectedModel = isCurrentConnection && currentModel === modelId
@@ -1785,7 +1876,7 @@ Model
                     </>
                   )}
                   {/* Model options based on effective connection's provider type */}
-                  {availableModels.map((model) => {
+                  {visibleModels.map((model) => {
                     const modelId = typeof model === 'string' ? model : model.id
                     const modelName = typeof model === 'string' ? getModelShortName(model) : model.name
                     const isSelected = currentModel === modelId
@@ -1826,7 +1917,7 @@ Model
                     </StyledDropdownMenuSubTrigger>
                     <StyledDropdownMenuSubContent className="min-w-[220px]">
                       {availableThinkingLevels.map(({ id, name, description }) => {
-                        const isSelected = normalizeThinkingLevel(thinkingLevel) === id
+                        const isSelected = effectiveThinkingLevel === id
                         return (
                           <StyledDropdownMenuItem
                             key={id}

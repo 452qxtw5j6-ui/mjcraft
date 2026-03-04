@@ -3,11 +3,11 @@
  *
  * Provider-aligned effort levels:
  * - GPT/Codex reasoning effort: low | medium | high | xhigh
- * - Claude effort: low | medium | high | max
+ * - Claude effort (official slider): low | medium | high
  *
  * Legacy compatibility:
  * - think -> medium
- * - max remains valid (Claude official + internal ultrathink override)
+ * - max remains valid for internal ultrathink override paths
  */
 
 export type ThinkingLevel =
@@ -32,7 +32,7 @@ export const THINKING_LEVELS: readonly ThinkingLevelDefinition[] = [
   { id: 'medium', name: 'Medium', description: 'Balanced effort' },
   { id: 'high', name: 'High', description: 'Thorough reasoning' },
   { id: 'xhigh', name: 'XHigh', description: 'Highest GPT reasoning effort' },
-  { id: 'max', name: 'Max', description: 'Highest Claude effort' },
+  { id: 'max', name: 'Max', description: 'Internal ultrathink override' },
 ] as const;
 
 /** Provider-specific display levels */
@@ -47,7 +47,6 @@ export const CLAUDE_EFFORT_LEVELS: readonly ThinkingLevelDefinition[] = [
   { id: 'low', name: 'Low', description: 'Official Claude effort: low' },
   { id: 'medium', name: 'Medium', description: 'Official Claude effort: medium' },
   { id: 'high', name: 'High', description: 'Official Claude effort: high (default)' },
-  { id: 'max', name: 'Max', description: 'Official Claude effort: max' },
 ] as const;
 
 /** Default thinking level for new sessions when workspace has no default */
