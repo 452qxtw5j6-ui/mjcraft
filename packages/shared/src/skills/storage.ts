@@ -15,7 +15,7 @@ import {
 import { homedir } from 'os';
 import { join } from 'path';
 import matter from 'gray-matter';
-import type { LoadedSkill, SkillMetadata, SkillSource } from './types.ts';
+import type { LoadedSkill, SkillMetadata, SkillPluginType, SkillSource } from './types.ts';
 import { getWorkspaceSkillsPath } from '../workspaces/storage.ts';
 import {
   validateIconValue,
@@ -58,6 +58,36 @@ function normalizeRequiredSources(value: unknown): string[] | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+/**
+ * Normalize optional frontmatter string field.
+ */
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Normalize plugin entry type.
+ */
+function normalizePluginType(value: unknown): SkillPluginType | undefined {
+  if (value === 'command' || value === 'skill') return value;
+  return undefined;
+}
+
+function normalizePluginMetadata(data: Record<string, unknown>): Pick<SkillMetadata, 'plugin' | 'pluginLabel' | 'pluginType' | 'pluginCommand'> {
+  const pluginType = normalizePluginType(data.pluginType);
+  return {
+    plugin: normalizeOptionalString(data.plugin),
+    pluginLabel: normalizeOptionalString(data.pluginLabel),
+    pluginType,
+    // pluginCommand is only valid for command-type entries.
+    pluginCommand: pluginType === 'command'
+      ? normalizeOptionalString(data.pluginCommand)
+      : undefined,
+  };
+}
+
 // ============================================================
 // Parsing
 // ============================================================
@@ -86,6 +116,7 @@ function parseSkillFile(content: string): { metadata: SkillMetadata; body: strin
         alwaysAllow: parsed.data.alwaysAllow as string[] | undefined,
         icon,
         requiredSources: normalizeRequiredSources(parsed.data.requiredSources),
+        ...normalizePluginMetadata(parsed.data as Record<string, unknown>),
       },
       body: parsed.content,
     };

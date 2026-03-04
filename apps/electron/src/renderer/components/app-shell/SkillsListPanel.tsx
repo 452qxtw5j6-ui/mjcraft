@@ -27,9 +27,28 @@ export function SkillsListPanel({
   workspaceRootPath,
   className,
 }: SkillsListPanelProps) {
+  const customSkills = React.useMemo(
+    () => skills.filter(skill => !skill.metadata.plugin),
+    [skills],
+  )
+  const pluginSkills = React.useMemo(
+    () => skills.filter(skill => !!skill.metadata.plugin),
+    [skills],
+  )
+  const groups = React.useMemo(() => {
+    const result: { key: string; label: string; items: LoadedSkill[] }[] = []
+    if (customSkills.length > 0) {
+      result.push({ key: 'custom', label: 'Custom Skills', items: customSkills })
+    }
+    if (pluginSkills.length > 0) {
+      result.push({ key: 'plugin', label: 'Plugin Skills', items: pluginSkills })
+    }
+    return result
+  }, [customSkills, pluginSkills])
+
   return (
     <EntityPanel<LoadedSkill>
-      items={skills}
+      groups={groups}
       getId={(s) => s.slug}
       selection={skillSelection}
       selectedId={selectedSkillSlug}

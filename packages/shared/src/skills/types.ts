@@ -8,6 +8,8 @@
 /**
  * Skill metadata from SKILL.md YAML frontmatter
  */
+export type SkillPluginType = 'command' | 'skill';
+
 export interface SkillMetadata {
   /** Display name for the skill */
   name: string;
@@ -26,6 +28,24 @@ export interface SkillMetadata {
   icon?: string;
   /** Optional source slugs to auto-enable when this skill is invoked */
   requiredSources?: string[];
+  /**
+   * Optional knowledge-work plugin grouping key.
+   * Example: "data", "marketing", "sales".
+   */
+  plugin?: string;
+  /** Optional display name for plugin UI */
+  pluginLabel?: string;
+  /**
+   * Optional plugin entry type for chat UI grouping.
+   * - command: mapped from cowork commands/*.md
+   * - skill: native plugin skill
+   */
+  pluginType?: SkillPluginType;
+  /**
+   * Optional original cowork command slug (when pluginType is "command").
+   * Example: "analyze", "write-query".
+   */
+  pluginCommand?: string;
 }
 
 /** Source of a loaded skill */

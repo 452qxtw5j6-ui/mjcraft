@@ -35,6 +35,7 @@
     "fresh-start:token": "bun run scripts/fresh-start.ts --token-only",
     "print:system-prompt": "bun run packages/shared/src/prompts/print-system-prompt.ts",
     "browser-tool": "bun run scripts/browser-tool.ts",
+    "plugin:import": "bun run scripts/import-knowledge-work-plugin.ts",
     "electron:dist": "bun run electron:build && electron-builder --config electron-builder.yml --project apps/electron",
     "electron:dist:mac": "bun run electron:build && electron-builder --config electron-builder.yml --project apps/electron --mac",
     "electron:dist:win": "bun run electron:build && electron-builder --config electron-builder.yml --project apps/electron --win",
