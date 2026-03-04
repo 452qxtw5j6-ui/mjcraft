@@ -1695,6 +1695,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               disableSend={disableSend || connectionUnavailable}
               connectionUnavailable={connectionUnavailable}
               isEmptySession={session.messages.length === 0}
+              canChangeConnection={session.connectionLocked !== true && !session.messages.some(m => m.role === 'user')}
               currentConnection={session.llmConnection}
               onConnectionChange={onConnectionChange}
               contextStatus={{

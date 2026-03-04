@@ -454,6 +454,7 @@ export function handleConnectionChanged(
         ...session,
         llmConnection: event.connectionSlug,
         ...(event.supportsBranching !== undefined && { supportsBranching: event.supportsBranching }),
+        ...(event.connectionLocked !== undefined && { connectionLocked: event.connectionLocked }),
       },
       streaming,
     },
@@ -870,4 +871,3 @@ export function handleUsageUpdate(
     effects: [],
   }
 }
-

@@ -194,8 +194,10 @@ export interface FreeFormInputProps {
   // Connection selection (hierarchical connection → model selector)
   /** Current LLM connection slug (locked after first message) */
   currentConnection?: string
-  /** Callback when connection changes (only works when session is empty) */
+  /** Callback when connection changes (only when connection is not locked) */
   onConnectionChange?: (connectionSlug: string) => void
+  /** Whether this session can still change LLM connection */
+  canChangeConnection?: boolean
   /** When true, the session's locked connection has been removed */
   connectionUnavailable?: boolean
 }
@@ -250,6 +252,7 @@ export function FreeFormInput({
   compactMode = false,
   currentConnection,
   onConnectionChange,
+  canChangeConnection = isEmptySession,
   connectionUnavailable = false,
 }: FreeFormInputProps) {
   // Read connection default model, connections, and workspace info from context.
@@ -1701,7 +1704,7 @@ Model
                   </div>
                   <Check className="h-3 w-3 text-foreground shrink-0 ml-3" />
                 </StyledDropdownMenuItem>
-              ) : isEmptySession && llmConnections.length > 1 ? (
+              ) : canChangeConnection && llmConnections.length > 1 ? (
                 /* Hierarchical view: Provider → Connection → Models (for new sessions with multiple connections) */
                 connectionsByProvider.map(([providerName, connections], index) => (
                   <React.Fragment key={providerName}>
@@ -1773,7 +1776,7 @@ Model
                 /* Flat model list (single connection or session started) */
                 <>
                   {/* Indicator showing which connection is being used */}
-                  {!isEmptySession && currentConnectionDetails && llmConnections.length > 1 && (
+                  {!canChangeConnection && currentConnectionDetails && llmConnections.length > 1 && (
                     <>
                       <div className="flex items-center gap-2 px-2 py-1.5 text-xs select-none text-muted-foreground">
                         <span>Using {currentConnectionDetails.name}</span>

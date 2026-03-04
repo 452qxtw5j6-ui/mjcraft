@@ -2398,6 +2398,7 @@ export class SessionManager {
           sessionId: managed.id,
           connectionSlug: connection.slug,
           supportsBranching: resolveSupportsBranching(managed),
+          connectionLocked: true,
         }, managed.workspace.id)
       }
 
@@ -3546,6 +3547,7 @@ export class SessionManager {
       sessionId,
       connectionSlug,
       supportsBranching: resolveSupportsBranching(managed),
+      connectionLocked: managed.connectionLocked,
     }, managed.workspace.id)
   }
 
