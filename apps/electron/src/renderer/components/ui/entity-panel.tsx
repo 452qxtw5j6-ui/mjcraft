@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useAction } from '@/actions'
-import { EntityList } from './entity-list'
+import { EntityList, type EntityListGroup } from './entity-list'
 import { EntityRow } from './entity-row'
 import { useEntityListInteractions } from '@/hooks/useEntityListInteractions'
 import type { createEntitySelection } from '@/hooks/useEntitySelection'
@@ -22,7 +22,8 @@ export interface EntityPanelItem {
 }
 
 export interface EntityPanelProps<T> {
-  items: T[]
+  items?: T[]
+  groups?: EntityListGroup<T>[]
   getId: (item: T) => string
   mapItem: (item: T) => EntityPanelItem
   selection: ReturnType<typeof createEntitySelection>
@@ -34,6 +35,7 @@ export interface EntityPanelProps<T> {
 
 export function EntityPanel<T>({
   items,
+  groups,
   getId,
   mapItem,
   selection,
@@ -42,9 +44,25 @@ export function EntityPanel<T>({
   emptyState,
   className,
 }: EntityPanelProps<T>) {
+  const normalizedGroups = React.useMemo(
+    () => (groups ?? []).filter(group => group.items.length > 0),
+    [groups],
+  )
+  const interactiveItems = React.useMemo(
+    () => (normalizedGroups.length > 0 ? normalizedGroups.flatMap(group => group.items) : (items ?? [])),
+    [normalizedGroups, items],
+  )
+  const flatIndexById = React.useMemo(() => {
+    const map = new Map<string, number>()
+    interactiveItems.forEach((item, index) => {
+      map.set(getId(item), index)
+    })
+    return map
+  }, [interactiveItems, getId])
+
   const selectionStore = selection.useSelectionStore()
   const interactions = useEntityListInteractions<T>({
-    items,
+    items: interactiveItems,
     getId,
     keyboard: {
       onNavigate: (item) => onItemClick(item),
@@ -62,7 +80,8 @@ export function EntityPanel<T>({
 
   return (
     <EntityList
-      items={items}
+      items={normalizedGroups.length > 0 ? undefined : interactiveItems}
+      groups={normalizedGroups.length > 0 ? normalizedGroups : undefined}
       getKey={getId}
       containerRef={interactions.listProps.containerRef}
       containerProps={interactions.listProps.containerProps}
@@ -70,7 +89,7 @@ export function EntityPanel<T>({
       emptyState={emptyState}
       renderItem={(item, index, isFirst) => {
         const mapped = mapItem(item)
-        const rowProps = interactions.getRowProps(item, index)
+        const rowProps = interactions.getRowProps(item, flatIndexById.get(getId(item)) ?? index)
         return (
           <EntityRow
             icon={mapped.icon}

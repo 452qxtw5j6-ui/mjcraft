@@ -30,6 +30,11 @@ import {
   type MentionItemType,
 } from '@/components/ui/mention-menu'
 import {
+  InlinePluginMenu,
+  useInlinePluginMenu,
+  type PluginMenuItem,
+} from '@/components/ui/plugin-menu'
+import {
   InlineLabelMenu,
   useInlineLabelMenu,
 } from '@/components/ui/label-menu'
@@ -90,7 +95,8 @@ const cmdKey = isMac ? '⌘' : 'Ctrl'
 const DEFAULT_PLACEHOLDERS = [
   'What would you like to work on?',
   'Use Shift + Tab to switch between Explore and Execute',
-  'Type @ to mention files, folders, or skills',
+  'Type @ to mention files, folders, or custom skills',
+  'Type % to open plugin commands and skills',
   'Type # to apply labels to this conversation',
   'Press Shift + Return to add a new line',
   `Press ${cmdKey} + B to toggle the sidebar`,
@@ -476,6 +482,15 @@ export function FreeFormInput({
     if (!workspaceRootPath) return workspaceId // Fallback to ID if no path
     return extractWorkspaceSlugFromPath(workspaceRootPath, workspaceId ?? '')
   }, [workspaceRootPath, workspaceId])
+
+  const customSkills = React.useMemo(
+    () => skills.filter(skill => !skill.metadata.plugin),
+    [skills],
+  )
+  const pluginSkills = React.useMemo(
+    () => skills.filter(skill => !!skill.metadata.plugin),
+    [skills],
+  )
 
   // Read panel focus state from context (for multi-panel unfocused styling)
   const appShellContext = useOptionalAppShellContext()
@@ -890,6 +905,13 @@ export function FreeFormInput({
     homeDir,
   })
 
+  // Inline plugin hook (for %plugin command/skill picker)
+  const inlinePlugin = useInlinePluginMenu({
+    inputRef: richInputRef,
+    skills: pluginSkills,
+    workspaceSlug: workspaceSlug ?? undefined,
+  })
+
   // Handle mention selection (sources, skills, files)
   const handleMentionSelect = React.useCallback((item: MentionItem) => {
     // For sources: enable the source immediately
@@ -909,7 +931,7 @@ export function FreeFormInput({
   // Inline mention hook (for skills, sources, and files)
   const inlineMention = useInlineMention({
     inputRef: richInputRef,
-    skills,
+    skills: customSkills,
     sources,
     basePath: workingDirectory,
     onSelect: handleMentionSelect,
@@ -1222,6 +1244,9 @@ export function FreeFormInput({
     onStop?.(silent)
   }
 
+  const isInlineMenuNavKey = (key: string) =>
+    key === 'Enter' || key === 'Tab' || key === 'ArrowUp' || key === 'ArrowDown'
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't submit when mention menu is open AND has visible content
     if (inlineMention.isOpen) {
@@ -1240,7 +1265,7 @@ export function FreeFormInput({
 
     // Don't submit when slash command menu is open - let it handle the Enter key
     if (inlineSlash.isOpen) {
-      if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (isInlineMenuNavKey(e.key)) {
         // These keys are handled by the InlineSlashCommand component
         return
       }
@@ -1251,9 +1276,22 @@ export function FreeFormInput({
       }
     }
 
+    // Don't submit when plugin menu is open - let it handle navigation/selection keys
+    if (inlinePlugin.isOpen) {
+      const hasVisiblePluginItems = inlinePlugin.items.length > 0
+      if (hasVisiblePluginItems && isInlineMenuNavKey(e.key)) {
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        inlinePlugin.close()
+        return
+      }
+    }
+
     // Don't submit when label menu is open - let it handle navigation keys
     if (inlineLabel.isOpen) {
-      if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (isInlineMenuNavKey(e.key)) {
         return
       }
       if (e.key === 'Escape') {
@@ -1328,6 +1366,9 @@ export function FreeFormInput({
     // Update inline slash command state
     inlineSlash.handleInputChange(value, cursorPosition)
 
+    // Update inline plugin state (for % plugin menu)
+    inlinePlugin.handleInputChange(value, cursorPosition)
+
     // Update inline mention state (for @mentions - skills, sources, folders)
     inlineMention.handleInputChange(value, cursorPosition)
 
@@ -1337,7 +1378,7 @@ export function FreeFormInput({
     // Auto-capitalize first letter (but not for slash commands, @mentions, or #labels)
     // Only if autoCapitalisation setting is enabled
     let newValue = value
-    if (autoCapitalisation && value.length > 0 && value.charAt(0) !== '/' && value.charAt(0) !== '@' && value.charAt(0) !== '#') {
+    if (autoCapitalisation && value.length > 0 && value.charAt(0) !== '/' && value.charAt(0) !== '@' && value.charAt(0) !== '#' && value.charAt(0) !== '%') {
       const capitalizedFirst = value.charAt(0).toUpperCase()
       if (capitalizedFirst !== value.charAt(0)) {
         newValue = capitalizedFirst + value.slice(1)
@@ -1358,7 +1399,7 @@ export function FreeFormInput({
       setInput(newValue)
       syncToParent(newValue)
     }
-  }, [inlineSlash, inlineMention, inlineLabel, syncToParent, autoCapitalisation])
+  }, [inlineSlash, inlinePlugin, inlineMention, inlineLabel, syncToParent, autoCapitalisation])
 
   // Handle inline slash command selection (removes the /command text)
   const handleInlineSlashCommandSelect = React.useCallback((commandId: SlashCommandId) => {
@@ -1375,6 +1416,21 @@ export function FreeFormInput({
     syncToParent(newValue)
     richInputRef.current?.focus()
   }, [inlineSlash, syncToParent])
+
+  // Handle inline plugin selection (%plugin -> command/skill)
+  const handleInlinePluginSelect = React.useCallback((item: PluginMenuItem) => {
+    const { value: newValue, cursorPosition, keepMenuOpen } = inlinePlugin.handleSelect(item)
+    setInput(newValue)
+    syncToParent(newValue)
+
+    setTimeout(() => {
+      richInputRef.current?.focus()
+      richInputRef.current?.setSelectionRange(cursorPosition, cursorPosition)
+      if (keepMenuOpen) {
+        inlinePlugin.handleInputChange(newValue, cursorPosition)
+      }
+    }, 0)
+  }, [inlinePlugin, syncToParent])
 
   // Handle inline mention selection (inserts appropriate mention text)
   const handleInlineMentionSelect = React.useCallback((item: MentionItem) => {
@@ -1435,6 +1491,18 @@ export function FreeFormInput({
           onSelectFolder={handleInlineSlashFolderSelect}
           filter={inlineSlash.filter}
           position={inlineSlash.position}
+        />
+
+        {/* Inline Plugin Menu (%plugin -> command/skill) */}
+        <InlinePluginMenu
+          open={inlinePlugin.isOpen}
+          onOpenChange={(open) => !open && inlinePlugin.close()}
+          mode={inlinePlugin.mode}
+          activePluginLabel={inlinePlugin.activePluginLabel}
+          items={inlinePlugin.items}
+          filter={inlinePlugin.filter}
+          position={inlinePlugin.position}
+          onSelect={handleInlinePluginSelect}
         />
 
         {/* Inline Mention Autocomplete (skills, sources, files) */}
