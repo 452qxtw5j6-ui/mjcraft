@@ -14,6 +14,7 @@
 import {
   type ModelDefinition,
   ANTHROPIC_MODELS,
+  MODEL_REGISTRY,
 } from './models';
 import type { CredentialManager } from '../credentials/manager.ts';
 
@@ -31,6 +32,41 @@ let _piModelResolver: PiModelResolver = () => [];
  */
 export function registerPiModelResolver(resolver: PiModelResolver): void {
   _piModelResolver = resolver;
+}
+
+function findModelDefinitionInList(
+  modelId: string,
+  models: Array<ModelDefinition | string>,
+): ModelDefinition | undefined {
+  const normalizedId = modelId.toLowerCase();
+  return models.find(
+    (model): model is ModelDefinition =>
+      typeof model !== 'string' && model.id.toLowerCase() === normalizedId,
+  );
+}
+
+/**
+ * Resolve model metadata from either the static registry or the injected Pi model resolver.
+ *
+ * This is primarily needed for Pi models because they are discovered dynamically and
+ * therefore do not exist in MODEL_REGISTRY.
+ */
+export function findModelDefinition(
+  modelId: string,
+  options?: { providerType?: LlmProviderType; piAuthProvider?: string },
+): ModelDefinition | undefined {
+  if (!modelId) return undefined;
+
+  const staticMatch = MODEL_REGISTRY.find((model) => model.id.toLowerCase() === modelId.toLowerCase());
+  if (staticMatch) return staticMatch;
+
+  const shouldCheckPi = options?.providerType === 'pi' || modelId.toLowerCase().startsWith('pi/');
+  if (!shouldCheckPi) return undefined;
+
+  return findModelDefinitionInList(modelId, _piModelResolver(options?.piAuthProvider))
+    ?? (options?.piAuthProvider
+      ? findModelDefinitionInList(modelId, _piModelResolver(undefined))
+      : undefined);
 }
 
 // ============================================================
@@ -409,11 +445,50 @@ export function getModelsForProviderType(providerType: LlmProviderType, piAuthPr
  */
 export const PI_PREFERRED_DEFAULTS: Record<string, string[]> = {
   anthropic: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  openai: ['gpt-5.2', 'gpt-5.1', 'gpt-5', 'o4-mini', 'o3', 'gpt-4o'],
-  'openai-codex': ['gpt-5.2', 'gpt-5.1', 'gpt-5', 'o4-mini', 'o3', 'gpt-4o'],
+  openai: ['gpt-5.4', 'gpt-5.2', 'gpt-5.1', 'gpt-5', 'o4-mini', 'o3', 'gpt-4o'],
+  'openai-codex': ['gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.2', 'gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1', 'gpt-5-codex', 'gpt-5', 'o4-mini', 'o3', 'gpt-4o'],
   google: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
   'github-copilot': ['claude-sonnet-4-6', 'gpt-5', 'o4-mini', 'claude-haiku-4-5'],
 };
+
+const OPENAI_CODING_MODEL_PREFERENCES = [
+  'gpt-5.4',
+  'gpt-5.3-codex',
+  'gpt-5.2-codex',
+  'gpt-5.2',
+  'gpt-5.1-codex-max',
+  'gpt-5.1-codex',
+  'gpt-5.1',
+  'gpt-5-codex',
+  'gpt-5',
+  'o4-mini',
+  'o3',
+  'gpt-4o',
+] as const;
+
+function modelIdMatchesPreference(modelId: string, preferredId: string): boolean {
+  const normalizedId = modelId.toLowerCase();
+  const normalizedPreferred = preferredId.toLowerCase();
+  return normalizedId === normalizedPreferred
+    || normalizedId.endsWith(`/${normalizedPreferred}`)
+    || normalizedId.startsWith(`pi/${normalizedPreferred}`)
+    || normalizedId.includes(normalizedPreferred);
+}
+
+/**
+ * Pick the best currently-available OpenAI coding model from a provider model list.
+ *
+ * Supports bare IDs (`gpt-5.4`) as well as provider-prefixed IDs (`pi/gpt-5.4`,
+ * `openai/gpt-5.2-codex`).
+ */
+export function findPreferredOpenAiCodingModel(modelIds: string[]): string | undefined {
+  const candidates = modelIds.filter(Boolean);
+  for (const preferredId of OPENAI_CODING_MODEL_PREFERENCES) {
+    const match = candidates.find((modelId) => modelIdMatchesPreference(modelId, preferredId));
+    if (match) return match;
+  }
+  return candidates.find((modelId) => modelId.toLowerCase().includes('codex'));
+}
 
 export function getDefaultModelsForConnection(providerType: LlmProviderType, piAuthProvider?: string): Array<ModelDefinition | string> {
   if (providerType === 'pi') {

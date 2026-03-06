@@ -61,7 +61,7 @@ import { isMac, PATH_SEP, getPathBasename } from '@/lib/platform'
 import { applySmartTypography } from '@/lib/smart-typography'
 import { AttachmentPreview } from '../AttachmentPreview'
 import { ANTHROPIC_MODELS, getModelShortName, getModelDisplayName, getModelContextWindow, type ModelDefinition } from '@config/models'
-import { resolveEffectiveConnectionSlug, isCompatProvider } from '@config/llm-connections'
+import { resolveEffectiveConnectionSlug, isCompatProvider, findPreferredOpenAiCodingModel, findModelDefinition } from '@config/llm-connections'
 import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
 import { SourceAvatar } from '@/components/ui/source-avatar'
@@ -157,11 +157,11 @@ function getVisibleChatModels(
   }
 
   if (isPiConnection(providerType)) {
-    const codex53 = uniqueById.filter((model) => {
-      const lower = getChatModelId(model).toLowerCase()
-      return lower.includes('gpt-5.3-codex') && !lower.includes('spark')
-    })
-    if (codex53.length > 0) return [codex53[0]]
+    const preferredId = findPreferredOpenAiCodingModel(uniqueById.map(getChatModelId))
+    if (preferredId) {
+      const preferredModel = uniqueById.find((model) => getChatModelId(model) === preferredId)
+      if (preferredModel) return [preferredModel]
+    }
 
     if (defaultModel) {
       const fallback = uniqueById.find((model) => getChatModelId(model) === defaultModel)
@@ -2030,13 +2030,22 @@ Model
 
           {/* 5.5 Context Usage Warning Badge - shows when approaching auto-compaction threshold */}
           {(() => {
-            // Calculate usage percentage based on compaction threshold (~77.5% of context window),
+            // Calculate usage percentage based on the backend's effective compaction threshold,
             // not the full context window - this gives users meaningful warnings before compaction kicks in.
-            // SDK triggers compaction at ~155k tokens for a 200k context window.
+            // Pi uses contextWindow - reserveTokens (default 16,384). Claude keeps the historical ~77.5% heuristic.
             // Falls back to known per-model context window when SDK hasn't reported usage yet.
-            const effectiveContextWindow = contextStatus?.contextWindow || getModelContextWindow(currentModel)
+            const effectiveContextWindow = contextStatus?.contextWindow
+              || findModelDefinition(currentModel, {
+                providerType: effectiveConnectionDetails?.providerType,
+                piAuthProvider: effectiveConnectionDetails?.piAuthProvider,
+              })?.contextWindow
+              || getModelContextWindow(currentModel)
             const compactionThreshold = effectiveContextWindow
-              ? Math.round(effectiveContextWindow * 0.775)
+              ? (isPiConnection(effectiveConnectionDetails?.providerType)
+                ? (effectiveConnectionDetails?.piAuthProvider === 'openai-codex' && currentModel === 'pi/gpt-5.4'
+                  ? 850_000
+                  : Math.max(1, effectiveContextWindow - 16_384))
+                : Math.round(effectiveContextWindow * 0.775))
               : null
             const usagePercent = contextStatus?.inputTokens && compactionThreshold
               ? Math.min(99, Math.round((contextStatus.inputTokens / compactionThreshold) * 100))

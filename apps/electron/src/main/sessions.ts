@@ -76,6 +76,7 @@ import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
 import { listLabels } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { findPreferredOpenAiCodingModel } from '@craft-agent/shared/config/llm-connections'
 
 // Import and re-export (extracted to avoid Electron dependency in tests)
 import { sanitizeForTitle } from './title-sanitizer'
@@ -3160,13 +3161,7 @@ export class SessionManager {
             .map((m) => (typeof m === 'string' ? m : m.id))
             .filter((m): m is string => Boolean(m))
 
-          const codex53 = modelIds.find((id) => {
-            const lower = id.toLowerCase()
-            return (lower.includes('codex') && lower.includes('5.3')) || lower.includes('gpt-5.3-codex')
-          })
-          if (codex53) return codex53
-
-          return modelIds.find((id) => id.toLowerCase().includes('codex')) ?? connection.defaultModel
+          return findPreferredOpenAiCodingModel(modelIds) ?? connection.defaultModel
         }
 
         const isClaudeToCodexDelegation =
@@ -3179,7 +3174,7 @@ export class SessionManager {
           )
 
         const forcedModel = isClaudeToCodexDelegation
-          ? (resolvePreferredCodexModel(requestedConnection) ?? request.model ?? 'gpt-5.3-codex')
+          ? (resolvePreferredCodexModel(requestedConnection) ?? request.model ?? 'gpt-5.4')
           : request.model
 
         const session = await this.createSession(managed.workspace.id, {

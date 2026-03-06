@@ -1348,6 +1348,19 @@ function backfillAllConnectionModels(config: StoredConfig): boolean {
       changed = true;
     }
 
+    // Promote historical Codex defaults to the current preferred OpenAI model.
+    // This keeps existing ChatGPT Plus/Pro connections from staying pinned to
+    // legacy gpt-5.3-codex after newer built-in defaults ship.
+    if (
+      isPiProvider(connection.providerType)
+      && connection.piAuthProvider === 'openai-codex'
+      && connection.defaultModel === 'pi/gpt-5.3-codex'
+      && defaultModel === 'pi/gpt-5.4'
+    ) {
+      connection.defaultModel = defaultModel;
+      changed = true;
+    }
+
     // Validate that existing defaultModel is in the models list
     if (connection.defaultModel && connection.models && Array.isArray(connection.models) && connection.models.length > 0) {
       const modelIds = connection.models.map(m => typeof m === 'string' ? m : m.id);

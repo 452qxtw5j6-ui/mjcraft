@@ -17,11 +17,12 @@
 import http from 'node:http';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
-import { mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { mkdirSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 // Pi SDK
 import {
+  AgentSession as PiAgentSession,
   createAgentSession,
   SessionManager as PiSessionManager,
   AuthStorage as PiAuthStorage,
@@ -54,6 +55,30 @@ import { getDefaultSummarizationModel } from '../../shared/src/config/models.ts'
 import { webSearchTool } from './tools/web-search.ts';
 import { createWebFetchTool } from './tools/web-fetch.ts';
 import { createGoogleSearchTool } from './tools/google-search.ts';
+
+function patchPiAutoCompactionControllerBug(): void {
+  const proto = PiAgentSession.prototype as PiAgentSession.prototype & {
+    _runAutoCompaction?: (reason: string, willRetry: boolean) => Promise<void>;
+    __craftAutoCompactionPatched?: boolean;
+    _autoCompactionAbortController?: AbortController;
+  };
+
+  if (proto.__craftAutoCompactionPatched || typeof proto._runAutoCompaction !== 'function') return;
+
+  const original = proto._runAutoCompaction;
+  proto._runAutoCompaction = async function patchedRunAutoCompaction(reason: string, willRetry: boolean): Promise<void> {
+    try {
+      await original.call(this, reason, willRetry);
+    } finally {
+      if (!this._autoCompactionAbortController) {
+        this._autoCompactionAbortController = new AbortController();
+      }
+    }
+  };
+  proto.__craftAutoCompactionPatched = true;
+}
+
+patchPiAutoCompactionControllerBug();
 
 // ============================================================
 // Types — JSONL Protocol
@@ -257,6 +282,45 @@ function resolvedCwd(): string {
   return wd;
 }
 
+function getBareInitModel(): string | undefined {
+  if (!initConfig?.model) return undefined;
+  return initConfig.model.startsWith('pi/') ? initConfig.model.slice(3) : initConfig.model;
+}
+
+function isLargeContextCodexSession(): boolean {
+  return initConfig?.piAuth?.provider === 'openai-codex' && getBareInitModel() === 'gpt-5.4';
+}
+
+function ensureCodexSessionOverrides(agentDir: string): string | undefined {
+  if (!isLargeContextCodexSession()) return undefined;
+
+  const modelsJsonPath = join(agentDir, 'models.json');
+  writeFileSync(modelsJsonPath, `${JSON.stringify({
+    providers: {
+      'openai-codex': {
+        models: [
+          {
+            id: 'gpt-5.4',
+            name: 'GPT-5.4',
+            reasoning: true,
+            contextWindow: 1_050_000,
+            maxTokens: 128_000,
+          },
+        ],
+      },
+    },
+  }, null, 2)}\n`, 'utf-8');
+
+  writeFileSync(join(agentDir, 'settings.json'), `${JSON.stringify({
+    compaction: {
+      enabled: true,
+      reserveTokens: 200_000,
+    },
+  }, null, 2)}\n`, 'utf-8');
+
+  return modelsJsonPath;
+}
+
 function resolvePiModel(
   modelRegistry: PiModelRegistry,
   modelId: string,
@@ -333,7 +397,12 @@ function createAuthenticatedRegistry(): {
     authStorage.set('anthropic', { type: 'api_key', key: initConfig.apiKey });
     debugLog('Injected API key into auth storage (legacy fallback)');
   }
-  return { authStorage, modelRegistry: new PiModelRegistry(authStorage) };
+  const agentDir = initConfig?.sessionPath
+    ? (initConfig.agentDir || join(initConfig.sessionPath, '.pi-agent'))
+    : undefined;
+  if (agentDir) mkdirSync(agentDir, { recursive: true });
+  const modelsJsonPath = agentDir ? ensureCodexSessionOverrides(agentDir) : undefined;
+  return { authStorage, modelRegistry: new PiModelRegistry(authStorage, modelsJsonPath) };
 }
 
 async function ensureSession(): Promise<AgentSession> {

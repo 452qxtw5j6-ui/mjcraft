@@ -16,7 +16,7 @@ const EVENTS_LOG_FILENAME = 'events.jsonl'
 const BOT_TOKEN_SOURCE_ID = 'slack-bot-bot-token'
 const APP_TOKEN_SOURCE_ID = 'slack-bot-app-token'
 const ENFORCED_CONNECTION_SLUG = 'chatgpt-plus'
-const ENFORCED_MODEL = 'pi/gpt-5.3-codex'
+const ENFORCED_MODEL = 'pi/gpt-5.4'
 const SLACK_TEXT_MAX_BYTES = 3000
 export const SLACK_PROCESSING_MESSAGES = [
   '두뇌 풀가동 중 🧠💨',

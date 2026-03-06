@@ -77,7 +77,7 @@ function makeSession(
     messages,
     isProcessing: false,
     permissionMode: overrides.permissionMode ?? 'allow-all',
-    model: overrides.model ?? 'pi/gpt-5.3-codex',
+    model: overrides.model ?? 'pi/gpt-5.4',
     llmConnection: overrides.llmConnection ?? 'chatgpt-plus',
     ...overrides,
   }

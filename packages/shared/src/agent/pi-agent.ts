@@ -29,7 +29,7 @@ import { getBackendRuntime } from './backend/internal/driver-types.ts';
 import type { PermissionMode } from './mode-manager.ts';
 
 // Import models from centralized registry
-import { getModelById } from '../config/models.ts';
+import { findModelDefinition } from '../config/llm-connections.ts';
 
 // BaseAgent provides common functionality
 import { BaseAgent } from './base-agent.ts';
@@ -211,8 +211,12 @@ export class PiAgent extends BaseAgent {
   // ============================================================
 
   constructor(config: BackendConfig) {
+    const runtime = getBackendRuntime(config);
     const resolvedModel = config.model || '';
-    const modelDef = getModelById(resolvedModel);
+    const modelDef = findModelDefinition(resolvedModel, {
+      providerType: 'pi',
+      piAuthProvider: runtime.piAuthProvider,
+    });
     super(config, resolvedModel, modelDef?.contextWindow);
 
     this._supportsBranching = true;

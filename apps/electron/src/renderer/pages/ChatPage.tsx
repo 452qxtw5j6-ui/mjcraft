@@ -22,7 +22,7 @@ import { routes } from '@/lib/navigate'
 import { ensureSessionMessagesLoadedAtom, loadedSessionsAtom, sessionMetaMapAtom } from '@/atoms/sessions'
 import { getSessionTitle } from '@/utils/session'
 // Model resolution: connection.defaultModel (no hardcoded defaults)
-import { resolveEffectiveConnectionSlug, isSessionConnectionUnavailable } from '@config/llm-connections'
+import { resolveEffectiveConnectionSlug, isSessionConnectionUnavailable, findPreferredOpenAiCodingModel } from '@config/llm-connections'
 
 export interface ChatPageProps {
   sessionId: string
@@ -203,17 +203,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       .map((m) => (typeof m === 'string' ? m : m.id))
       .filter((m): m is string => Boolean(m))
 
-    // Prefer GPT-5.3 Codex if present (supports provider-prefixed IDs too)
-    const codex53 = modelIds.find((id) => {
-      const lower = id.toLowerCase()
-      return (lower.includes('codex') && lower.includes('5.3')) || lower.includes('gpt-5.3-codex')
-    })
-
-    if (codex53) return codex53
-
-    // Fallbacks: any codex model -> connection default -> canonical ID
-    const anyCodex = modelIds.find((id) => id.toLowerCase().includes('codex'))
-    return anyCodex ?? connection.defaultModel ?? 'gpt-5.3-codex'
+    return findPreferredOpenAiCodingModel(modelIds) ?? connection.defaultModel ?? 'gpt-5.4'
   }, [])
 
   const handleDelegateToCodex = React.useCallback(async () => {

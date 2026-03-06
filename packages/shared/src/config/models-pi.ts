@@ -39,6 +39,26 @@ function piModelToDefinition(m: Model<Api>): ModelDefinition {
   };
 }
 
+const PI_MODEL_CONTEXT_OVERRIDES: Record<string, Record<string, number>> = {
+  'openai-codex': {
+    'gpt-5.4': 1_050_000,
+  },
+};
+
+function applyPiModelOverrides(
+  piAuthProvider: string | undefined,
+  models: ModelDefinition[],
+): ModelDefinition[] {
+  const overrides = piAuthProvider ? PI_MODEL_CONTEXT_OVERRIDES[piAuthProvider] : undefined;
+  if (!overrides) return models;
+
+  return models.map((model) => {
+    const bareId = model.id.startsWith('pi/') ? model.id.slice(3) : model.id;
+    const contextWindow = overrides[bareId];
+    return contextWindow ? { ...model, contextWindow } : model;
+  });
+}
+
 /**
  * Models to EXCLUDE from the Pi model list.
  * Temporary workaround for models that are broken in the current Pi SDK version.
@@ -61,11 +81,9 @@ const PI_EXCLUDED_MODELS: Set<string> = new Set([
 export function getPiModelsForAuthProvider(piAuthProvider: string): ModelDefinition[] {
   try {
     const models = getModels(piAuthProvider as KnownProvider);
-    if (models.length > 0) {
-      return models
-        .filter(m => !PI_EXCLUDED_MODELS.has(m.id))
-        .map(piModelToDefinition);
-    }
+    return applyPiModelOverrides(piAuthProvider, models
+      .filter(m => !PI_EXCLUDED_MODELS.has(m.id))
+      .map(piModelToDefinition));
   } catch {
     // Provider not recognized by SDK — fall through
   }
@@ -80,10 +98,10 @@ export function getAllPiModels(): ModelDefinition[] {
   for (const provider of getProviders()) {
     try {
       const models = getModels(provider);
-      allModels.push(...models
+      allModels.push(...applyPiModelOverrides(provider, models
         .filter(m => !PI_EXCLUDED_MODELS.has(m.id))
         .map(piModelToDefinition)
-      );
+      ));
     } catch {
       // Skip providers that fail
     }
