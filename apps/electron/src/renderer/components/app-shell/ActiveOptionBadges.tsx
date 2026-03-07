@@ -2,7 +2,7 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { SlashCommandMenu, DEFAULT_SLASH_COMMAND_GROUPS, type SlashCommandId } from '@/components/ui/slash-command-menu'
-import { ChevronDown, Info, X } from 'lucide-react'
+import { Check, ChevronDown, Copy, Info, X } from 'lucide-react'
 import { PERMISSION_MODE_CONFIG, type PermissionMode } from '@craft-agent/shared/agent/modes'
 import type { BackgroundTask } from './ActiveTasksBar'
 import { LabelIcon, LabelValueTypeIcon } from '@/components/ui/label-icon'
@@ -18,6 +18,7 @@ import { SessionStatusMenu } from '@/components/ui/session-status-menu'
 import { Input } from '@/components/ui/input'
 import { useAppShellContext, useSession } from '@/context/AppShellContext'
 import { SessionFilesSection } from '../right-sidebar/SessionFilesSection'
+import { toast } from 'sonner'
 
 // ============================================================================
 // Permission Mode Icon Component
@@ -476,7 +477,10 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
   const session = useSession(sessionId)
   const { onRenameSession } = useAppShellContext()
   const [name, setName] = React.useState('')
+  const [copied, setCopied] = React.useState(false)
   const renameTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copiedTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const resolvedSessionPath = sessionFolderPath ?? session?.sessionFolderPath ?? ''
 
   React.useEffect(() => {
     setName(session?.name || '')
@@ -486,6 +490,9 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
     return () => {
       if (renameTimeoutRef.current) {
         clearTimeout(renameTimeoutRef.current)
+      }
+      if (copiedTimeoutRef.current) {
+        clearTimeout(copiedTimeoutRef.current)
       }
     }
   }, [])
@@ -506,6 +513,32 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
     }, 500)
   }, [onRenameSession, sessionId])
 
+  const handleCopyPath = React.useCallback(async () => {
+    try {
+      let path = resolvedSessionPath
+
+      if (!path) {
+        const result = await window.electronAPI.sessionCommand(sessionId, { type: 'copyPath' }) as { success: boolean; path?: string } | undefined
+        path = result?.success && result.path ? result.path : ''
+      }
+
+      if (!path) {
+        toast.error('Failed to copy session path')
+        return
+      }
+
+      await navigator.clipboard.writeText(path)
+      setCopied(true)
+      if (copiedTimeoutRef.current) {
+        clearTimeout(copiedTimeoutRef.current)
+      }
+      copiedTimeoutRef.current = setTimeout(() => setCopied(false), 1600)
+      toast.success('Session path copied to clipboard')
+    } catch {
+      toast.error('Failed to copy session path')
+    }
+  }, [resolvedSessionPath, sessionId])
+
   return (
     <div className="h-full min-h-0 flex flex-col">
       <div className="shrink-0 p-3 border-b border-border/50">
@@ -520,6 +553,41 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
             className="h-9 py-2 text-sm border-0 shadow-none bg-transparent focus-visible:ring-0"
           />
         </div>
+        {resolvedSessionPath && (
+          <div className="mt-3">
+            <label className="text-xs font-medium text-muted-foreground block mb-1.5 select-none">
+              Session Path
+            </label>
+            <button
+              type="button"
+              onClick={handleCopyPath}
+              title={resolvedSessionPath}
+              className={cn(
+                "w-full rounded-lg bg-foreground-2 shadow-minimal transition-colors",
+                "hover:bg-foreground/5 active:bg-foreground/7"
+              )}
+            >
+              <span className="flex items-center gap-2 px-3 py-2 text-left">
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+                  {resolvedSessionPath}
+                </span>
+                <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-foreground/70">
+                  {copied ? (
+                    <>
+                      <Check className="h-3.5 w-3.5" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5" />
+                      Copy
+                    </>
+                  )}
+                </span>
+              </span>
+            </button>
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
         <SessionFilesSection
@@ -628,4 +696,3 @@ function PermissionModeDropdown({ permissionMode, ultrathinkEnabled = false, onP
     </Popover>
   )
 }
-

@@ -428,6 +428,44 @@ export function FreeFormInput({
     return currentThinkingDisplayName
   }, [connectionUnavailable, availableThinkingLevels.length, thinkingDisabled, currentThinkingDisplayName])
 
+  const inlineReasoningTone = React.useMemo(() => {
+    if (thinkingDisabled || effectiveThinkingLevel === 'off') {
+      return {
+        dotClassName: 'bg-foreground/30',
+        textClassName: 'text-muted-foreground/70',
+      }
+    }
+
+    switch (effectiveThinkingLevel) {
+      case 'low':
+        return {
+          dotClassName: 'bg-foreground/45',
+          textClassName: 'text-muted-foreground/80',
+        }
+      case 'medium':
+        return {
+          dotClassName: 'bg-info/75',
+          textClassName: 'text-muted-foreground/90',
+        }
+      case 'high':
+        return {
+          dotClassName: 'bg-accent/75',
+          textClassName: 'text-foreground/80',
+        }
+      case 'xhigh':
+      case 'max':
+        return {
+          dotClassName: 'bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500',
+          textClassName: 'text-foreground/85',
+        }
+      default:
+        return {
+          dotClassName: 'bg-foreground/40',
+          textClassName: 'text-muted-foreground/80',
+        }
+    }
+  }, [effectiveThinkingLevel, thinkingDisabled])
+
   // Get display name for current model (full name, not short name)
   const currentModelDisplayName = React.useMemo(() => {
     const modelToDisplay = connectionDefaultModel ?? currentModel
@@ -1809,7 +1847,7 @@ export function FreeFormInput({
                   <button
                     type="button"
                     className={cn(
-                      "inline-flex items-center h-7 px-1.5 gap-0.5 text-[13px] shrink-0 rounded-[6px] hover:bg-foreground/5 transition-colors select-none",
+                      "inline-flex items-center h-7 px-1.5 gap-1 text-[13px] shrink-0 rounded-[6px] hover:bg-foreground/5 transition-colors select-none",
                       modelDropdownOpen && "bg-foreground/5",
                       connectionUnavailable && "text-destructive",
                     )}
@@ -1822,12 +1860,20 @@ export function FreeFormInput({
                     ) : (
                       <>
                         {effectiveConnectionDetails && llmConnections.length > 1 && storage.get(storage.KEYS.showConnectionIcons, true) && <ConnectionIcon connection={effectiveConnectionDetails} size={14} showTooltip />}
-                        <span className="truncate max-w-[200px]">{currentModelDisplayName}</span>
-                        {inlineReasoningStatus && (
-                          <span className="text-[11px] text-muted-foreground/90 px-1 py-0.5 rounded bg-foreground/5">
-                            {inlineReasoningStatus}
-                          </span>
-                        )}
+                        <span className="inline-flex min-w-0 items-center gap-1.5">
+                          <span className="truncate max-w-[200px]">{currentModelDisplayName}</span>
+                          {inlineReasoningStatus && (
+                            <span
+                              className={cn(
+                                "inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-foreground/5 px-1.5 pr-2 text-[10px] font-medium leading-none ring-1 ring-border/50",
+                                inlineReasoningTone.textClassName
+                              )}
+                            >
+                              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", inlineReasoningTone.dotClassName)} />
+                              <span className="whitespace-nowrap">{inlineReasoningStatus}</span>
+                            </span>
+                          )}
+                        </span>
                         {!connectionDefaultModel && <ChevronDown className="h-3 w-3 opacity-50 shrink-0" />}
                       </>
                     )}
