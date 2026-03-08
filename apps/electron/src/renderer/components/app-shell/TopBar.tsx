@@ -181,6 +181,7 @@ export function TopBar({
 }: TopBarProps) {
   const [isDebugMode, setIsDebugMode] = useState(false)
   const [maxVisibleBrowserBadges, setMaxVisibleBrowserBadges] = useState(3)
+  const [isTriggeringNotionPoll, setIsTriggeringNotionPoll] = useState(false)
   const rightSlotRef = useRef<HTMLDivElement | null>(null)
 
   const newChatHotkey = useActionLabel('app.newChat').hotkey
@@ -194,6 +195,19 @@ export function TopBar({
   useEffect(() => {
     window.electronAPI.isDebugMode().then(setIsDebugMode)
   }, [])
+
+  const handleTriggerNotionPoll = async () => {
+    if (isTriggeringNotionPoll) return
+    setIsTriggeringNotionPoll(true)
+    try {
+      const result = await window.electronAPI.triggerNotionPollNow()
+      console.info('[TopBar] triggerNotionPollNow:', result)
+    } catch (error) {
+      console.error('[TopBar] triggerNotionPollNow failed:', error)
+    } finally {
+      setIsTriggeringNotionPoll(false)
+    }
+  }
 
   useEffect(() => {
     const slotEl = rightSlotRef.current
@@ -395,6 +409,26 @@ export function TopBar({
               workspaceUnreadMap={workspaceUnreadMap}
             />
           </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <TopBarButton
+                onClick={handleTriggerNotionPoll}
+                disabled={isTriggeringNotionPoll}
+                aria-label="Trigger Notion poll now"
+                className="h-[26px] rounded-lg px-2.5 text-[12px] font-medium titlebar-no-drag"
+              >
+                {isTriggeringNotionPoll ? (
+                  <Icons.Loader2 className="h-3.5 w-3.5 animate-spin text-foreground/70" />
+                ) : (
+                  <>
+                    <Icons.Webhook className="h-3.5 w-3.5 text-foreground/70" />
+                    <span className="ml-1 text-foreground/80">Notion Poll</span>
+                  </>
+                )}
+              </TopBarButton>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Trigger Notion Poll Now</TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
