@@ -187,6 +187,9 @@ export async function createSession(
     sessionStatus?: SessionConfig['sessionStatus'];
     labels?: string[];
     isFlagged?: boolean;
+    sessionOrigin?: SessionConfig['sessionOrigin'];
+    notionRef?: SessionConfig['notionRef'];
+    slackRef?: SessionConfig['slackRef'];
   }
 ): Promise<SessionConfig> {
   ensureSessionsDir(workspaceRootPath);
@@ -205,6 +208,9 @@ export async function createSession(
   const session: SessionConfig = {
     id: sessionId,
     workspaceRootPath,
+    sessionOrigin: options?.sessionOrigin,
+    notionRef: options?.notionRef,
+    slackRef: options?.slackRef,
     name: options?.name,
     createdAt: now,
     lastUsedAt: now,
