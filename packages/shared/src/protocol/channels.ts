@@ -210,6 +210,9 @@ export const RPC_CHANNELS = {
     CANCEL: 'oauth:cancel',
     REVOKE: 'oauth:revoke',
   },
+  notion: {
+    TRIGGER_POLL_NOW: 'notion:triggerPollNow',
+  },
   workspace: {
     GET_PERMISSIONS: 'workspace:getPermissions',
     READ_IMAGE: 'workspace:readImage',

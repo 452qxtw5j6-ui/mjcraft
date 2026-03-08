@@ -42,6 +42,7 @@ export const CHANNEL_MAP = {
   getWorkspaces: invoke(RPC_CHANNELS.workspaces.GET),
   createWorkspace: invoke(RPC_CHANNELS.workspaces.CREATE),
   checkWorkspaceSlug: invoke(RPC_CHANNELS.workspaces.CHECK_SLUG),
+  triggerNotionPollNow: invoke(RPC_CHANNELS.notion.TRIGGER_POLL_NOW),
 
   // Window management
   getWindowWorkspace: invoke(RPC_CHANNELS.window.GET_WORKSPACE),

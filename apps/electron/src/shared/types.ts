@@ -229,6 +229,7 @@ export interface ElectronAPI {
   getWorkspaces(): Promise<Workspace[]>
   createWorkspace(folderPath: string, name: string): Promise<Workspace>
   checkWorkspaceSlug(slug: string): Promise<{ exists: boolean; path: string }>
+  triggerNotionPollNow(): Promise<{ success: boolean; queued: boolean; reason?: string; pageId?: string }>
 
   // Window management
   getWindowWorkspace(): Promise<string | null>

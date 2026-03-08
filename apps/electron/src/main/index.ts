@@ -98,6 +98,7 @@ import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeC
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath } from '@craft-agent/server-core/services'
+import { NotionTaskService } from './notion-task-service'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -174,6 +175,7 @@ let browserPaneManager: BrowserPaneManager | null = null
 let oauthFlowStore: OAuthFlowStore | null = null
 let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
+let notionTaskService: NotionTaskService | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
@@ -619,6 +621,7 @@ app.whenReady().then(async () => {
         windowManager,
         browserPaneManager,
         oauthFlowStore,
+        notionTaskService: null,
       }
 
       // Register RPC handlers (must happen before window creation)
@@ -646,6 +649,37 @@ app.whenReady().then(async () => {
     // In headless mode the server runs without any UI — skip window creation.
     if (!isHeadless) {
       await createInitialWindows()
+    }
+
+    if (!isClientOnly && sessionManager) {
+      const configuredWorkspaces = getWorkspaces()
+      const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
+      const notionWorkspace =
+        (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
+        || configuredWorkspaces[0]
+
+      if (notionWorkspace) {
+        try {
+          notionTaskService = new NotionTaskService({
+            workspaceId: notionWorkspace.id,
+            workspaceRootPath: notionWorkspace.rootPath,
+            sessionManager,
+          })
+          deps.notionTaskService = notionTaskService
+          await notionTaskService.start()
+        } catch (error) {
+          mainLog.error('Notion task service startup failed; continuing app startup without Notion queue:', error)
+          if (notionTaskService) {
+            await notionTaskService.stop().catch(stopError => {
+              mainLog.warn('Failed to stop Notion task service after startup failure:', stopError)
+            })
+          }
+          notionTaskService = null
+          deps.notionTaskService = null
+        }
+      } else {
+        mainLog.warn('Skipping Notion task service startup: no workspace available')
+      }
     }
 
     // Run credential health check at startup to detect issues early
@@ -790,6 +824,11 @@ app.on('before-quit', async (event) => {
     // Clean up browser pane instances
     if (browserPaneManager) {
       browserPaneManager.destroyAll()
+    }
+
+    if (notionTaskService) {
+      await notionTaskService.stop()
+      notionTaskService = null
     }
 
     // Clean up OAuth flow store (stop periodic cleanup timer)

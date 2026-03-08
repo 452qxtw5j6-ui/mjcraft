@@ -10,9 +10,13 @@ import type { WindowManager } from '../window-manager'
 import type { BrowserPaneManager } from '../browser-pane-manager'
 import type { OAuthFlowStore } from '@craft-agent/shared/auth'
 
-export type HandlerDeps = BaseHandlerDeps<
+export interface HandlerDeps extends BaseHandlerDeps<
   SessionManager,
   OAuthFlowStore,
   WindowManager,
   BrowserPaneManager
->
+> {
+  notionTaskService?: {
+    forcePollNow(): Promise<{ success: boolean; queued: boolean; reason?: string; pageId?: string }>
+  } | null
+}
