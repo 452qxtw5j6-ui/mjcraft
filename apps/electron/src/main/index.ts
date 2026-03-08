@@ -99,6 +99,7 @@ import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating } from './a
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath } from '@craft-agent/server-core/services'
 import { NotionTaskService } from './notion-task-service'
+import { SlackBotService } from './slack-bot'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -176,6 +177,7 @@ let oauthFlowStore: OAuthFlowStore | null = null
 let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
 let notionTaskService: NotionTaskService | null = null
+let slackBotService: SlackBotService | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
@@ -654,15 +656,32 @@ app.whenReady().then(async () => {
     if (!isClientOnly && sessionManager) {
       const configuredWorkspaces = getWorkspaces()
       const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
-      const notionWorkspace =
+      const integrationWorkspace =
         (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
         || configuredWorkspaces[0]
 
-      if (notionWorkspace) {
+      if (integrationWorkspace) {
+        try {
+          slackBotService = new SlackBotService({
+            workspaceId: integrationWorkspace.id,
+            workspaceRootPath: integrationWorkspace.rootPath,
+            sessionManager,
+          })
+          await slackBotService.start()
+        } catch (error) {
+          mainLog.error('Slack bot startup failed; continuing app startup without Slack integration:', error)
+          if (slackBotService) {
+            await slackBotService.stop().catch(stopError => {
+              mainLog.warn('Failed to stop Slack bot after startup failure:', stopError)
+            })
+          }
+          slackBotService = null
+        }
+
         try {
           notionTaskService = new NotionTaskService({
-            workspaceId: notionWorkspace.id,
-            workspaceRootPath: notionWorkspace.rootPath,
+            workspaceId: integrationWorkspace.id,
+            workspaceRootPath: integrationWorkspace.rootPath,
             sessionManager,
           })
           deps.notionTaskService = notionTaskService
@@ -678,7 +697,7 @@ app.whenReady().then(async () => {
           deps.notionTaskService = null
         }
       } else {
-        mainLog.warn('Skipping Notion task service startup: no workspace available')
+        mainLog.warn('Skipping Slack/Notion services startup: no workspace available')
       }
     }
 
@@ -829,6 +848,11 @@ app.on('before-quit', async (event) => {
     if (notionTaskService) {
       await notionTaskService.stop()
       notionTaskService = null
+    }
+
+    if (slackBotService) {
+      await slackBotService.stop()
+      slackBotService = null
     }
 
     // Clean up OAuth flow store (stop periodic cleanup timer)
