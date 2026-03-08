@@ -4,6 +4,7 @@
  */
 
 import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { startHeadlessServer } from '@craft-agent/server-core/bootstrap'
 import { registerAllRpcHandlers } from '../main/handlers/index'
 import { cleanupSessionFileWatchForClient } from '@craft-agent/server-core/handlers/rpc'
@@ -11,6 +12,7 @@ import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@cra
 import { initModelRefreshService, setFetcherPlatform } from '@craft-agent/server-core/model-fetchers'
 import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/services'
 import type { HandlerDeps } from '../main/handlers/handler-deps'
+import type { WsRpcTlsOptions } from '@craft-agent/server-core/transport'
 import { getWorkspaces, loadStoredConfig } from '@craft-agent/shared/config'
 import { SlackBotService } from '../main/slack-bot'
 import { NotionTaskService } from '../main/notion-task-service'
@@ -21,10 +23,25 @@ let slackBotService: SlackBotService | null = null
 let notionTaskService: NotionTaskService | null = null
 let mutableDeps: HandlerDeps | null = null
 
+let tls: WsRpcTlsOptions | undefined
+const tlsCertPath = process.env.CRAFT_RPC_TLS_CERT
+const tlsKeyPath = process.env.CRAFT_RPC_TLS_KEY
+if (tlsCertPath || tlsKeyPath) {
+  if (!tlsCertPath || !tlsKeyPath) {
+    throw new Error('TLS requires both CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY.')
+  }
+  tls = {
+    cert: readFileSync(tlsCertPath),
+    key: readFileSync(tlsKeyPath),
+    ...(process.env.CRAFT_RPC_TLS_CA ? { ca: readFileSync(process.env.CRAFT_RPC_TLS_CA) } : {}),
+  }
+}
+
 const instance = await (async (): Promise<{ host: string; port: number; token: string; stop: () => Promise<void> }> => {
   try {
     return await startHeadlessServer<SessionManager, HandlerDeps>({
       bundledAssetsRoot,
+      tls,
       applyPlatformToSubsystems: (platform) => {
         setFetcherPlatform(platform)
         setSessionPlatform(platform)
@@ -128,7 +145,7 @@ if (integrationWorkspace && mutableDeps) {
   console.warn('Skipping Slack/Notion services startup: no workspace available')
 }
 
-console.log(`CRAFT_SERVER_URL=ws://${instance.host}:${instance.port}`)
+console.log(`CRAFT_SERVER_URL=${tls ? 'wss' : 'ws'}://${instance.host}:${instance.port}`)
 console.log(`CRAFT_SERVER_TOKEN=${instance.token}`)
 
 const shutdown = async () => {
