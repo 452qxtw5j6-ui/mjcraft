@@ -33,7 +33,7 @@ import type { ConfirmDialogSpec, FileDialogSpec } from '@craft-agent/server-core
 let wsUrl: string
 let wsToken: string
 let webContentsId: number
-let workspaceId: string
+let workspaceId: string | undefined
 let wsMode: 'local' | 'remote'
 
 if (process.env.CRAFT_SERVER_URL) {
@@ -53,7 +53,9 @@ if (process.env.CRAFT_SERVER_URL) {
     )
   }
   webContentsId = ipcRenderer.sendSync('__get-web-contents-id')
-  workspaceId = process.env.CRAFT_WORKSPACE_ID ?? ipcRenderer.sendSync('__get-workspace-id')
+  // Remote thin clients should bind to the server's workspace, not this Mac's local window state.
+  // An explicit env override still wins when the caller wants a specific remote workspace.
+  workspaceId = process.env.CRAFT_WORKSPACE_ID
 } else {
   // Local mode — get connection details from main process (synchronous, runs during preload eval)
   wsMode = 'local'

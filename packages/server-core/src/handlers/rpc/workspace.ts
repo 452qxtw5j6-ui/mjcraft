@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
-import { getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace } from '@craft-agent/shared/config'
+import { getActiveWorkspace, getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace } from '@craft-agent/shared/config'
 import { perf } from '@craft-agent/shared/utils'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -36,6 +36,30 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
   const { sessionManager } = deps
   const windowManager = deps.windowManager
 
+  const resolveWorkspaceId = (ctx: { workspaceId?: string | null; webContentsId?: number | null }): string | null => {
+    const workspaces = sessionManager.getWorkspaces()
+    const isKnownWorkspace = (workspaceId: string | null | undefined): workspaceId is string =>
+      !!workspaceId && workspaces.some(workspace => workspace.id === workspaceId)
+
+    if (isKnownWorkspace(ctx.workspaceId)) {
+      return ctx.workspaceId
+    }
+
+    const mappedWorkspaceId = ctx.webContentsId != null
+      ? windowManager?.getWorkspaceForWindow(ctx.webContentsId)
+      : undefined
+    if (isKnownWorkspace(mappedWorkspaceId)) {
+      return mappedWorkspaceId
+    }
+
+    const activeWorkspaceId = getActiveWorkspace()?.id
+    if (isKnownWorkspace(activeWorkspaceId)) {
+      return activeWorkspaceId
+    }
+
+    return workspaces[0]?.id ?? null
+  }
+
   // Get workspaces
   server.handle(RPC_CHANNELS.workspaces.GET, async () => {
     return sessionManager.getWorkspaces()
@@ -61,7 +85,12 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
 
   // Get workspace ID for the calling window
   server.handle(RPC_CHANNELS.window.GET_WORKSPACE, (ctx) => {
-    const workspaceId = ctx.workspaceId ?? windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
+    const workspaceId = resolveWorkspaceId(ctx)
+
+    if (workspaceId) {
+      server.updateClientWorkspace?.(ctx.clientId, workspaceId)
+    }
+
     // Set up ConfigWatcher for live updates (labels, statuses, sources, themes)
     if (workspaceId) {
       const workspace = getWorkspaceByNameOrId(workspaceId)
@@ -83,6 +112,7 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
 
     // Keep WS push routing in sync (works for both GUI and headless)
     server.updateClientWorkspace?.(ctx.clientId, workspaceId)
+    setActiveWorkspace(workspaceId)
 
     if (windowManager) {
       const wcId = ctx.webContentsId!
