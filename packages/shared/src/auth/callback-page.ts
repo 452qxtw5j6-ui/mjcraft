@@ -43,7 +43,10 @@ export function generateCallbackPage(options: {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Craft - ${title}</title>
+  <title>Noodle - ${title}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -51,8 +54,8 @@ export function generateCallbackPage(options: {
       width: 100vw;
       height: 100vh;
       /* bg-foreground-2: 2% foreground mixed with background */
-      background-color: #f7f7f7;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #f5f0eb;
+      font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -61,13 +64,12 @@ export function generateCallbackPage(options: {
 
     .logo {
       /* Purple accent: oklch(0.62 0.13 293) */
-      color: #8b5fb3;
-      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-      font-size: 6px;
-      line-height: 1;
+      color: #ff6b6b;
+      font-family: "DM Serif Display", Georgia, serif;
+      font-size: 14px;
+      line-height: 1.05;
       white-space: pre;
-      /* Negative letter-spacing to close gaps between block characters */
-      letter-spacing: -0.05em;
+      letter-spacing: -0.03em;
       /* 48px above the card */
       margin-bottom: 48px;
     }
@@ -122,23 +124,22 @@ export function generateCallbackPage(options: {
       font-size: 14px;
       font-weight: 500;
       color: #fff;
-      background-color: #8b5fb3;
+      background-color: #ff6b6b;
       border-radius: 6px;
       text-decoration: none;
       transition: background-color 0.15s ease;
     }
 
     .return-link:hover {
-      background-color: #7a4fa3;
+      background-color: #f75c5c;
     }
 
     @media (prefers-color-scheme: dark) {
       body {
-        background-color: #1a1a1a;
+        background-color: #1e1c1b;
       }
       .logo {
-        /* Brighter purple in dark mode: oklch(0.68 0.13 293) */
-        color: #a882c9;
+        color: #ff8a8a;
       }
       .card {
         ${isSuccess
@@ -175,7 +176,7 @@ export function generateCallbackPage(options: {
       <div class="status">${statusMessage}</div>
     </div>
     <div class="hint">${isSuccess ? 'You can now return to the application.' : 'Please close this window and try again.'}</div>
-    ${deeplinkUrl ? `<a href="${deeplinkUrl}" class="return-link">Craft Agents</a>` : ''}
+    ${deeplinkUrl ? `<a href="${deeplinkUrl}" class="return-link">Open Noodle</a>` : ''}
   </div>
   <script>${autoCloseScript}</script>
 </body>

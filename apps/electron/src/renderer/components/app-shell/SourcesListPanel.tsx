@@ -8,6 +8,7 @@ import { EntityListEmptyScreen } from '@/components/ui/entity-list-empty'
 import { sourceSelection } from '@/hooks/useEntitySelection'
 import { SourceMenu } from './SourceMenu'
 import { EditPopover, getEditConfig, type EditContextKey } from '@/components/ui/EditPopover'
+import { APP_PROTOCOL_SCHEME } from '../../../shared/brand'
 import type { LoadedSource, SourceConnectionStatus, SourceFilter } from '../../../shared/types'
 
 const SOURCE_TYPE_CONFIG: Record<string, { label: string; colorClass: string }> = {
@@ -117,7 +118,7 @@ export function SourcesListPanel({
             <SourceMenu
               sourceSlug={source.config.slug}
               sourceName={source.config.name}
-              onOpenInNewWindow={() => window.electronAPI.openUrl(`craftagents://sources/source/${source.config.slug}?window=focused`)}
+              onOpenInNewWindow={() => window.electronAPI.openUrl(`${APP_PROTOCOL_SCHEME}://sources/source/${source.config.slug}?window=focused`)}
               onShowInFinder={() => window.electronAPI.showInFolder(source.folderPath)}
               onDelete={() => onDeleteSource(source.config.slug)}
             />

@@ -26,6 +26,7 @@ import {
   type PermissionRow,
   type ToolRow,
 } from '@/components/info'
+import { APP_PROTOCOL_SCHEME } from '../../shared/brand'
 import type { LoadedSource, McpToolWithPermission } from '../../shared/types'
 import type { PermissionsConfigFile } from '@craft-agent/shared/agent/modes'
 
@@ -349,7 +350,7 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
 
   // Handle opening in new window
   const handleOpenInNewWindow = useCallback(() => {
-    window.electronAPI.openUrl(`craftagents://sources/source/${sourceSlug}?window=focused`)
+    window.electronAPI.openUrl(`${APP_PROTOCOL_SCHEME}://sources/source/${sourceSlug}?window=focused`)
   }, [sourceSlug])
 
   // Get source name for header

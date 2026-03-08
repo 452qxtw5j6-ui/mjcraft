@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils"
 import { Key, Monitor } from "lucide-react"
 import { CraftAgentsSymbol } from "@/components/icons/CraftAgentsSymbol"
+import { APP_NAME } from "../../../shared/brand"
 import { StepFormLayout } from "./primitives"
 
 import claudeIcon from "@/assets/provider-icons/claude.svg"
@@ -72,7 +73,7 @@ export function ProviderSelectStep({ onSelect }: ProviderSelectStepProps) {
           <CraftAgentsSymbol className="size-10 text-accent" />
         </div>
       }
-      title="Welcome to Craft Agents"
+      title={`Welcome to ${APP_NAME}`}
       description="How would you like to connect?"
     >
       <div className="space-y-3">

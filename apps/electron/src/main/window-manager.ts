@@ -5,6 +5,7 @@ import { existsSync } from 'fs'
 import { release } from 'os'
 import { RPC_CHANNELS, type WindowCloseRequestSource } from '../shared/types'
 import type { SavedWindow } from './window-state'
+import { APP_NAME } from '../shared/brand'
 
 // Vite dev server URL for hot reload
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
@@ -139,7 +140,7 @@ export class WindowManager {
       minWidth: 800,
       minHeight: 600,
       show: false, // Don't show until ready-to-show event (faster perceived startup)
-      title: '',
+      title: APP_NAME,
       icon: iconExists ? iconPath : undefined,
       // macOS-specific: hidden title bar with inset traffic lights
       ...(isMac && {
@@ -180,6 +181,10 @@ export class WindowManager {
     window.webContents.setWindowOpenHandler((details) => {
       shell.openExternal(details.url)
       return { action: 'deny' }
+    })
+
+    window.webContents.on('render-process-gone', (_event, details) => {
+      windowLog.error(`[renderer:${webContentsId}] render-process-gone`, details)
     })
 
     // Handle external navigation attempts from renderer WebContents

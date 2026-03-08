@@ -16,6 +16,7 @@ import * as Icons from "lucide-react"
 import { Tooltip, TooltipTrigger, TooltipContent } from "@craft-agent/ui"
 import { CraftAgentsSymbol } from "./icons/CraftAgentsSymbol"
 import { SquarePenRounded } from "./icons/SquarePenRounded"
+import { APP_NAME } from "../../shared/brand"
 import { TopBarButton } from "./ui/TopBarButton"
 import {
   EDIT_MENU,
@@ -196,11 +197,11 @@ export function AppMenu({
 
   return (
     <div className="flex items-center gap-[5px] w-full">
-      {/* Craft Logo Menu - interactive island */}
+      {/* App Logo Menu - interactive island */}
       <div className="pointer-events-auto titlebar-no-drag">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <TopBarButton aria-label="Craft menu">
+          <TopBarButton aria-label={`${APP_NAME} menu`}>
             <CraftAgentsSymbol className="h-4 text-accent" />
           </TopBarButton>
         </DropdownMenuTrigger>
@@ -317,7 +318,7 @@ export function AppMenu({
           {/* Quit */}
           <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
             <Icons.LogOut className="h-3.5 w-3.5" />
-            Quit Craft Agents
+            {`Quit ${APP_NAME}`}
             {quitHotkey && <DropdownMenuShortcut className="pl-6">{quitHotkey}</DropdownMenuShortcut>}
           </StyledDropdownMenuItem>
         </StyledDropdownMenuContent>

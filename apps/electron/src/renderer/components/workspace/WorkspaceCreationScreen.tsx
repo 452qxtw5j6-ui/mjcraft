@@ -100,13 +100,13 @@ export function WorkspaceCreationScreen({
 
   // Get theme colors from CSS variables for the shader
   const shaderColors = useMemo(() => {
-    if (typeof window === 'undefined') return { back: '#00000000', front: '#684e85' }
+    if (typeof window === 'undefined') return { back: '#00000000', front: '#ff6b6b' }
     const root = document.documentElement
-    const isDark = root.classList.contains('dark')
-    // Transparent back, accent-tinted front
-    return isDark
-      ? { back: '#00000000', front: '#9b7bb8' }  // lighter accent for dark mode
-      : { back: '#00000000', front: '#684e85' }  // accent color
+    const accent = getComputedStyle(root).getPropertyValue('--accent').trim()
+    return {
+      back: '#00000000',
+      front: accent || '#ff6b6b',
+    }
   }, [])
 
   // FullscreenOverlayBase handles portal, traffic lights, and ESC key

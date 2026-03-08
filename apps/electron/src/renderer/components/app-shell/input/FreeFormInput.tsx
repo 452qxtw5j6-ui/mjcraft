@@ -314,7 +314,7 @@ export function FreeFormInput({
   const connectionsByProvider = React.useMemo(() => {
     const groups: Record<string, typeof llmConnections> = {
       'Anthropic': [],
-      'Craft Agents Backend': [],
+      'Noodle Backend': [],
     }
     for (const conn of llmConnections) {
       const provider = conn.providerType || 'anthropic'
@@ -322,7 +322,7 @@ export function FreeFormInput({
       if (provider === 'anthropic' || provider === 'anthropic_compat' || provider === 'bedrock' || provider === 'vertex') {
         groups['Anthropic'].push(conn)
       } else if (provider === 'pi' || provider === 'pi_compat') {
-        groups['Craft Agents Backend'].push(conn)
+        groups['Noodle Backend'].push(conn)
       }
     }
     // Return only non-empty groups

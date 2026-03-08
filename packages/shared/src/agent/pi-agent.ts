@@ -39,7 +39,7 @@ import type { Workspace } from '../config/storage.ts';
 import { PiEventAdapter } from './backend/pi/event-adapter.ts';
 import { EventQueue } from './backend/event-queue.ts';
 
-// System prompt for Craft Agent context
+// System prompt for Noodle context
 import { getSystemPrompt } from '../prompts/system.ts';
 
 // Credential manager for token storage
@@ -114,7 +114,7 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
  * planning heuristics, config watching, usage tracking).
  */
 export class PiAgent extends BaseAgent {
-  protected backendName = 'Craft Agents Backend';
+  protected backendName = 'Noodle Backend';
 
   // ============================================================
   // Subprocess State
@@ -793,7 +793,7 @@ export class PiAgent extends BaseAgent {
    */
   private handleSubprocessEvent(event: Record<string, unknown>): void {
     // The subprocess sends Pi SDK AgentSessionEvent objects serialized as JSON.
-    // Feed them through PiEventAdapter to convert to Craft AgentEvents.
+    // Feed them through PiEventAdapter to convert to Noodle AgentEvents.
 
     // Detect session MCP tool completions (same pattern as in-process version)
     const eventType = event.type as string;
@@ -1624,7 +1624,7 @@ export class PiAgent extends BaseAgent {
         this.config.workspace.rootPath,
         this.config.session?.workingDirectory,
         this.config.systemPromptPreset,
-        'Craft Agents Backend' // backendName
+        'Noodle Backend' // backendName
       );
 
       // Build context from sources

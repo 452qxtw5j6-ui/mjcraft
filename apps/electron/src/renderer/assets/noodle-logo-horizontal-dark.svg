@@ -1,0 +1,11 @@
+<svg width="170" height="60" viewBox="0 0 170 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="170" height="60" rx="8" fill="#2C2C2C"/>
+  <!-- Spiral Snap symbol -->
+  <g transform="translate(6,6) scale(2)">
+    <g transform="translate(-1.5, 0.5)">
+      <path d="M12 12 C12 10, 14 9, 15 10 C17 12, 15 15, 12 15 C8 15, 6 12, 6 9 C6 5, 10 3, 14 3 C19 3, 21 7, 21 12 C21 16, 19 19, 15 20" stroke="#FF6B6B" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+    </g>
+  </g>
+  <!-- Wordmark -->
+  <text x="68" y="40" font-family="'Plus Jakarta Sans', sans-serif" font-size="28" font-weight="500" fill="#F5F0EB" letter-spacing="-0.3">Noodle</text>
+</svg>

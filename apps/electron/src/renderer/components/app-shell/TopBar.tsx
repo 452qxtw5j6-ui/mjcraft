@@ -40,6 +40,7 @@ import { BrowserTabStrip } from "../browser/BrowserTabStrip"
 import type { Workspace } from "../../../shared/types"
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
+import { APP_NAME } from "../../../shared/brand"
 
 // --- Menu rendering (moved from AppMenu) ---
 
@@ -250,7 +251,7 @@ export function TopBar({
 
   return (
     <div
-      className="fixed top-0 left-0 right-0 h-[48px] z-panel titlebar-drag-region"
+      className="fixed top-0 left-0 right-0 h-[48px] z-panel titlebar-drag-region app-toolbar-surface"
     >
       <div className="flex h-full w-full items-center justify-between gap-2">
       {/* === LEFT: Sidebar + Menu + Navigation + Workspace === */}
@@ -266,10 +267,10 @@ export function TopBar({
           <TooltipContent side="bottom">Toggle Sidebar</TooltipContent>
         </Tooltip>
 
-        {/* Craft Menu */}
+        {/* App Menu */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <TopBarButton aria-label="Craft menu">
+            <TopBarButton aria-label={`${APP_NAME} menu`}>
               <CraftAgentsSymbol className="h-4 text-accent" />
             </TopBarButton>
           </DropdownMenuTrigger>
@@ -372,7 +373,7 @@ export function TopBar({
 
             <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
               <Icons.LogOut className="h-3.5 w-3.5" />
-              Quit Craft Agents
+              {`Quit ${APP_NAME}`}
               {quitHotkey && <DropdownMenuShortcut className="pl-6">{quitHotkey}</DropdownMenuShortcut>}
             </StyledDropdownMenuItem>
           </StyledDropdownMenuContent>

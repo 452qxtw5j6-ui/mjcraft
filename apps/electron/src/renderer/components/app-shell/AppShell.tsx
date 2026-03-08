@@ -2162,37 +2162,42 @@ function AppShellContent({
       {/* === OUTER LAYOUT: Unified Panel Stack | Right Sidebar === */}
       <div
         className="flex items-stretch relative"
-        style={{ height: 'calc(100% - 48px)', marginTop: 48, paddingRight: PANEL_EDGE_INSET, paddingBottom: PANEL_EDGE_INSET, paddingLeft: 0, gap: PANEL_GAP }}
+        style={{ height: 'calc(100% - 48px)', marginTop: 48, paddingTop: PANEL_EDGE_INSET + 4, paddingRight: PANEL_EDGE_INSET, paddingBottom: PANEL_EDGE_INSET, paddingLeft: 0, gap: PANEL_GAP }}
       >
         <PanelStackContainer
           sidebarSlot={
             <div
               ref={sidebarRef}
-              style={{ width: sidebarWidth }}
-              className="h-full font-sans relative"
+              style={{
+                width: sidebarWidth,
+                borderTopLeftRadius: RADIUS_EDGE,
+                borderBottomLeftRadius: RADIUS_EDGE,
+                borderTopRightRadius: RADIUS_INNER,
+                borderBottomRightRadius: RADIUS_INNER,
+              }}
+              className="h-full font-sans relative overflow-hidden shadow-middle"
               data-focus-zone="sidebar"
               tabIndex={sidebarFocused ? 0 : -1}
               onKeyDown={handleSidebarKeyDown}
             >
-            <div className="flex h-full flex-col select-none">
+            <div className="flex h-full flex-col select-none app-sidebar-surface">
               {/* Sidebar Top Section */}
               <div className="flex-1 flex flex-col min-h-0">
                 {/* New Session Button - Gmail-style, with context menu for "Open in New Window" */}
-                <div className="px-2 pb-2 shrink-0">
+                <div className="px-2 pb-2 pt-2 shrink-0">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <div>
                         <ContextMenu modal={true}>
                           <ContextMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
+                            <button
                               onClick={(e) => handleNewChat(e.metaKey || e.ctrlKey)}
-                              className="w-full justify-start gap-2 py-[7px] px-2 text-[13px] font-normal rounded-[6px] shadow-minimal bg-background"
+                              className="group flex w-full items-center gap-2 rounded-[6px] text-[13px] font-normal select-none outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring py-[5px] px-2 bg-background/90 shadow-minimal backdrop-blur-sm"
                               data-tutorial="new-chat-button"
                             >
                               <SquarePenRounded className="h-3.5 w-3.5 shrink-0" />
                               New Session
-                            </Button>
+                            </button>
                           </ContextMenuTrigger>
                           <StyledContextMenuContent>
                             <ContextMenuProvider>
