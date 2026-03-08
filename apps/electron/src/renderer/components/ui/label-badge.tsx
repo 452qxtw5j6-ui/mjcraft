@@ -11,9 +11,12 @@
 
 import * as React from 'react'
 import { cn } from '@/lib/utils'
+import { ChevronDown } from 'lucide-react'
 import { LabelIcon, LabelValueTypeIcon } from './label-icon'
 import { formatDisplayValue } from '@craft-agent/shared/labels'
+import { resolveEntityColor } from '@craft-agent/shared/colors'
 import type { LabelConfig } from '@craft-agent/shared/labels'
+import { useTheme } from '@/context/ThemeContext'
 
 export interface LabelBadgeProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   /** Label configuration (for color, name, valueType) */
@@ -26,7 +29,11 @@ export interface LabelBadgeProps extends React.ButtonHTMLAttributes<HTMLButtonEl
 
 export const LabelBadge = React.forwardRef<HTMLButtonElement, LabelBadgeProps>(
   function LabelBadge({ label, value, isActive = false, className, ...buttonProps }, ref) {
+    const { isDark } = useTheme()
     const displayValue = value ? formatDisplayValue(value, label.valueType) : undefined
+    const resolvedColor = label.color
+      ? resolveEntityColor(label.color, isDark)
+      : 'var(--foreground)'
 
     return (
       <button
@@ -34,39 +41,37 @@ export const LabelBadge = React.forwardRef<HTMLButtonElement, LabelBadgeProps>(
         type="button"
         {...buttonProps}
         className={cn(
-          // Base chip styles
-          'inline-flex items-center gap-1.5 h-6 px-2 rounded-[5px]',
-          'text-[12px] leading-none text-foreground/80 select-none',
-          'bg-background shadow-thin',
-          'transition-colors cursor-pointer',
-          // Hover and active states
-          'hover:bg-foreground/5 hover:text-foreground',
-          isActive && 'bg-foreground/5 text-foreground',
+          'h-[30px] pl-3 pr-2 rounded-[8px] inline-flex items-center shrink-0',
+          'text-[11px] leading-none font-[450] tracking-[0.012em]',
+          'outline-none select-none transition-colors cursor-pointer antialiased',
+          'bg-[color-mix(in_srgb,var(--background)_97%,var(--badge-color))]',
+          'hover:bg-[color-mix(in_srgb,var(--background)_92%,var(--badge-color))]',
+          'text-[color-mix(in_srgb,var(--foreground)_80%,var(--badge-color))]',
+          isActive && 'bg-[color-mix(in_srgb,var(--background)_92%,var(--badge-color))]',
           className
         )}
+        style={{ '--badge-color': resolvedColor } as React.CSSProperties}
       >
-        {/* Colored circle representing the label */}
-        <LabelIcon label={label} size="xs" />
+        <LabelIcon label={label} size="lg" />
 
-        {/* Label name */}
-        <span className="truncate max-w-[100px]">{label.name}</span>
+        <span className="whitespace-nowrap ml-2">{label.name}</span>
 
-        {/* Optional value, visually separated — or placeholder icon if typed but no value set */}
         {displayValue ? (
           <>
-            <span className="text-foreground/30">·</span>
-            <span className="text-[11px] text-foreground/60 truncate max-w-[120px]">
+            <span className="opacity-30 mx-1">·</span>
+            <span className="opacity-60 whitespace-nowrap max-w-[100px] truncate">
               {displayValue}
             </span>
           </>
         ) : (
           label.valueType && (
             <>
-              <span className="text-foreground/30">·</span>
+              <span className="opacity-30 mx-1">·</span>
               <LabelValueTypeIcon valueType={label.valueType} />
             </>
           )
         )}
+        <ChevronDown className="h-3 w-3 opacity-40 ml-1 shrink-0" />
       </button>
     )
   }

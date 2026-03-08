@@ -187,6 +187,9 @@ export async function createSession(
     sessionStatus?: SessionConfig['sessionStatus'];
     labels?: string[];
     isFlagged?: boolean;
+    sessionOrigin?: SessionConfig['sessionOrigin'];
+    notionRef?: SessionConfig['notionRef'];
+    slackRef?: SessionConfig['slackRef'];
   }
 ): Promise<SessionConfig> {
   ensureSessionsDir(workspaceRootPath);
@@ -205,6 +208,9 @@ export async function createSession(
   const session: SessionConfig = {
     id: sessionId,
     workspaceRootPath,
+    sessionOrigin: options?.sessionOrigin,
+    notionRef: options?.notionRef,
+    slackRef: options?.slackRef,
     name: options?.name,
     createdAt: now,
     lastUsedAt: now,
@@ -541,6 +547,9 @@ export async function updateSessionMetadata(
     | 'llmConnection'
     | 'isArchived'
     | 'archivedAt'
+    | 'sessionOrigin'
+    | 'notionRef'
+    | 'slackRef'
   >>
 ): Promise<void> {
   const session = loadSession(workspaceRootPath, sessionId);
@@ -562,6 +571,9 @@ export async function updateSessionMetadata(
   if (updates.llmConnection !== undefined) session.llmConnection = updates.llmConnection;
   if (updates.isArchived !== undefined) session.isArchived = updates.isArchived;
   if ('archivedAt' in updates) session.archivedAt = updates.archivedAt;
+  if ('sessionOrigin' in updates) session.sessionOrigin = updates.sessionOrigin;
+  if ('notionRef' in updates) session.notionRef = updates.notionRef;
+  if ('slackRef' in updates) session.slackRef = updates.slackRef;
 
   await saveSession(session);
 }

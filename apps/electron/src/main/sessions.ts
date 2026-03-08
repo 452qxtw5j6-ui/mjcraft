@@ -56,6 +56,9 @@ import {
   type SessionMetadata,
   type SessionStatus,
   type SessionHeader,
+  type SessionOrigin,
+  type NotionSessionRef,
+  type SlackSessionRef,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
@@ -92,6 +95,14 @@ function buildBackendHostRuntimeContext(): BackendHostRuntimeContext {
     resourcesPath: process.resourcesPath,
     isPackaged: app.isPackaged,
   }
+}
+
+function buildSlackThreadIndexKey(workspaceId: string, channelId: string, threadTs: string): string {
+  return `${workspaceId}:slack:${channelId}:${threadTs}`
+}
+
+function buildNotionPageIndexKey(workspaceId: string, pageId: string): string {
+  return `${workspaceId}:notion:${pageId}`
 }
 
 /**
@@ -633,11 +644,15 @@ type AgentInstance = AgentBackend
 interface ManagedSession {
   id: string
   workspace: Workspace
+  sessionOrigin?: SessionOrigin
+  notionRef?: NotionSessionRef
+  slackRef?: SlackSessionRef
   agent: AgentInstance | null  // Lazy-loaded - null until first message
   messages: Message[]
   isProcessing: boolean
   /** Set when user requests stop - allows event loop to drain before clearing isProcessing */
   stopRequested?: boolean
+  lastUsedAt?: number
   lastMessageAt: number
   streamingText: string
   // Incremented each time a new message starts processing.
@@ -888,6 +903,9 @@ interface PendingDelta {
 
 export class SessionManager {
   private sessions: Map<string, ManagedSession> = new Map()
+  private slackThreadSessionIndex: Map<string, Set<string>> = new Map()
+  private notionPageSessionIndex: Map<string, Set<string>> = new Map()
+  private sessionLinkIndexKeys: Map<string, { slackKey?: string; notionKey?: string }> = new Map()
   private windowManager: WindowManager | null = null
   // Delta batching for performance - reduces IPC events from 50+/sec to ~20/sec
   private pendingDeltas: Map<string, PendingDelta> = new Map()
@@ -1054,8 +1072,28 @@ export class SessionManager {
       changed = true
     }
 
+    if (managed.sessionOrigin !== header.sessionOrigin) {
+      managed.sessionOrigin = header.sessionOrigin
+      changed = true
+    }
+
+    const oldNotionRef = JSON.stringify(managed.notionRef ?? null)
+    const newNotionRef = JSON.stringify(header.notionRef ?? null)
+    if (oldNotionRef !== newNotionRef) {
+      managed.notionRef = header.notionRef
+      changed = true
+    }
+
+    const oldSlackRef = JSON.stringify(managed.slackRef ?? null)
+    const newSlackRef = JSON.stringify(header.slackRef ?? null)
+    if (oldSlackRef !== newSlackRef) {
+      managed.slackRef = header.slackRef
+      changed = true
+    }
+
     if (changed) {
       sessionLog.info(`External metadata change detected for session ${sessionId}`)
+      this.updateSessionLinkIndexes(managed)
 
       // Prevent stale pending writes from reverting externally-updated metadata.
       sessionPersistenceQueue.cancel(sessionId)
@@ -1497,6 +1535,7 @@ export class SessionManager {
           }
 
           this.sessions.set(meta.id, managed)
+          this.updateSessionLinkIndexes(managed)
 
           // Initialize session metadata in AutomationSystem for diffing
           const automationSystem = this.automationSystems.get(workspaceRootPath)
@@ -1518,6 +1557,116 @@ export class SessionManager {
     } catch (error) {
       sessionLog.error('Failed to load sessions from disk:', error)
     }
+  }
+
+  private addSessionLinkIndexEntry(index: Map<string, Set<string>>, key: string, sessionId: string): void {
+    const current = index.get(key) ?? new Set<string>()
+    current.add(sessionId)
+    index.set(key, current)
+  }
+
+  private removeSessionLinkIndexEntry(index: Map<string, Set<string>>, key: string, sessionId: string): void {
+    const current = index.get(key)
+    if (!current) return
+    current.delete(sessionId)
+    if (current.size === 0) {
+      index.delete(key)
+      return
+    }
+    index.set(key, current)
+  }
+
+  private pickBestLinkedSession(sessionIds: Set<string>): ManagedSession | null {
+    const candidates = Array.from(sessionIds)
+      .map(sessionId => this.sessions.get(sessionId))
+      .filter((session): session is ManagedSession => !!session)
+
+    if (candidates.length === 0) return null
+
+    candidates.sort((a, b) => {
+      const byLastUsed = (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0)
+      if (byLastUsed !== 0) return byLastUsed
+      return (b.createdAt ?? 0) - (a.createdAt ?? 0)
+    })
+    return candidates[0] ?? null
+  }
+
+  private updateSessionLinkIndexes(managed: Pick<ManagedSession, 'id' | 'workspace' | 'slackRef' | 'notionRef'>): void {
+    const previous = this.sessionLinkIndexKeys.get(managed.id)
+    if (previous?.slackKey) this.removeSessionLinkIndexEntry(this.slackThreadSessionIndex, previous.slackKey, managed.id)
+    if (previous?.notionKey) this.removeSessionLinkIndexEntry(this.notionPageSessionIndex, previous.notionKey, managed.id)
+
+    const next: { slackKey?: string; notionKey?: string } = {}
+    if (managed.slackRef?.channelId && managed.slackRef.threadTs) {
+      const slackKey = buildSlackThreadIndexKey(managed.workspace.id, managed.slackRef.channelId, managed.slackRef.threadTs)
+      this.addSessionLinkIndexEntry(this.slackThreadSessionIndex, slackKey, managed.id)
+      next.slackKey = slackKey
+    }
+    if (managed.notionRef?.pageId) {
+      const notionKey = buildNotionPageIndexKey(managed.workspace.id, managed.notionRef.pageId)
+      this.addSessionLinkIndexEntry(this.notionPageSessionIndex, notionKey, managed.id)
+      next.notionKey = notionKey
+    }
+
+    if (next.slackKey || next.notionKey) {
+      this.sessionLinkIndexKeys.set(managed.id, next)
+    } else {
+      this.sessionLinkIndexKeys.delete(managed.id)
+    }
+  }
+
+  private removeSessionLinkIndexes(sessionId: string): void {
+    const previous = this.sessionLinkIndexKeys.get(sessionId)
+    if (!previous) return
+    if (previous.slackKey) this.removeSessionLinkIndexEntry(this.slackThreadSessionIndex, previous.slackKey, sessionId)
+    if (previous.notionKey) this.removeSessionLinkIndexEntry(this.notionPageSessionIndex, previous.notionKey, sessionId)
+    this.sessionLinkIndexKeys.delete(sessionId)
+  }
+
+  async findSessionBySlackThread(workspaceId: string, channelId: string, threadTs: string): Promise<Session | null> {
+    const sessionIds = this.slackThreadSessionIndex.get(buildSlackThreadIndexKey(workspaceId, channelId, threadTs))
+    if (!sessionIds || sessionIds.size === 0) return null
+    const managed = this.pickBestLinkedSession(sessionIds)
+    if (!managed) return null
+    return managedToSession(managed)
+  }
+
+  async findSessionByNotionPage(workspaceId: string, pageId: string): Promise<Session | null> {
+    const sessionIds = this.notionPageSessionIndex.get(buildNotionPageIndexKey(workspaceId, pageId))
+    if (!sessionIds || sessionIds.size === 0) return null
+    const managed = this.pickBestLinkedSession(sessionIds)
+    if (!managed) return null
+    return managedToSession(managed)
+  }
+
+  notifySessionCreated(sessionId: string): void {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+    this.sendEvent({ type: 'session_created', sessionId }, managed.workspace.id)
+  }
+
+  async linkSessionToSlack(sessionId: string, slackRef: SlackSessionRef): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+    managed.slackRef = slackRef
+    this.updateSessionLinkIndexes(managed)
+    if (managed.messagesLoaded) {
+      this.persistSession(managed)
+      return
+    }
+    await updateSessionMetadata(managed.workspace.rootPath, sessionId, { slackRef })
+  }
+
+  async linkSessionToNotion(sessionId: string, notionRef: NotionSessionRef): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+    managed.notionRef = notionRef
+    this.updateSessionLinkIndexes(managed)
+    if (managed.messagesLoaded) {
+      this.persistSession(managed)
+      return
+    }
+    await updateSessionMetadata(managed.workspace.rootPath, sessionId, { notionRef })
   }
 
   // Persist a session to disk (async with debouncing)
@@ -2267,6 +2416,9 @@ export class SessionManager {
     // Use storage layer to create and persist the session
     const storedSession = await createStoredSession(workspaceRootPath, {
       name: options?.name,
+      sessionOrigin: options?.sessionOrigin,
+      notionRef: options?.notionRef,
+      slackRef: options?.slackRef,
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
       hidden: options?.hidden,
@@ -2361,6 +2513,10 @@ export class SessionManager {
     }
 
     this.sessions.set(storedSession.id, managed)
+    this.updateSessionLinkIndexes(managed)
+    if (!options?.suppressCreatedEvent) {
+      this.sendEvent({ type: 'session_created', sessionId: storedSession.id }, workspace.id)
+    }
 
     // Initialize session metadata in AutomationSystem for diffing
     const automationSystem = this.automationSystems.get(workspaceRootPath)
@@ -4266,6 +4422,7 @@ export class SessionManager {
     }
 
     this.sessions.delete(sessionId)
+    this.removeSessionLinkIndexes(sessionId)
 
     // Clean up session metadata in AutomationSystem (prevents memory leak)
     const automationSystem = this.automationSystems.get(workspaceRootPath)

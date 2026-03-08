@@ -60,6 +60,8 @@ interface TestSession {
   lastMessageAt: number
   messages: TestSessionMessage[]
   isProcessing: boolean
+  sessionOrigin?: 'manual' | 'notion' | 'slack'
+  slackRef?: { channelId: string; threadTs: string; rootMessageTs: string; permalink?: string }
   permissionMode?: 'safe' | 'ask' | 'allow-all'
   model?: string
   llmConnection?: string
@@ -297,7 +299,7 @@ describe('SlackBotService routing', () => {
     }
   })
 
-  it('reuses one session key for a thread root across users', async () => {
+  it('reuses one metadata-linked session for a thread root across users', async () => {
     const workspaceRoot = await createWorkspaceRoot({ testerUserIds: ['U1', 'U2'] })
     const sessions = new Map<string, TestSession>()
     const sendCalls: Array<{ sessionId: string, message: string }> = []
@@ -311,6 +313,8 @@ describe('SlackBotService routing', () => {
           permissionMode?: 'safe' | 'ask' | 'allow-all'
           llmConnection?: string
           model?: string
+          sessionOrigin?: 'manual' | 'notion' | 'slack'
+          slackRef?: { channelId: string; threadTs: string; rootMessageTs: string; permalink?: string }
         }) => {
           createdCount += 1
           const session = makeSession([], {
@@ -318,11 +322,21 @@ describe('SlackBotService routing', () => {
             model: options?.model,
             llmConnection: options?.llmConnection,
             permissionMode: options?.permissionMode,
+            sessionOrigin: options?.sessionOrigin,
+            slackRef: options?.slackRef,
           })
           sessions.set(session.id, session)
           return session
         },
         getSession: async (id: string) => sessions.get(id) ?? null,
+        findSessionBySlackThread: async (_workspaceId: string, channelId: string, threadTs: string) => {
+          for (const session of sessions.values()) {
+            if (session.slackRef?.channelId === channelId && session.slackRef.threadTs === threadTs) {
+              return session
+            }
+          }
+          return null
+        },
         sendMessage: async (sessionId: string, message: string) => {
           sendCalls.push({ sessionId, message })
           const session = sessions.get(sessionId)
@@ -360,11 +374,76 @@ describe('SlackBotService routing', () => {
       expect(posts[0]?.thread_ts).toBe('100')
       expect(posts[1]?.thread_ts).toBe('100')
       expect(updates.length).toBe(2)
+      expect(sessions.get('session-1')?.sessionOrigin).toBe('slack')
+      expect(sessions.get('session-1')?.slackRef).toEqual({
+        channelId: 'D1',
+        threadTs: '100',
+        rootMessageTs: '100',
+      })
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true })
+    }
+  })
 
-      const mapRaw = await readFile(join(workspaceRoot, '.slack', 'session-map.json'), 'utf-8')
-      const map = JSON.parse(mapRaw) as { mappings: Record<string, string> }
-      expect(map.mappings['slack:D1:100']).toBe('session-1')
-      expect(Object.keys(map.mappings).length).toBe(1)
+  it('backfills slackRef when a legacy session-map entry is used', async () => {
+    const workspaceRoot = await createWorkspaceRoot({ testerUserIds: ['U1'] })
+    const sessions = new Map<string, TestSession>([
+      ['session-legacy', makeSession([], { id: 'session-legacy' })],
+    ])
+    let linkedRef: TestSession['slackRef'] | null = null
+
+    await writeFile(
+      join(workspaceRoot, '.slack', 'session-map.json'),
+      `${JSON.stringify({ version: 1, mappings: { 'slack:C1:100': 'session-legacy' }, updatedAt: Date.now() }, null, 2)}\n`,
+      'utf-8',
+    )
+
+    const service = new SlackBotService({
+      workspaceId: 'ws-1',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        createSession: async () => {
+          throw new Error('should not create new session')
+        },
+        getSession: async (id: string) => sessions.get(id) ?? null,
+        findSessionBySlackThread: async () => null,
+        linkSessionToSlack: async (sessionId: string, slackRef) => {
+          linkedRef = slackRef
+          const session = sessions.get(sessionId)
+          if (session) session.slackRef = slackRef
+        },
+        sendMessage: async (sessionId: string, message: string) => {
+          const session = sessions.get(sessionId)
+          if (!session) throw new Error(`Missing session ${sessionId}`)
+          session.messages.push({ id: 'u1', role: 'user', content: message })
+          session.messages.push({ id: 'a1', role: 'assistant', content: 'done' })
+        },
+      },
+    })
+
+    const { client } = makeClient()
+
+    try {
+      ;(service as any).sessionMap = {
+        version: 1,
+        mappings: { 'slack:C1:100': 'session-legacy' },
+        updatedAt: Date.now(),
+      }
+
+      await service.handleIncomingEvent({
+        type: 'app_mention',
+        channel: 'C1',
+        userId: 'U1',
+        text: 'hello',
+        ts: '101',
+        threadTs: '100',
+      }, client)
+
+      expect(linkedRef!).toEqual({
+        channelId: 'C1',
+        threadTs: '100',
+        rootMessageTs: '100',
+      })
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true })
     }

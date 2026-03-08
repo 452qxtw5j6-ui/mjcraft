@@ -91,6 +91,7 @@ import { initNotificationService, initBadgeIcon, initInstanceBadge } from './not
 import { checkForUpdatesOnLaunch, setWindowManager as setAutoUpdateWindowManager, isUpdating } from './auto-update'
 import { validateGitBashPath } from './git-bash'
 import { SlackBotService } from './slack-bot'
+import { NotionTaskService } from './notion-task-service'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -152,6 +153,7 @@ const DEEPLINK_SCHEME = process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'
 let windowManager: WindowManager | null = null
 let sessionManager: SessionManager | null = null
 let slackBotService: SlackBotService | null = null
+let notionTaskService: NotionTaskService | null = null
 let browserPaneManager: BrowserPaneManager | null = null
 
 // Store pending deep link if app not ready yet (cold start)
@@ -393,7 +395,7 @@ app.whenReady().then(async () => {
     sessionManager.setBrowserPaneManager(browserPaneManager)
 
     // Register IPC handlers (must happen before window creation)
-    registerIpcHandlers(sessionManager, windowManager, browserPaneManager)
+    registerIpcHandlers(sessionManager, windowManager, browserPaneManager, () => notionTaskService)
 
     // Create initial windows (restores from saved state or opens first workspace)
     await createInitialWindows()
@@ -427,6 +429,27 @@ app.whenReady().then(async () => {
       }
     } else {
       mainLog.warn('Skipping Slack bot startup: no workspace available')
+    }
+
+    if (slackWorkspace) {
+      try {
+        notionTaskService = new NotionTaskService({
+          workspaceId: slackWorkspace.id,
+          workspaceRootPath: slackWorkspace.rootPath,
+          sessionManager,
+        })
+        await notionTaskService.start()
+      } catch (error) {
+        mainLog.error('Notion task service startup failed; continuing app startup without Notion queue:', error)
+        if (notionTaskService) {
+          await notionTaskService.stop().catch(stopError => {
+            mainLog.warn('Failed to stop Notion task service after startup failure:', stopError)
+          })
+        }
+        notionTaskService = null
+      }
+    } else {
+      mainLog.warn('Skipping Notion task service startup: no workspace available')
     }
 
     // Start periodic model refresh after auth is initialized
@@ -564,6 +587,11 @@ app.on('before-quit', async (event) => {
     if (slackBotService) {
       await slackBotService.stop()
       slackBotService = null
+    }
+
+    if (notionTaskService) {
+      await notionTaskService.stop()
+      notionTaskService = null
     }
 
     // Clean up SessionManager resources (file watchers, timers, etc.)

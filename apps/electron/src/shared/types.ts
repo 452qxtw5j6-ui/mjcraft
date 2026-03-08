@@ -50,6 +50,9 @@ export type { CredentialHealthStatus, CredentialHealthIssue, CredentialHealthIss
 import type { LoadedSource, FolderSourceConfig, SourceConnectionStatus } from '@craft-agent/shared/sources/types';
 export type { LoadedSource, FolderSourceConfig, SourceConnectionStatus };
 
+import type { SessionOrigin, NotionSessionRef, SlackSessionRef } from '@craft-agent/shared/sessions';
+export type { SessionOrigin, NotionSessionRef, SlackSessionRef };
+
 // Import skill types
 import type { LoadedSkill, SkillMetadata } from '@craft-agent/shared/skills/types';
 export type { LoadedSkill, SkillMetadata };
@@ -350,6 +353,9 @@ export interface Session {
   id: string
   workspaceId: string
   workspaceName: string
+  sessionOrigin?: SessionOrigin
+  notionRef?: NotionSessionRef
+  slackRef?: SlackSessionRef
   name?: string  // User-defined or AI-generated session name
   /** Preview of first user message (from JSONL header, for lazy-loaded sessions) */
   preview?: string
@@ -438,6 +444,14 @@ export interface Session {
 export interface CreateSessionOptions {
   /** Session name (optional, AI-generated if not provided) */
   name?: string
+  /** Internal: suppress immediate session_created broadcast until caller triggers it manually */
+  suppressCreatedEvent?: boolean
+  /** Origin of this session for cross-system routing */
+  sessionOrigin?: SessionOrigin
+  /** Optional Notion linkage metadata */
+  notionRef?: NotionSessionRef
+  /** Optional Slack linkage metadata */
+  slackRef?: SlackSessionRef
   /** Initial permission mode for the session (overrides workspace default) */
   permissionMode?: PermissionMode
   /**
@@ -617,6 +631,7 @@ export const IPC_CHANNELS = {
   GET_PENDING_PLAN_EXECUTION: 'sessions:getPendingPlanExecution',
   // Authoritative permission mode diagnostics for renderer reconciliation
   GET_SESSION_PERMISSION_MODE_STATE: 'sessions:getPermissionModeState',
+  TRIGGER_NOTION_POLL_NOW: 'notion:triggerPollNow',
 
   // Workspace management
   GET_WORKSPACES: 'workspaces:get',
@@ -989,6 +1004,7 @@ export interface ElectronAPI {
   getPendingPlanExecution(sessionId: string): Promise<{ planPath: string; awaitingCompaction: boolean } | null>
   // Permission mode reconciliation
   getSessionPermissionModeState(sessionId: string): Promise<PermissionModeState | null>
+  triggerNotionPollNow(): Promise<{ success: boolean; queued: boolean; reason?: string; pageId?: string }>
 
   // Workspace management
   getWorkspaces(): Promise<Workspace[]>

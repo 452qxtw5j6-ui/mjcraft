@@ -5,6 +5,7 @@ import { join } from 'path'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { loadWorkspaceSources } from '@craft-agent/shared/sources'
 import log from './logger'
+import { SlackGateway, type SlackGatewayClientLike } from './slack-gateway'
 
 const slackLog = log.scope('slack')
 
@@ -91,6 +92,7 @@ interface SlackSessionLike {
   model?: string
   llmConnection?: string
   messages: SlackSessionMessage[]
+  isArchived?: boolean
 }
 
 interface SlackSessionManagerLike {
@@ -104,10 +106,14 @@ interface SlackSessionManagerLike {
       labels?: string[]
       enabledSourceSlugs?: string[]
       workingDirectory?: string | 'user_default' | 'none'
+      sessionOrigin?: 'manual' | 'notion' | 'slack'
+      slackRef?: { channelId: string; threadTs: string; rootMessageTs: string; permalink?: string }
     },
   ): Promise<SlackSessionLike>
   getSession(sessionId: string): Promise<SlackSessionLike | null>
   sendMessage(sessionId: string, message: string): Promise<void>
+  findSessionBySlackThread?(workspaceId: string, channelId: string, threadTs: string): Promise<SlackSessionLike | null>
+  linkSessionToSlack?(sessionId: string, slackRef: { channelId: string; threadTs: string; rootMessageTs: string; permalink?: string }): Promise<void>
 }
 
 type SlackRuntimeConfigFile = Partial<SlackRuntimeConfig> & {
@@ -300,6 +306,7 @@ export class SlackBotService {
   private readonly eventsLogPath: string
 
   private app: App | null = null
+  private readonly gateway: SlackGateway
   private started = false
   private config: SlackRuntimeConfig = DEFAULT_CONFIG
   private sessionMap: SlackSessionMap = {
@@ -317,6 +324,11 @@ export class SlackBotService {
     this.configPath = join(this.slackDir, CONFIG_FILENAME)
     this.sessionMapPath = join(this.slackDir, SESSION_MAP_FILENAME)
     this.eventsLogPath = join(this.slackDir, EVENTS_LOG_FILENAME)
+    this.gateway = new SlackGateway({
+      workspaceId: this.workspaceId,
+      workspaceRootPath: this.workspaceRootPath,
+      sourceSlug: 'slack',
+    })
   }
 
   async start(): Promise<void> {
@@ -365,7 +377,7 @@ export class SlackBotService {
     }
   }
 
-  async handleIncomingEvent(event: SlackMessageEvent, client: SlackClientLike): Promise<void> {
+  async handleIncomingEvent(event: SlackMessageEvent, client: SlackGatewayClientLike): Promise<void> {
     this.config = await this.loadConfig()
     if (!this.config.enabled) return
 
@@ -383,11 +395,11 @@ export class SlackBotService {
     const isAllowlistConfigured = this.config.testerUserIds.length > 0
     if (!isAllowlistConfigured || !this.config.testerUserIds.includes(event.userId)) {
       const denyThread = computeThreadRootTs(event)
-      await client.chat.postMessage({
+      await this.gateway.postMessage({
         channel: event.channel,
-        thread_ts: denyThread,
+        threadTs: denyThread,
         text: this.config.denyMessage,
-      })
+      }, client)
       await this.appendEvent('denied_user', {
         userId: event.userId,
         channel: event.channel,
@@ -422,7 +434,7 @@ export class SlackBotService {
         const parsed = toSlackMessageEvent('message.im', event as Record<string, unknown>)
         if (!parsed) return
 
-        await this.handleIncomingEvent(parsed, client as SlackClientLike)
+        await this.handleIncomingEvent(parsed, client as SlackGatewayClientLike)
       } catch (error) {
         slackLog.error('Failed to handle DM message event:', error)
       }
@@ -433,7 +445,7 @@ export class SlackBotService {
         const parsed = toSlackMessageEvent('app_mention', event as Record<string, unknown>)
         if (!parsed) return
 
-        await this.handleIncomingEvent(parsed, client as SlackClientLike)
+        await this.handleIncomingEvent(parsed, client as SlackGatewayClientLike)
       } catch (error) {
         slackLog.error('Failed to handle app_mention event:', error)
       }
@@ -444,17 +456,17 @@ export class SlackBotService {
     sessionKey: string,
     event: SlackMessageEvent,
     threadRootTs: string,
-    client: SlackClientLike,
+    client: SlackGatewayClientLike,
   ): Promise<void> {
     const { sessionId, createdSession } = await this.getOrCreateSessionId(sessionKey, event)
 
     const preSession = await this.sessionManager.getSession(sessionId) ?? createdSession
     if (!this.isModelPolicyAllowed(preSession)) {
-      await client.chat.postMessage({
+      await this.gateway.postMessage({
         channel: event.channel,
-        thread_ts: threadRootTs,
+        threadTs: threadRootTs,
         text: this.config.modelGuardMessage,
-      })
+      }, client)
       await this.appendEvent('model_guard_block', {
         sessionId,
         expectedModel: ENFORCED_MODEL,
@@ -465,11 +477,11 @@ export class SlackBotService {
 
     const previousAssistantId = getLatestAssistantId(preSession)
 
-    const placeholder = await client.chat.postMessage({
+    const placeholder = await this.gateway.postMessage({
       channel: event.channel,
-      thread_ts: threadRootTs,
+      threadTs: threadRootTs,
       text: pickRandomProcessingMessage(this.config.placeholderText),
-    })
+    }, client)
 
     try {
       await this.sessionManager.sendMessage(sessionId, event.text)
@@ -497,11 +509,11 @@ export class SlackBotService {
       await this.updatePlaceholderOrReply(client, event.channel, placeholder.ts, threadRootTs, chunks[0])
 
       for (let i = 1; i < chunks.length; i++) {
-        await client.chat.postMessage({
+        await this.gateway.postMessage({
           channel: event.channel,
-          thread_ts: threadRootTs,
+          threadTs: threadRootTs,
           text: chunks[i],
-        })
+        }, client)
       }
 
       await this.appendEvent('replied', {
@@ -526,32 +538,58 @@ export class SlackBotService {
   }
 
   private async updatePlaceholderOrReply(
-    client: SlackClientLike,
+    client: SlackGatewayClientLike,
     channel: string,
     placeholderTs: string | undefined,
     threadTs: string,
     text: string,
   ): Promise<void> {
     if (placeholderTs) {
-      await client.chat.update({ channel, ts: placeholderTs, text })
+      await this.gateway.updateMessage({ channel, ts: placeholderTs, text }, client)
       return
     }
 
-    await client.chat.postMessage({ channel, thread_ts: threadTs, text })
+    await this.gateway.postMessage({ channel, threadTs, text }, client)
   }
 
   private async getOrCreateSessionId(sessionKey: string, event: SlackMessageEvent): Promise<{
     sessionId: string
     createdSession: SlackSessionLike | null
   }> {
+    const threadRootTs = computeThreadRootTs(event)
+    const linked = await this.sessionManager.findSessionBySlackThread?.(this.workspaceId, event.channel, threadRootTs)
+    if (linked && !linked.isArchived) {
+      return {
+        sessionId: linked.id,
+        createdSession: linked,
+      }
+    }
+
     const existing = this.sessionMap.mappings[sessionKey]
     if (existing) {
+      const existingSession = await this.sessionManager.getSession(existing)
+      if (!existingSession || existingSession.isArchived) {
+        return this.createSlackOriginSession(sessionKey, event, threadRootTs)
+      }
+      await this.sessionManager.linkSessionToSlack?.(existing, {
+        channelId: event.channel,
+        threadTs: threadRootTs,
+        rootMessageTs: threadRootTs,
+      })
       return {
         sessionId: existing,
         createdSession: null,
       }
     }
 
+    return this.createSlackOriginSession(sessionKey, event, threadRootTs)
+  }
+
+  private async createSlackOriginSession(
+    sessionKey: string,
+    event: SlackMessageEvent,
+    threadRootTs: string,
+  ): Promise<{ sessionId: string; createdSession: SlackSessionLike | null }> {
     const enabledSourceSlugs = loadWorkspaceSources(this.workspaceRootPath)
       .filter(source => source.config.enabled)
       .map(source => source.config.slug)
@@ -564,11 +602,13 @@ export class SlackBotService {
       labels: ['project::slack'],
       enabledSourceSlugs,
       workingDirectory: this.workspaceRootPath,
+      sessionOrigin: 'slack',
+      slackRef: {
+        channelId: event.channel,
+        threadTs: threadRootTs,
+        rootMessageTs: threadRootTs,
+      },
     })
-
-    this.sessionMap.mappings[sessionKey] = created.id
-    this.sessionMap.updatedAt = Date.now()
-    await this.persistSessionMap(this.sessionMap)
 
     await this.appendEvent('session_created', {
       sessionKey,

@@ -1,9 +1,10 @@
-import { useState } from "react"
+import { useState, type CSSProperties } from "react"
+import { ChevronDown } from "lucide-react"
 import { parseLabelEntry, formatLabelEntry, formatDisplayValue } from "@craft-agent/shared/labels"
 import { resolveEntityColor } from "@craft-agent/shared/colors"
 import { useTheme } from "@/context/ThemeContext"
 import { LabelValuePopover } from "./label-value-popover"
-import { LabelValueTypeIcon } from "./label-icon"
+import { LabelIcon, LabelValueTypeIcon } from "./label-icon"
 import type { LabelConfig } from "@craft-agent/shared/labels"
 
 interface EntityListLabelBadgeProps {
@@ -44,30 +45,26 @@ export function EntityListLabelBadge({ label, rawValue, sessionLabels, onLabelsC
       <div
         role="button"
         tabIndex={0}
-        className="shrink-0 h-[18px] max-w-[120px] px-1.5 text-[10px] font-medium rounded flex items-center whitespace-nowrap gap-0.5 cursor-pointer"
+        className="h-[30px] pl-3 pr-2 text-[11px] leading-none font-[450] tracking-[0.012em] rounded-[8px] flex items-center shrink-0 outline-none select-none transition-colors cursor-pointer antialiased bg-[color-mix(in_srgb,var(--background)_97%,var(--badge-color))] hover:bg-[color-mix(in_srgb,var(--background)_92%,var(--badge-color))] text-[color-mix(in_srgb,var(--foreground)_80%,var(--badge-color))]"
         onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
-        style={color ? {
-          backgroundColor: `color-mix(in srgb, ${color} 6%, transparent)`,
-          color: `color-mix(in srgb, ${color} 75%, var(--foreground))`,
-        } : {
-          backgroundColor: 'rgba(var(--foreground-rgb), 0.05)',
-          color: 'rgba(var(--foreground-rgb), 0.8)',
-        }}
+        style={{ '--badge-color': color ?? 'var(--foreground)' } as CSSProperties}
       >
-        {label.name}
+        <LabelIcon label={label} size="lg" />
+        <span className="whitespace-nowrap ml-2">{label.name}</span>
         {displayValue ? (
           <>
-            <span style={{ opacity: 0.4 }}>·</span>
-            <span className="font-normal truncate min-w-0" style={{ opacity: 0.75 }}>{displayValue}</span>
+            <span className="opacity-30 mx-1">·</span>
+            <span className="opacity-60 whitespace-nowrap max-w-[100px] truncate">{displayValue}</span>
           </>
         ) : (
           label.valueType && (
             <>
-              <span style={{ opacity: 0.4 }}>·</span>
+              <span className="opacity-30 mx-1">·</span>
               <LabelValueTypeIcon valueType={label.valueType} size={10} />
             </>
           )
         )}
+        <ChevronDown className="h-3 w-3 opacity-40 ml-1 shrink-0" />
       </div>
     </LabelValuePopover>
   )

@@ -26,6 +26,8 @@ import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthSt
 export const SESSION_PERSISTENT_FIELDS = [
   // Identity
   'id', 'workspaceRootPath', 'sdkSessionId', 'sdkCwd',
+  // External linkage
+  'sessionOrigin', 'notionRef', 'slackRef',
   // Timestamps
   'createdAt', 'lastUsedAt', 'lastMessageAt',
   // Display
@@ -49,6 +51,21 @@ export const SESSION_PERSISTENT_FIELDS = [
 ] as const;
 
 export type SessionPersistentField = typeof SESSION_PERSISTENT_FIELDS[number];
+
+export type SessionOrigin = 'manual' | 'notion' | 'slack';
+
+export interface NotionSessionRef {
+  pageId: string;
+  dataSourceId: string;
+  pageUrl?: string;
+}
+
+export interface SlackSessionRef {
+  channelId: string;
+  threadTs: string;
+  rootMessageTs: string;
+  permalink?: string;
+}
 
 /**
  * Session status (user-controlled, never automatic)
@@ -95,6 +112,12 @@ export interface SessionConfig {
   sdkSessionId?: string;
   /** Workspace root path this session belongs to */
   workspaceRootPath: string;
+  /** Session creation origin for cross-system routing */
+  sessionOrigin?: SessionOrigin;
+  /** Attached Notion page/data-source reference */
+  notionRef?: NotionSessionRef;
+  /** Attached Slack thread reference */
+  slackRef?: SlackSessionRef;
   /** Optional user-defined name */
   name?: string;
   createdAt: number;
@@ -183,6 +206,12 @@ export interface SessionHeader {
   sdkSessionId?: string;
   /** Workspace root path (stored as portable path, e.g., ~/.craft-agent/...) */
   workspaceRootPath: string;
+  /** Session creation origin for cross-system routing */
+  sessionOrigin?: SessionOrigin;
+  /** Attached Notion page/data-source reference */
+  notionRef?: NotionSessionRef;
+  /** Attached Slack thread reference */
+  slackRef?: SlackSessionRef;
   /** Optional user-defined name */
   name?: string;
   createdAt: number;
@@ -261,6 +290,9 @@ export interface SessionHeader {
 export interface SessionMetadata {
   id: string;
   workspaceRootPath: string;
+  sessionOrigin?: SessionOrigin;
+  notionRef?: NotionSessionRef;
+  slackRef?: SlackSessionRef;
   name?: string;
   createdAt: number;
   lastUsedAt: number;

@@ -28,6 +28,7 @@ import { MarkItDown } from 'markitdown-js'
 import { isUsableGitBashPath, validateGitBashPath } from './git-bash'
 import { getModelRefreshService } from './model-fetchers'
 import { parseTestConnectionError, createBuiltInConnection, validateModelList, piAuthProviderDisplayName } from './connection-setup-logic'
+import type { NotionTaskService } from './notion-task-service'
 
 /**
  * Sanitizes a filename to prevent path traversal and filesystem issues.
@@ -137,7 +138,12 @@ async function validateFilePath(filePath: string): Promise<string> {
   return realPath
 }
 
-export function registerIpcHandlers(sessionManager: SessionManager, windowManager: WindowManager, browserPaneManager?: BrowserPaneManager): void {
+export function registerIpcHandlers(
+  sessionManager: SessionManager,
+  windowManager: WindowManager,
+  browserPaneManager?: BrowserPaneManager,
+  getNotionTaskService?: () => NotionTaskService | null,
+): void {
   // Get all sessions for the calling window's workspace
   // Waits for initialization to complete so sessions are never returned empty during startup
   ipcMain.handle(IPC_CHANNELS.GET_SESSIONS, async (event) => {
@@ -196,6 +202,15 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     const workspacePath = join(defaultWorkspacesDir, slug)
     const exists = existsSync(workspacePath)
     return { exists, path: workspacePath }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TRIGGER_NOTION_POLL_NOW, async () => {
+    const notionTaskService = getNotionTaskService?.()
+    if (!notionTaskService) {
+      return { success: false, queued: false, reason: 'service_unavailable' as const }
+    }
+
+    return notionTaskService.forcePollNow()
   })
 
   // ============================================================

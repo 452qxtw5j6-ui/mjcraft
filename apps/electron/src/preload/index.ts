@@ -30,6 +30,8 @@ const api: ElectronAPI = {
   // Permission mode reconciliation
   getSessionPermissionModeState: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GET_SESSION_PERMISSION_MODE_STATE, sessionId),
+  triggerNotionPollNow: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.TRIGGER_NOTION_POLL_NOW),
 
   // Workspace management
   getWorkspaces: () => ipcRenderer.invoke(IPC_CHANNELS.GET_WORKSPACES),
