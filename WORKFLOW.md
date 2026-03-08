@@ -11,6 +11,7 @@
 - Start new work from a clean `main`
 - Keep feature logic and the UI needed for that feature together
 - Split unrelated UI, build, and infra changes into separate branches or commits
+- During upstream upgrades, drop non-essential UI refinements by default and re-port only UI required to make a core feature usable
 - Use Git commits as the source of truth for customizations
 - Treat `patches/craft_patch` as legacy history only
 
