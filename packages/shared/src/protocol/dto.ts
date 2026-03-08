@@ -15,6 +15,7 @@ import type {
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
+import type { SessionOrigin, NotionSessionRef, SlackSessionRef } from '../sessions'
 import type {
   AuthRequest as SharedAuthRequest,
   CredentialInputMode as SharedCredentialInputMode,
@@ -45,6 +46,9 @@ export interface Session {
   id: string
   workspaceId: string
   workspaceName: string
+  sessionOrigin?: SessionOrigin
+  notionRef?: NotionSessionRef
+  slackRef?: SlackSessionRef
   name?: string
   /** Preview of first user message (from JSONL header, for lazy-loaded sessions) */
   preview?: string
@@ -119,6 +123,9 @@ export interface CreateSessionOptions {
   labels?: string[]
   isFlagged?: boolean
   enabledSourceSlugs?: string[]
+  sessionOrigin?: SessionOrigin
+  notionRef?: NotionSessionRef
+  slackRef?: SlackSessionRef
   branchFromMessageId?: string
   branchFromSessionId?: string
 }
