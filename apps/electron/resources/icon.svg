@@ -1,12 +1,27 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="24px" height="24px" viewBox="0 0 24 24" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
-    <title>favicon</title>
-    <defs>
-        <path d="M0,0 L24,0 L24,24 L0,24 L0,0 Z" id="path-1"></path>
-    </defs>
-    <g id="favicon" stroke="none" fill="none" xlink:href="#path-1" fill-rule="evenodd" stroke-width="1">
-        <g id="Group" transform="translate(3.4502, 3)" fill="#9570BE">
-            <path d="M3.17890888,3.6 L3.17890888,0 L16,0 L16,3.6 L3.17890888,3.6 Z M9.642,7.2 L9.64218223,10.8 L0,10.8 L0,3.6 L16,3.6 L16,7.2 L9.642,7.2 Z M3.17890888,18 L3.178,14.4 L0,14.4 L0,10.8 L16,10.8 L16,18 L3.17890888,18 Z" id="Combined-Shape" fill-rule="nonzero"></path>
-        </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Coral-Peach-Mint diagonal gradient -->
+    <linearGradient id="bg1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFB5B5"/>
+      <stop offset="40%" stop-color="#FFDAB5"/>
+      <stop offset="75%" stop-color="#F5F0EB"/>
+      <stop offset="100%" stop-color="#B5E8E3"/>
+    </linearGradient>
+    <!-- Subtle inner glow -->
+    <radialGradient id="glow1" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.25)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bg1)"/>
+  <!-- Soft center glow -->
+  <rect width="1024" height="1024" rx="224" fill="url(#glow1)"/>
+  <!-- Spiral Snap symbol — centered with optical correction -->
+  <g transform="translate(512, 512) scale(18) translate(-12, -12)">
+    <g transform="translate(-1.5, 0.5)">
+      <path d="M12 12 C12 10, 14 9, 15 10 C17 12, 15 15, 12 15 C8 15, 6 12, 6 9 C6 5, 10 3, 14 3 C19 3, 21 7, 21 12 C21 16, 19 19, 15 20"
+        stroke="#FF6B6B" stroke-width="2.8" stroke-linecap="round" fill="none" opacity="0.9"/>
     </g>
+  </g>
 </svg>

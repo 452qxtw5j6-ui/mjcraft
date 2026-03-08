@@ -67,8 +67,8 @@ export function showNotification(
     body,
     // macOS-specific options
     silent: false,
-    // Use the app icon
-    icon: undefined,  // Will use app icon by default on macOS
+    // Use the branded app icon explicitly so notifications match the dock/app icon
+    icon: baseIconPath ?? undefined,
   })
 
   notification.on('click', () => {

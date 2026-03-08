@@ -100,6 +100,7 @@ import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath } from '@craft-agent/server-core/services'
 import { NotionTaskService } from './notion-task-service'
 import { SlackBotService } from './slack-bot'
+import { APP_NAME, APP_PROTOCOL_SCHEME } from '../shared/brand'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -166,9 +167,9 @@ registerPiModelResolver((piAuthProvider) =>
   piAuthProvider ? getPiModelsForAuthProvider(piAuthProvider) : getAllPiModels()
 )
 
-// Custom URL scheme for deeplinks (e.g., craftagents://auth-complete)
-// Supports multi-instance dev: CRAFT_DEEPLINK_SCHEME env var (craftagents1, craftagents2, etc.)
-const DEEPLINK_SCHEME = process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'
+// Custom URL scheme for deeplinks (e.g., noodle://auth-complete)
+// Supports multi-instance dev: CRAFT_DEEPLINK_SCHEME env var (noodle1, noodle2, etc.)
+const DEEPLINK_SCHEME = process.env.CRAFT_DEEPLINK_SCHEME || APP_PROTOCOL_SCHEME
 
 let windowManager: WindowManager | null = null
 let sessionManager: SessionManager | null = null
@@ -178,15 +179,16 @@ let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
 let notionTaskService: NotionTaskService | null = null
 let slackBotService: SlackBotService | null = null
+let handlerDeps: HandlerDeps | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
 
 // Set app name early (before app.whenReady) to ensure correct macOS menu bar title
-// Supports multi-instance dev: CRAFT_APP_NAME env var (e.g., "Craft Agents [1]")
-app.setName(process.env.CRAFT_APP_NAME || 'Craft Agents')
+// Supports multi-instance dev: CRAFT_APP_NAME env var (e.g., "Noodle [1]")
+app.setName(process.env.CRAFT_APP_NAME || APP_NAME)
 
-// Register as default protocol client for craftagents:// URLs
+// Register as default protocol client for app deeplink URLs
 // This must be done before app.whenReady() on some platforms
 if (process.defaultApp) {
   // Development mode: need to pass the app path
@@ -625,6 +627,7 @@ app.whenReady().then(async () => {
         oauthFlowStore,
         notionTaskService: null,
       }
+      handlerDeps = deps
 
       // Register RPC handlers (must happen before window creation)
       registerAllRpcHandlers(server, deps)
@@ -684,7 +687,7 @@ app.whenReady().then(async () => {
             workspaceRootPath: integrationWorkspace.rootPath,
             sessionManager,
           })
-          deps.notionTaskService = notionTaskService
+          if (handlerDeps) handlerDeps.notionTaskService = notionTaskService
           await notionTaskService.start()
         } catch (error) {
           mainLog.error('Notion task service startup failed; continuing app startup without Notion queue:', error)
@@ -694,7 +697,7 @@ app.whenReady().then(async () => {
             })
           }
           notionTaskService = null
-          deps.notionTaskService = null
+          if (handlerDeps) handlerDeps.notionTaskService = null
         }
       } else {
         mainLog.warn('Skipping Slack/Notion services startup: no workspace available')

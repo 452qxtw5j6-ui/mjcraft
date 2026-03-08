@@ -492,9 +492,9 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
           link.compact ? "py-[3px]" : "py-[5px]",
           "px-2",
           link.variant === "default"
-            ? "bg-foreground/[0.07]"
+            ? "bg-background/90 shadow-minimal backdrop-blur-sm"
             // Highlight on hover, context menu open (data-state), or EditPopover active (data-edit-active)
-            : "hover:bg-sidebar-hover data-[state=open]:bg-sidebar-hover data-[edit-active=true]:bg-sidebar-hover",
+            : "hover:bg-background/65 data-[state=open]:bg-background/72 data-[edit-active=true]:bg-background/72 backdrop-blur-sm",
           extraClassName,
         )}
       >

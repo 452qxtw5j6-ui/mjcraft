@@ -26,8 +26,10 @@ module.exports = async function afterPack(context) {
   }
 
   const appPath = context.appOutDir;
-  const resourcesDir = path.join(appPath, 'Craft Agents.app', 'Contents', 'Resources');
+  const productFilename = context.packager.appInfo.productFilename;
+  const resourcesDir = path.join(appPath, `${productFilename}.app`, 'Contents', 'Resources');
   const precompiledAssets = path.join(context.packager.projectDir, 'resources', 'Assets.car');
+  const iconSourceSvg = path.join(context.packager.projectDir, 'resources', 'icon.icon', 'Assets', 'icon.svg');
 
   console.log(`afterPack: projectDir=${context.packager.projectDir}`);
   console.log(`afterPack: looking for Assets.car at ${precompiledAssets}`);
@@ -37,6 +39,19 @@ module.exports = async function afterPack(context) {
     console.log('Warning: Pre-compiled Assets.car not found in resources/');
     console.log('The app will use the fallback icon.icns on all macOS versions');
     return;
+  }
+
+  // If the source icon changed after Assets.car was compiled, prefer the newer icon.icns
+  // instead of shipping a stale Liquid Glass asset.
+  try {
+    const assetsStat = fs.statSync(precompiledAssets);
+    const svgStat = fs.existsSync(iconSourceSvg) ? fs.statSync(iconSourceSvg) : null;
+    if (svgStat && svgStat.mtimeMs > assetsStat.mtimeMs) {
+      console.log('Skipping stale Assets.car because icon.svg is newer; using icon.icns fallback');
+      return;
+    }
+  } catch (err) {
+    console.log(`Warning: Could not compare icon asset timestamps: ${err.message}`);
   }
 
   // Copy pre-compiled Assets.car to the app bundle
