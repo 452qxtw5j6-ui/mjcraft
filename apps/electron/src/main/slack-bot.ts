@@ -1,4 +1,4 @@
-import { App, type LogLevel } from '@slack/bolt'
+import { App, LogLevel } from '@slack/bolt'
 import { existsSync } from 'fs'
 import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
@@ -494,29 +494,23 @@ export class SlackBotService {
   }
 
   private async loadTokens(): Promise<SlackTokens> {
-    const sources = loadWorkspaceSources(this.workspaceRootPath)
-    const slackSource = sources.find(source => source.config.slug === 'slack')
     const rawCredentialManager = getCredentialManager()
 
     let botToken = ''
     let appToken = ''
 
-    if (slackSource) {
-      const sourceCredentialManager = getCredentialManager()
-      const botFallback = await rawCredentialManager.get({
-        type: 'source_apikey',
-        workspaceId: this.workspaceId,
-        sourceId: BOT_TOKEN_SOURCE_ID,
-      })
-      const appFallback = await rawCredentialManager.get({
-        type: 'source_apikey',
-        workspaceId: this.workspaceId,
-        sourceId: APP_TOKEN_SOURCE_ID,
-      })
-      botToken = botFallback?.value ?? ''
-      appToken = appFallback?.value ?? ''
-      void sourceCredentialManager
-    }
+    const botFallback = await rawCredentialManager.get({
+      type: 'source_apikey',
+      workspaceId: this.workspaceId,
+      sourceId: BOT_TOKEN_SOURCE_ID,
+    })
+    const appFallback = await rawCredentialManager.get({
+      type: 'source_bearer',
+      workspaceId: this.workspaceId,
+      sourceId: APP_TOKEN_SOURCE_ID,
+    })
+    botToken = botFallback?.value ?? ''
+    appToken = appFallback?.value ?? ''
 
     if (!botToken || !appToken) {
       throw new Error('Slack bot/app tokens are missing')

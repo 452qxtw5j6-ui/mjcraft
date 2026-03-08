@@ -5,14 +5,21 @@
 
 import { join } from 'node:path'
 import { startHeadlessServer } from '@craft-agent/server-core/bootstrap'
-import { registerCoreRpcHandlers } from '../main/handlers/index'
+import { registerAllRpcHandlers } from '../main/handlers/index'
 import { cleanupSessionFileWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { initModelRefreshService, setFetcherPlatform } from '@craft-agent/server-core/model-fetchers'
 import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/services'
 import type { HandlerDeps } from '../main/handlers/handler-deps'
+import { getWorkspaces, loadStoredConfig } from '@craft-agent/shared/config'
+import { SlackBotService } from '../main/slack-bot'
+import { NotionTaskService } from '../main/notion-task-service'
 
 const bundledAssetsRoot = join(import.meta.dir, '..', '..')
+
+let slackBotService: SlackBotService | null = null
+let notionTaskService: NotionTaskService | null = null
+let mutableDeps: HandlerDeps | null = null
 
 const instance = await (async (): Promise<{ host: string; port: number; token: string; stop: () => Promise<void> }> => {
   try {
@@ -46,14 +53,18 @@ const instance = await (async (): Promise<{ host: string; port: number; token: s
         }
       }),
       createSessionManager: () => new SessionManager(),
-      createHandlerDeps: ({ sessionManager, platform, oauthFlowStore }) => ({
-        sessionManager,
-        platform,
-        // windowManager: undefined — headless, no GUI windows
-        // browserPaneManager: undefined — headless, no browser automation
-        oauthFlowStore,
-      }),
-      registerAllRpcHandlers: registerCoreRpcHandlers,
+      createHandlerDeps: ({ sessionManager, platform, oauthFlowStore }) => {
+        mutableDeps = {
+          sessionManager,
+          platform,
+          // windowManager: undefined — headless, no GUI windows
+          // browserPaneManager: undefined — headless, no browser automation
+          oauthFlowStore,
+          notionTaskService: null,
+        }
+        return mutableDeps
+      },
+      registerAllRpcHandlers,
       setSessionEventSink: (sessionManager, sink) => {
         sessionManager.setEventSink(sink)
       },
@@ -75,10 +86,61 @@ const instance = await (async (): Promise<{ host: string; port: number; token: s
   }
 })()
 
+const configuredWorkspaces = getWorkspaces()
+const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
+const integrationWorkspace =
+  (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
+  || configuredWorkspaces[0]
+
+if (integrationWorkspace && mutableDeps) {
+  try {
+    slackBotService = new SlackBotService({
+      workspaceId: integrationWorkspace.id,
+      workspaceRootPath: integrationWorkspace.rootPath,
+      sessionManager: mutableDeps.sessionManager,
+    })
+    await slackBotService.start()
+  } catch (error) {
+    console.error('Slack bot startup failed; continuing headless startup without Slack integration:', error instanceof Error ? error.message : String(error))
+    if (slackBotService) {
+      await slackBotService.stop().catch(() => {})
+    }
+    slackBotService = null
+  }
+
+  try {
+    notionTaskService = new NotionTaskService({
+      workspaceId: integrationWorkspace.id,
+      workspaceRootPath: integrationWorkspace.rootPath,
+      sessionManager: mutableDeps.sessionManager,
+    })
+    mutableDeps.notionTaskService = notionTaskService
+    await notionTaskService.start()
+  } catch (error) {
+    console.error('Notion task service startup failed; continuing headless startup without Notion queue:', error instanceof Error ? error.message : String(error))
+    if (notionTaskService) {
+      await notionTaskService.stop().catch(() => {})
+    }
+    notionTaskService = null
+    mutableDeps.notionTaskService = null
+  }
+} else {
+  console.warn('Skipping Slack/Notion services startup: no workspace available')
+}
+
 console.log(`CRAFT_SERVER_URL=ws://${instance.host}:${instance.port}`)
 console.log(`CRAFT_SERVER_TOKEN=${instance.token}`)
 
 const shutdown = async () => {
+  if (slackBotService) {
+    await slackBotService.stop().catch(() => {})
+    slackBotService = null
+  }
+  if (notionTaskService) {
+    await notionTaskService.stop().catch(() => {})
+    notionTaskService = null
+    if (mutableDeps) mutableDeps.notionTaskService = null
+  }
   await instance.stop()
   process.exit(0)
 }

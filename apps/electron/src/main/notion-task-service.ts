@@ -160,6 +160,28 @@ interface SlackGatewayLike {
   getPermalink(args: { channel: string; messageTs: string }, client?: SlackGatewayClientLike): Promise<string>
 }
 
+function parseHeaderCredential(value: unknown): Record<string, string> | null {
+  if (!value) return null
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as Record<string, unknown>
+      const headers = Object.fromEntries(
+        Object.entries(parsed).filter(([, headerValue]) => typeof headerValue === 'string'),
+      ) as Record<string, string>
+      return Object.keys(headers).length > 0 ? headers : null
+    } catch {
+      return null
+    }
+  }
+  if (typeof value === 'object') {
+    const headers = Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).filter(([, headerValue]) => typeof headerValue === 'string'),
+    ) as Record<string, string>
+    return Object.keys(headers).length > 0 ? headers : null
+  }
+  return null
+}
+
 export interface NotionTaskConfig {
   enabled: boolean
   pollCron: string
@@ -346,10 +368,7 @@ export class NotionTaskService {
         workspaceRootPath: this.workspaceRootPath,
         sourceSlug,
       })),
-      createScheduler: options.deps?.createScheduler ?? ((onTick) => new SchedulerService({
-        onTick,
-        logger: notionTaskLog,
-      })),
+      createScheduler: options.deps?.createScheduler ?? ((onTick) => new SchedulerService(onTick)),
       logger: options.deps?.logger ?? notionTaskLog,
       now: options.deps?.now ?? (() => new Date()),
     }
@@ -914,16 +933,32 @@ export class NotionTaskService {
       log: (message) => this.deps.logger.info(message),
     })
     const tokenResult = await tokenRefreshManager.ensureFreshToken(notionSource)
-    const token = tokenResult.success ? tokenResult.token : await this.deps.credentialManager.getToken(notionSource)
-    if (!token) throw new Error(`No OAuth token available for source ${notionSource.config.slug}`)
+    const rawToken = tokenResult.success ? tokenResult.token : await this.deps.credentialManager.getToken(notionSource)
+    const apiCredential = await this.deps.credentialManager.getApiCredential(notionSource)
+
+    const tokenHeaders = parseHeaderCredential(rawToken)
+    const credentialHeaders = parseHeaderCredential(apiCredential)
+
+    let headers: Record<string, string>
+    if (tokenHeaders || credentialHeaders) {
+      headers = {
+        ...(tokenHeaders ?? {}),
+        ...(credentialHeaders ?? {}),
+        'Content-Type': 'application/json',
+      }
+    } else if (typeof rawToken === 'string' && rawToken.trim()) {
+      headers = {
+        Authorization: `Bearer ${rawToken}`,
+        'Notion-Version': NOTION_API_VERSION,
+        'Content-Type': 'application/json',
+      }
+    } else {
+      throw new Error(`No usable Notion credentials available for source ${notionSource.config.slug}`)
+    }
 
     const response = await this.deps.fetchImpl(`https://api.notion.com/v1/${path}`, {
       method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Notion-Version': NOTION_API_VERSION,
-        'Content-Type': 'application/json',
-      },
+      headers,
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
 
