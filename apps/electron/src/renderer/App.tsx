@@ -909,6 +909,20 @@ export default function App() {
 
   const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[]) => {
     try {
+      const oversized = attachments?.filter((attachment) => attachment.size > 50 * 1024 * 1024) ?? []
+      if (oversized.length > 0) {
+        const names = oversized.map((attachment) => attachment.name).join(', ')
+        updateSessionById(sessionId, (s) => ({
+          messages: [...s.messages, {
+            id: generateMessageId(),
+            role: 'warning' as const,
+            content: `⚠️ Attachment(s) exceed the 50MB limit and will not be sent: ${names}`,
+            timestamp: Date.now(),
+          }],
+        }))
+        attachments = attachments?.filter((attachment) => attachment.size <= 50 * 1024 * 1024)
+      }
+
       // Step 1: Store attachments and get persistent metadata
       let storedAttachments: StoredAttachment[] | undefined
       let processedAttachments: FileAttachment[] | undefined
@@ -1224,6 +1238,17 @@ export default function App() {
   const linkInterceptor = useLinkInterceptor({
     openFileExternal: async (path) => {
       try {
+        const transport = await window.electronAPI.getTransportConnectionState()
+        if (transport.mode === 'remote') {
+          const result = await window.electronAPI.saveRemoteCopy(path)
+          if (!result.canceled && result.path) {
+            const openResult = await window.electronAPI.openClientPath?.(result.path)
+            if (openResult?.error) {
+              throw new Error(openResult.error)
+            }
+          }
+          return
+        }
         await window.electronAPI.openFile(path)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error'
@@ -1235,6 +1260,33 @@ export default function App() {
     },
     openUrl: async (url) => {
       try {
+        const looksLikeLocalFile =
+          !/^[a-z][a-z0-9+.-]*:\/\//i.test(url) &&
+          !/^mailto:/i.test(url) &&
+          (
+            url.startsWith('/') ||
+            url.startsWith('~/') ||
+            url.startsWith('./') ||
+            url.startsWith('../') ||
+            /^[A-Za-z0-9_][\w\-./@]*\.[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/i.test(url)
+          )
+
+        if (looksLikeLocalFile) {
+          const transport = await window.electronAPI.getTransportConnectionState()
+          if (transport.mode === 'remote') {
+            const result = await window.electronAPI.saveRemoteCopy(url)
+            if (!result.canceled && result.path) {
+              const openResult = await window.electronAPI.openClientPath?.(result.path)
+              if (openResult?.error) {
+                throw new Error(openResult.error)
+              }
+            }
+            return
+          }
+          await window.electronAPI.openFile(url)
+          return
+        }
+
         await window.electronAPI.openUrl(url)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error'
@@ -1246,6 +1298,14 @@ export default function App() {
     },
     showInFolder: async (path) => {
       try {
+        const transport = await window.electronAPI.getTransportConnectionState()
+        if (transport.mode === 'remote') {
+          await navigator.clipboard.writeText(path)
+          toast.success('Copied host path', {
+            description: path,
+          })
+          return
+        }
         await window.electronAPI.showInFolder(path)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error'
@@ -1485,6 +1545,12 @@ export default function App() {
     // Bypass link interceptor — opens file directly in system editor.
     // Used by overlay header badges (when already viewing a file, "Open" should launch editor).
     onOpenFileExternal: linkInterceptor.openFileExternal,
+    onDownloadFile: async (path: string) => {
+      const result = await window.electronAPI.saveRemoteCopy(path)
+      if (!result.canceled && result.path) {
+        toast.success('Saved file', { description: result.path })
+      }
+    },
     // Read file contents as UTF-8 string (used by datatable/spreadsheet/html-preview src fields)
     onReadFile: (path: string) => window.electronAPI.readFile(path),
     // Read file as data URL (used by image-preview blocks)

@@ -128,6 +128,14 @@ describe('detectLinks', () => {
     expect(links[0]!.type).toBe('file')
     expect(links[0]!.url).toBe('../README.md')
   })
+
+  it('detects non-previewable binary file paths', () => {
+    const links = detectLinks('Download /Users/foo/workspace/sessions/abc/data/test-10mb.bin')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toBeDefined()
+    expect(links[0]!.type).toBe('file')
+    expect(links[0]!.url).toBe('/Users/foo/workspace/sessions/abc/data/test-10mb.bin')
+  })
 })
 
 describe('isFilePathTarget', () => {
@@ -149,5 +157,9 @@ describe('isFilePathTarget', () => {
 
   it('rejects non-file strings', () => {
     expect(isFilePathTarget('not a link at all')).toBe(false)
+  })
+
+  it('accepts arbitrary file extensions for host-side artifacts', () => {
+    expect(isFilePathTarget('/Users/foo/workspace/sessions/abc/data/test-10mb.bin')).toBe(true)
   })
 })

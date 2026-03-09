@@ -17,7 +17,7 @@
 import * as React from 'react'
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { AnimatePresence, motion, type Variants } from 'motion/react'
-import { File, Folder, FolderOpen, FileText, Image, FileCode, ChevronRight, ExternalLink } from 'lucide-react'
+import { File, Folder, FolderOpen, FileText, Image, FileCode, ChevronRight, ExternalLink, Download } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -29,6 +29,7 @@ import { cn } from '@/lib/utils'
 import * as storage from '@/lib/local-storage'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { getFileManagerName } from '@/lib/platform'
+import { toast } from 'sonner'
 
 /**
  * Stagger animation variants for child items - matches LeftSidebar pattern
@@ -210,6 +211,7 @@ interface FileTreeItemProps {
   onFileClick: (file: SessionFile) => void
   onFileDoubleClick: (file: SessionFile) => void
   onRevealInFileManager: (path: string) => void
+  onDownloadFile: (path: string, suggestedName?: string) => void
   /** Whether this item is inside an expanded folder (for stagger animation) */
   isNested?: boolean
 }
@@ -229,6 +231,7 @@ function FileTreeItem({
   onFileClick,
   onFileDoubleClick,
   onRevealInFileManager,
+  onDownloadFile,
   isNested,
 }: FileTreeItemProps) {
   const isDirectory = file.type === 'directory'
@@ -321,6 +324,12 @@ function FileTreeItem({
               Open
             </StyledContextMenuItem>
           )}
+          {file.type !== 'directory' && (
+            <StyledContextMenuItem onSelect={() => onDownloadFile(file.path, file.name)}>
+              <Download className="h-3.5 w-3.5" />
+              Download
+            </StyledContextMenuItem>
+          )}
           {/* Show in file manager */}
           <StyledContextMenuItem
             onSelect={() => onRevealInFileManager(file.path)}
@@ -365,6 +374,7 @@ function FileTreeItem({
                         onFileClick={onFileClick}
                         onFileDoubleClick={onFileDoubleClick}
                         onRevealInFileManager={onRevealInFileManager}
+                        onDownloadFile={onDownloadFile}
                         isNested={true}
                       />
                     </motion.div>
@@ -489,7 +499,25 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
 
   // Reveal a file/folder in the system file manager
   const handleRevealInFileManager = useCallback((path: string) => {
-    window.electronAPI.showInFolder(path)
+    void window.electronAPI.getTransportConnectionState().then(async (transport) => {
+      if (transport.mode === 'remote') {
+        await navigator.clipboard.writeText(path)
+        toast.success('Copied host path', { description: path })
+        return
+      }
+      await window.electronAPI.showInFolder(path)
+    }).catch(() => {})
+  }, [])
+
+  const handleDownloadFile = useCallback((path: string, suggestedName?: string) => {
+    void window.electronAPI.saveRemoteCopy(path, suggestedName).then((result) => {
+      if (!result.canceled && result.path) {
+        toast.success('Saved file', { description: result.path })
+      }
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      toast.error('Failed to save file', { description: message })
+    })
   }, [])
 
   // Handle file click — preview in-app if possible, open directory in file manager
@@ -536,15 +564,15 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
       {!hideHeader && (
         <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
           <span className="text-xs font-medium text-muted-foreground">Session Files</span>
-          {sessionFolderPath && (
-            <button
-              type="button"
-              onClick={() => window.electronAPI.showInFolder(sessionFolderPath)}
-              className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
-            >
-              {`View in ${fileManagerName}`}
-            </button>
-          )}
+        {sessionFolderPath && (
+          <button
+            type="button"
+            onClick={() => handleRevealInFileManager(sessionFolderPath)}
+            className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
+          >
+            {`View in ${fileManagerName}`}
+          </button>
+        )}
         </div>
       )}
 
@@ -570,6 +598,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
                 onFileClick={handleFileClick}
                 onFileDoubleClick={handleFileDoubleClick}
                 onRevealInFileManager={handleRevealInFileManager}
+                onDownloadFile={handleDownloadFile}
               />
             ))}
           </nav>

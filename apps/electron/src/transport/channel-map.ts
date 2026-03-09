@@ -64,6 +64,7 @@ export const CHANNEL_MAP = {
   readFileAttachment: invoke(RPC_CHANNELS.file.READ_ATTACHMENT),
   storeAttachment: invoke(RPC_CHANNELS.file.STORE_ATTACHMENT),
   generateThumbnail: invoke(RPC_CHANNELS.file.GENERATE_THUMBNAIL),
+  saveRemoteCopy: invoke(RPC_CHANNELS.file.SAVE_REMOTE_COPY),
 
   // Theme
   getSystemTheme: invoke(RPC_CHANNELS.theme.GET_SYSTEM_PREFERENCE),

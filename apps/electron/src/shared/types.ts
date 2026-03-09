@@ -260,6 +260,7 @@ export interface ElectronAPI {
   readFileAttachment(path: string): Promise<FileAttachment | null>
   storeAttachment(sessionId: string, attachment: FileAttachment): Promise<import('../../../../packages/core/src/types/index.ts').StoredAttachment>
   generateThumbnail(base64: string, mimeType: string): Promise<string | null>
+  saveRemoteCopy(path: string, suggestedName?: string): Promise<{ canceled: boolean; path?: string }>
 
   // Filesystem search (for @ mention file selection)
   searchFiles(basePath: string, query: string): Promise<FileSearchResult[]>
@@ -299,6 +300,7 @@ export interface ElectronAPI {
   // Shell operations
   openUrl(url: string): Promise<void>
   openFile(path: string): Promise<void>
+  openClientPath?(path: string): Promise<{ error?: string }>
   showInFolder(path: string): Promise<void>
 
   // Menu event listeners
