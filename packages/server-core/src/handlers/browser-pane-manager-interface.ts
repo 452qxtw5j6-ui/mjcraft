@@ -9,6 +9,7 @@
  */
 
 import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
+import type { BrowserPaneFns } from '@craft-agent/shared/agent/browser-tools'
 
 // ---------------------------------------------------------------------------
 // Supporting types — minimal subsets of BPM's internal types
@@ -138,6 +139,9 @@ export interface AccessibilitySnapshot {
 // ---------------------------------------------------------------------------
 
 export interface IBrowserPaneManager {
+  /** Optional async factory for remote/local specialized browser_tool bindings. */
+  createSessionBrowserPaneFns?(sessionId: string): BrowserPaneFns
+
   // -- Session lifecycle ---------------------------------------------------
 
   /** Register a callback that resolves session IDs to file paths */

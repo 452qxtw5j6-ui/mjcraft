@@ -16,6 +16,7 @@ import type { WsRpcTlsOptions } from '@craft-agent/server-core/transport'
 import { getWorkspaces, loadStoredConfig } from '@craft-agent/shared/config'
 import { SlackBotService } from '../main/slack-bot'
 import { NotionTaskService } from '../main/notion-task-service'
+import { RemoteBrowserPaneAdapter } from './remote-browser-pane-adapter'
 
 const bundledAssetsRoot = join(import.meta.dir, '..', '..')
 
@@ -39,7 +40,7 @@ if (tlsCertPath || tlsKeyPath) {
 
 const instance = await (async (): Promise<{ host: string; port: number; token: string; stop: () => Promise<void> }> => {
   try {
-    return await startHeadlessServer<SessionManager, HandlerDeps>({
+    const started = await startHeadlessServer<SessionManager, HandlerDeps>({
       bundledAssetsRoot,
       tls,
       applyPlatformToSubsystems: (platform) => {
@@ -97,6 +98,10 @@ const instance = await (async (): Promise<{ host: string; port: number; token: s
       },
       cleanupClientResources: cleanupSessionFileWatchForClient,
     })
+    started.sessionManager.setBrowserPaneManager(
+      new RemoteBrowserPaneAdapter(started.wsServer, started.sessionManager),
+    )
+    return started
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exit(1)

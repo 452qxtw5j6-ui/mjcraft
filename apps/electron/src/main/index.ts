@@ -100,6 +100,7 @@ import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath } from '@craft-agent/server-core/services'
 import { NotionTaskService } from './notion-task-service'
 import { SlackBotService } from './slack-bot'
+import { PlaywrightBrowserHost } from './playwright-browser-host'
 import { APP_NAME, APP_PROTOCOL_SCHEME } from '../shared/brand'
 
 // Initialize electron-log for renderer process support
@@ -179,6 +180,7 @@ let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
 let notionTaskService: NotionTaskService | null = null
 let slackBotService: SlackBotService | null = null
+let playwrightBrowserHost: PlaywrightBrowserHost | null = null
 let handlerDeps: HandlerDeps | null = null
 
 // Store pending deep link if app not ready yet (cold start)
@@ -560,6 +562,10 @@ app.whenReady().then(async () => {
       const result = await dialog.showOpenDialog(win, spec)
       return { canceled: result.canceled, filePaths: result.filePaths }
     })
+    ipcMain.handle('__browser-host:invoke', async (_event, request) => {
+      playwrightBrowserHost ??= new PlaywrightBrowserHost()
+      return await playwrightBrowserHost.invoke(request)
+    })
 
     if (!isClientOnly) {
       // Create WS RPC server (local WebSocket transport)
@@ -858,6 +864,13 @@ app.on('before-quit', async (event) => {
       slackBotService = null
     }
 
+    if (playwrightBrowserHost) {
+      await playwrightBrowserHost.dispose().catch((error) => {
+        mainLog.warn('[browser-host] Failed to dispose Playwright host:', error instanceof Error ? error.message : String(error))
+      })
+      playwrightBrowserHost = null
+    }
+
     // Clean up OAuth flow store (stop periodic cleanup timer)
     if (oauthFlowStore) {
       oauthFlowStore.dispose()
@@ -879,6 +892,15 @@ app.on('before-quit', async (event) => {
     }
 
     // Now actually quit
+    app.exit(0)
+  }
+
+  if (playwrightBrowserHost) {
+    event.preventDefault()
+    await playwrightBrowserHost.dispose().catch((error) => {
+      mainLog.warn('[browser-host] Failed to dispose Playwright host:', error instanceof Error ? error.message : String(error))
+    })
+    playwrightBrowserHost = null
     app.exit(0)
   }
 })

@@ -5,6 +5,7 @@
  */
 
 import type { RpcServer } from './types'
+import type { RemoteBrowserInvokeArgs, RemoteBrowserInvokeResult } from '@craft-agent/shared/protocol'
 
 /** Capability: open a URL in the client's default browser. */
 export const CLIENT_OPEN_EXTERNAL = 'client:openExternal'
@@ -20,6 +21,7 @@ export const CLIENT_CONFIRM_DIALOG = 'client:confirmDialog'
 
 /** Capability: show a native file/folder picker on the client. */
 export const CLIENT_OPEN_FILE_DIALOG = 'client:openFileDialog'
+export const CLIENT_BROWSER_HOST_INVOKE = 'client:browserHost.invoke'
 
 /** All capabilities a local Electron client advertises on handshake. */
 export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
@@ -28,6 +30,7 @@ export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
   CLIENT_SHOW_IN_FOLDER,
   CLIENT_CONFIRM_DIALOG,
   CLIENT_OPEN_FILE_DIALOG,
+  CLIENT_BROWSER_HOST_INVOKE,
 ]
 
 // ---------------------------------------------------------------------------
@@ -127,4 +130,12 @@ export async function requestClientOpenFileDialog(
   spec: FileDialogSpec,
 ): Promise<{ canceled: boolean; filePaths: string[] }> {
   return await server.invokeClient(clientId, CLIENT_OPEN_FILE_DIALOG, spec)
+}
+
+export async function requestClientBrowserHost(
+  server: RpcServer,
+  clientId: string,
+  request: RemoteBrowserInvokeArgs,
+): Promise<RemoteBrowserInvokeResult> {
+  return await server.invokeClient(clientId, CLIENT_BROWSER_HOST_INVOKE, request)
 }
