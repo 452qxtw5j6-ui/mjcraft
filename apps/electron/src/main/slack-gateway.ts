@@ -16,7 +16,7 @@ export interface SlackGatewayClientLike {
       channel: string
       text: string
       thread_ts?: string
-    }): Promise<{ ok?: boolean; ts?: string; error?: string }>
+    }): Promise<{ ok?: boolean; ts?: string; channel?: string; error?: string }>
     update(args: {
       channel: string
       ts: string
@@ -99,7 +99,7 @@ export class SlackGateway {
   async postMessage(
     args: { channel: string; text: string; threadTs?: string },
     client?: SlackGatewayClientLike,
-  ): Promise<{ ts: string }> {
+  ): Promise<{ ts: string; channel?: string }> {
     if (client) {
       const response = await client.chat.postMessage({
         channel: args.channel,
@@ -109,10 +109,10 @@ export class SlackGateway {
       if (!response.ts) {
         throw new Error(`Slack chat.postMessage failed: ${response.error ?? 'missing ts'}`)
       }
-      return { ts: response.ts }
+      return { ts: response.ts, channel: response.channel }
     }
 
-    const response = await this.requestSlack<{ ok?: boolean; ts?: string; error?: string }>('chat.postMessage', {
+    const response = await this.requestSlack<{ ok?: boolean; ts?: string; channel?: string; error?: string }>('chat.postMessage', {
       channel: args.channel,
       text: args.text,
       ...(args.threadTs ? { thread_ts: args.threadTs } : {}),
@@ -120,7 +120,7 @@ export class SlackGateway {
     if (!response.ok || !response.ts) {
       throw new Error(`Slack chat.postMessage failed: ${response.error ?? 'missing ts'}`)
     }
-    return { ts: response.ts }
+    return { ts: response.ts, channel: response.channel }
   }
 
   async updateMessage(

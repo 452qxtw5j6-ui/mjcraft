@@ -155,7 +155,7 @@ interface NotionTaskServiceDependencies {
 }
 
 interface SlackGatewayLike {
-  postMessage(args: { channel: string; text: string; threadTs?: string }, client?: SlackGatewayClientLike): Promise<{ ts: string }>
+  postMessage(args: { channel: string; text: string; threadTs?: string }, client?: SlackGatewayClientLike): Promise<{ ts: string; channel?: string }>
   updateMessage(args: { channel: string; ts: string; text: string }, client?: SlackGatewayClientLike): Promise<void>
   getPermalink(args: { channel: string; messageTs: string }, client?: SlackGatewayClientLike): Promise<string>
 }
@@ -515,7 +515,12 @@ export class NotionTaskService {
         slackRef = kickoff.slackRef
         await this.sessionManager.linkSessionToSlack?.(session.id, slackRef)
         if (kickoff.permalinkError) {
-          throw new Error(kickoff.permalinkError)
+          this.deps.logger.warn('[notion-ai] slack permalink lookup failed; continuing without permalink', {
+            pageId,
+            sessionId: session.id,
+            channelId: kickoff.slackRef.channelId,
+            error: kickoff.permalinkError,
+          })
         }
       }
 
@@ -764,12 +769,13 @@ export class NotionTaskService {
       channel: config.slackChannelId,
       text: truncateForPrompt(kickoffText, SLACK_TEXT_LIMIT),
     })
+    const resolvedChannelId = message.channel?.trim() || config.slackChannelId
 
     let permalink: string | undefined
     let permalinkError: string | undefined
     try {
       permalink = await slackGateway.getPermalink({
-        channel: config.slackChannelId,
+        channel: resolvedChannelId,
         messageTs: message.ts,
       })
     } catch (error) {
@@ -778,7 +784,7 @@ export class NotionTaskService {
 
     return {
       slackRef: {
-        channelId: config.slackChannelId,
+        channelId: resolvedChannelId,
         threadTs: message.ts,
         rootMessageTs: message.ts,
         permalink,
