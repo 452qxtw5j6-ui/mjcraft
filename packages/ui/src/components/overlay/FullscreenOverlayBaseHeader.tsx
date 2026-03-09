@@ -12,7 +12,7 @@
 
 import { useState, useCallback, type ReactNode } from 'react'
 import * as ContextMenu from '@radix-ui/react-context-menu'
-import { Check, Copy, ExternalLink, FolderOpen, type LucideIcon } from 'lucide-react'
+import { Check, Copy, Download, ExternalLink, FolderOpen, type LucideIcon } from 'lucide-react'
 import { PreviewHeader, PreviewHeaderBadge, type PreviewBadgeVariant } from '../ui/PreviewHeader'
 import {
   DropdownMenu,
@@ -99,7 +99,7 @@ interface FilePathBadgeProps {
  * not re-trigger the in-app preview interceptor.
  */
 function FilePathBadge({ filePath }: FilePathBadgeProps) {
-  const { onOpenFileExternal, onRevealInFinder, fileManagerName } = usePlatform()
+  const { onOpenFileExternal, onRevealInFinder, onDownloadFile, fileManagerName } = usePlatform()
   const revealLabel = `Reveal in ${fileManagerName || 'Finder'}`
 
   const handleOpen = useCallback(() => {
@@ -110,8 +110,12 @@ function FilePathBadge({ filePath }: FilePathBadgeProps) {
     onRevealInFinder?.(filePath)
   }, [onRevealInFinder, filePath])
 
+  const handleDownload = useCallback(async () => {
+    await onDownloadFile?.(filePath)
+  }, [onDownloadFile, filePath])
+
   // Shared menu items — same content rendered by both dropdown and context menu
-  const hasMenuItems = !!onOpenFileExternal || !!onRevealInFinder
+  const hasMenuItems = !!onOpenFileExternal || !!onRevealInFinder || !!onDownloadFile
 
   const dropdownItems = (
     <>
@@ -119,6 +123,12 @@ function FilePathBadge({ filePath }: FilePathBadgeProps) {
         <StyledDropdownMenuItem onSelect={handleOpen}>
           <ExternalLink />
           Open
+        </StyledDropdownMenuItem>
+      )}
+      {onDownloadFile && (
+        <StyledDropdownMenuItem onSelect={() => { void handleDownload() }}>
+          <Download />
+          Download
         </StyledDropdownMenuItem>
       )}
       {onRevealInFinder && (
@@ -136,6 +146,12 @@ function FilePathBadge({ filePath }: FilePathBadgeProps) {
         <ContextMenu.Item className={contextMenuItemClasses} onSelect={handleOpen}>
           <ExternalLink />
           Open
+        </ContextMenu.Item>
+      )}
+      {onDownloadFile && (
+        <ContextMenu.Item className={contextMenuItemClasses} onSelect={() => { void handleDownload() }}>
+          <Download />
+          Download
         </ContextMenu.Item>
       )}
       {onRevealInFinder && (

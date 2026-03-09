@@ -31,6 +31,12 @@ export interface PlatformActions {
   onOpenFileExternal?: (path: string) => void
 
   /**
+   * Save a copy of a file to a user-selected location on the current client.
+   * Used by remote/local preview headers and session file panels for explicit downloads.
+   */
+  onDownloadFile?: (path: string) => Promise<void>
+
+  /**
    * Open a URL in the default browser (Electron: shell.openExternal)
    * Web: window.open or navigation
    */
@@ -129,6 +135,7 @@ export interface PlatformProviderProps {
  * ```tsx
  * <PlatformProvider actions={{
  *   onOpenFile: (path) => window.electronAPI.openFile(path),
+ *   onDownloadFile: (path) => window.electronAPI.saveRemoteCopy(path),
  *   onOpenUrl: (url) => window.electronAPI.openUrl(url),
  *   onCopyToClipboard: (text) => navigator.clipboard.writeText(text),
  * }}>

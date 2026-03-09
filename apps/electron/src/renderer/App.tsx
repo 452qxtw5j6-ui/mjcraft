@@ -1545,6 +1545,12 @@ export default function App() {
     // Bypass link interceptor — opens file directly in system editor.
     // Used by overlay header badges (when already viewing a file, "Open" should launch editor).
     onOpenFileExternal: linkInterceptor.openFileExternal,
+    onDownloadFile: async (path: string) => {
+      const result = await window.electronAPI.saveRemoteCopy(path)
+      if (!result.canceled && result.path) {
+        toast.success('Saved file', { description: result.path })
+      }
+    },
     // Read file contents as UTF-8 string (used by datatable/spreadsheet/html-preview src fields)
     onReadFile: (path: string) => window.electronAPI.readFile(path),
     // Read file as data URL (used by image-preview blocks)

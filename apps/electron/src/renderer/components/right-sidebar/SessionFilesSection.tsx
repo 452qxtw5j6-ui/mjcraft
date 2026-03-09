@@ -17,7 +17,7 @@
 import * as React from 'react'
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { AnimatePresence, motion, type Variants } from 'motion/react'
-import { File, Folder, FolderOpen, FileText, Image, FileCode, ChevronRight, ExternalLink } from 'lucide-react'
+import { File, Folder, FolderOpen, FileText, Image, FileCode, ChevronRight, ExternalLink, Download } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -211,6 +211,7 @@ interface FileTreeItemProps {
   onFileClick: (file: SessionFile) => void
   onFileDoubleClick: (file: SessionFile) => void
   onRevealInFileManager: (path: string) => void
+  onDownloadFile: (path: string, suggestedName?: string) => void
   /** Whether this item is inside an expanded folder (for stagger animation) */
   isNested?: boolean
 }
@@ -230,6 +231,7 @@ function FileTreeItem({
   onFileClick,
   onFileDoubleClick,
   onRevealInFileManager,
+  onDownloadFile,
   isNested,
 }: FileTreeItemProps) {
   const isDirectory = file.type === 'directory'
@@ -322,6 +324,12 @@ function FileTreeItem({
               Open
             </StyledContextMenuItem>
           )}
+          {file.type !== 'directory' && (
+            <StyledContextMenuItem onSelect={() => onDownloadFile(file.path, file.name)}>
+              <Download className="h-3.5 w-3.5" />
+              Download
+            </StyledContextMenuItem>
+          )}
           {/* Show in file manager */}
           <StyledContextMenuItem
             onSelect={() => onRevealInFileManager(file.path)}
@@ -366,6 +374,7 @@ function FileTreeItem({
                         onFileClick={onFileClick}
                         onFileDoubleClick={onFileDoubleClick}
                         onRevealInFileManager={onRevealInFileManager}
+                        onDownloadFile={onDownloadFile}
                         isNested={true}
                       />
                     </motion.div>
@@ -500,6 +509,17 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
     }).catch(() => {})
   }, [])
 
+  const handleDownloadFile = useCallback((path: string, suggestedName?: string) => {
+    void window.electronAPI.saveRemoteCopy(path, suggestedName).then((result) => {
+      if (!result.canceled && result.path) {
+        toast.success('Saved file', { description: result.path })
+      }
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      toast.error('Failed to save file', { description: message })
+    })
+  }, [])
+
   // Handle file click — preview in-app if possible, open directory in file manager
   const handleFileClick = useCallback((file: SessionFile) => {
     if (file.type === 'directory') {
@@ -578,6 +598,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
                 onFileClick={handleFileClick}
                 onFileDoubleClick={handleFileDoubleClick}
                 onRevealInFileManager={handleRevealInFileManager}
+                onDownloadFile={handleDownloadFile}
               />
             ))}
           </nav>
