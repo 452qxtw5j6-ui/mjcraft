@@ -14,6 +14,10 @@ describe('classifyMarkdownLinkTarget', () => {
     expect(classifyMarkdownLinkTarget('apps/electron/resources/docs/browser-tools.md')).toBe('file')
   })
 
+  it('classifies binary artifact paths as file', () => {
+    expect(classifyMarkdownLinkTarget('/Users/foo/workspace/sessions/abc/data/test-10mb.bin')).toBe('file')
+  })
+
   it('classifies https links as url', () => {
     expect(classifyMarkdownLinkTarget('https://example.com/image.jpg')).toBe('url')
   })
