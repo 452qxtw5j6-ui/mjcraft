@@ -1257,6 +1257,30 @@ export default function App() {
     },
     openUrl: async (url) => {
       try {
+        const looksLikeLocalFile =
+          !/^[a-z][a-z0-9+.-]*:\/\//i.test(url) &&
+          !/^mailto:/i.test(url) &&
+          (
+            url.startsWith('/') ||
+            url.startsWith('~/') ||
+            url.startsWith('./') ||
+            url.startsWith('../') ||
+            /^[A-Za-z0-9_][\w\-./@]*\.[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/i.test(url)
+          )
+
+        if (looksLikeLocalFile) {
+          const transport = await window.electronAPI.getTransportConnectionState()
+          if (transport.mode === 'remote') {
+            const result = await window.electronAPI.saveRemoteCopy(url)
+            if (!result.canceled && result.path) {
+              await window.electronAPI.openFile(result.path)
+            }
+            return
+          }
+          await window.electronAPI.openFile(url)
+          return
+        }
+
         await window.electronAPI.openUrl(url)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error'
