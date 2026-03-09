@@ -558,6 +558,20 @@ describe('edge cases', () => {
 // ---------------------------------------------------------------------------
 
 describe('invokeClient', () => {
+  test('listClients exposes connected client metadata and capabilities', async () => {
+    const { server, clientId } = await createPair(
+      {},
+      { clientCapabilities: ['client:browserHost.invoke'] },
+    )
+
+    const clients = server.listClients()
+    expect(clients).toHaveLength(1)
+    expect(clients[0]?.clientId).toBe(clientId)
+    expect(clients[0]?.workspaceId).toBe('test-workspace')
+    expect(clients[0]?.capabilities).toContain('client:browserHost.invoke')
+    expect(typeof clients[0]?.connectedAt).toBe('number')
+  })
+
   test('server invokes client capability and receives result', async () => {
     const { server, client, clientId } = await createPair(
       {},

@@ -124,6 +124,9 @@ function buildMainProcess(config: BuildConfig): void {
     '--format=cjs',
     '--outfile=apps/electron/dist/main.cjs',
     '--external:electron',
+    '--external:playwright',
+    '--external:playwright-core',
+    '--external:chromium-bidi',
   ];
 
   // Add OAuth defines if env vars are set

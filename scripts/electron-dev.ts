@@ -276,7 +276,7 @@ async function runEsbuild(
       platform: "node",
       format: "cjs",
       outfile: join(ROOT_DIR, outfile),
-      external: ["electron"],
+      external: ["electron", "playwright", "playwright-core", "chromium-bidi"],
       ...(options.packagesExternal ? { packages: "external" as const } : {}),
       define: defines,
       logLevel: "warning",
@@ -495,7 +495,7 @@ async function main(): Promise<void> {
     platform: "node",
     format: "cjs",
     outfile: join(ROOT_DIR, "apps/electron/dist/main.cjs"),
-    external: ["electron"],
+    external: ["electron", "playwright", "playwright-core", "chromium-bidi"],
     define: oauthDefines,
     logLevel: "info",
   });

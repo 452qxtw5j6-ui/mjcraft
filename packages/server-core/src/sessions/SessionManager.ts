@@ -2534,10 +2534,14 @@ export class SessionManager implements ISessionManager {
       }
 
       // Wire up browser pane tools — merge BrowserPaneFns into session callbacks
-      // so browser_* tools can delegate to BrowserPaneManager
-      if (this.browserPaneManager) {
+      // so browser_* tools can delegate to BrowserPaneManager or a remote adapter.
+      const sid = managed.id
+      if (this.browserPaneManager?.createSessionBrowserPaneFns) {
+        mergeSessionScopedToolCallbacks(sid, {
+          browserPaneFns: this.browserPaneManager.createSessionBrowserPaneFns(sid),
+        })
+      } else if (this.browserPaneManager) {
         const bpm = this.browserPaneManager
-        const sid = managed.id
 
         const resolveSessionBrowserInstance = (toolName: string, options?: { show?: boolean }): string => {
           const instanceId = bpm.createForSession(sid, { show: options?.show ?? false })

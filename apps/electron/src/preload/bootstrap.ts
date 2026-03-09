@@ -25,6 +25,7 @@ import {
   CLIENT_SHOW_IN_FOLDER,
   CLIENT_CONFIRM_DIALOG,
   CLIENT_OPEN_FILE_DIALOG,
+  CLIENT_BROWSER_HOST_INVOKE,
   LOCAL_CLIENT_CAPABILITIES,
 } from '@craft-agent/server-core/transport'
 import type { ConfirmDialogSpec, FileDialogSpec } from '@craft-agent/server-core/transport'
@@ -97,6 +98,10 @@ client.handleCapability(CLIENT_CONFIRM_DIALOG, async (spec: ConfirmDialogSpec) =
 client.handleCapability(CLIENT_OPEN_FILE_DIALOG, async (spec: FileDialogSpec) => {
   // dialog.showOpenDialog is main-process-only — bridge via ipcRenderer
   return await ipcRenderer.invoke('__dialog:showOpenDialog', spec)
+})
+
+client.handleCapability(CLIENT_BROWSER_HOST_INVOKE, async (request: unknown) => {
+  return await ipcRenderer.invoke('__browser-host:invoke', request)
 })
 
 client.connect()
