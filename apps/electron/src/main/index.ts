@@ -5,7 +5,9 @@ loadShellEnv()
 
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, shell } from 'electron'
 import { createHash, randomUUID } from 'crypto'
+import { writeFile } from 'fs/promises'
 import { hostname, homedir } from 'os'
+import { basename, join } from 'path'
 import * as Sentry from '@sentry/electron/main'
 
 // Initialize Sentry error tracking as early as possible after app import.
@@ -561,6 +563,20 @@ app.whenReady().then(async () => {
         || BrowserWindow.getAllWindows()[0]
       const result = await dialog.showOpenDialog(win, spec)
       return { canceled: result.canceled, filePaths: result.filePaths }
+    })
+    ipcMain.handle('__file:saveFromBase64', async (event, args: { suggestedName: string; base64: string }) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+        || BrowserWindow.getFocusedWindow()
+        || BrowserWindow.getAllWindows()[0]
+      const result = await dialog.showSaveDialog(win, {
+        defaultPath: basename(args.suggestedName || 'download.bin'),
+      })
+      if (result.canceled || !result.filePath) {
+        return { canceled: true }
+      }
+      const buffer = Buffer.from(args.base64, 'base64')
+      await writeFile(result.filePath, buffer)
+      return { canceled: false, path: result.filePath }
     })
     ipcMain.handle('__browser-host:invoke', async (_event, request) => {
       playwrightBrowserHost ??= new PlaywrightBrowserHost()

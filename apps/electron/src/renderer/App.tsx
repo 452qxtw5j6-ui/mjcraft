@@ -909,6 +909,20 @@ export default function App() {
 
   const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[]) => {
     try {
+      const oversized = attachments?.filter((attachment) => attachment.size > 50 * 1024 * 1024) ?? []
+      if (oversized.length > 0) {
+        const names = oversized.map((attachment) => attachment.name).join(', ')
+        updateSessionById(sessionId, (s) => ({
+          messages: [...s.messages, {
+            id: generateMessageId(),
+            role: 'warning' as const,
+            content: `⚠️ Attachment(s) exceed the 50MB limit and will not be sent: ${names}`,
+            timestamp: Date.now(),
+          }],
+        }))
+        attachments = attachments?.filter((attachment) => attachment.size <= 50 * 1024 * 1024)
+      }
+
       // Step 1: Store attachments and get persistent metadata
       let storedAttachments: StoredAttachment[] | undefined
       let processedAttachments: FileAttachment[] | undefined
@@ -1224,6 +1238,14 @@ export default function App() {
   const linkInterceptor = useLinkInterceptor({
     openFileExternal: async (path) => {
       try {
+        const transport = await window.electronAPI.getTransportConnectionState()
+        if (transport.mode === 'remote') {
+          const result = await window.electronAPI.saveRemoteCopy(path)
+          if (!result.canceled && result.path) {
+            await window.electronAPI.openFile(result.path)
+          }
+          return
+        }
         await window.electronAPI.openFile(path)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error'
@@ -1246,6 +1268,14 @@ export default function App() {
     },
     showInFolder: async (path) => {
       try {
+        const transport = await window.electronAPI.getTransportConnectionState()
+        if (transport.mode === 'remote') {
+          await navigator.clipboard.writeText(path)
+          toast.success('Copied host path', {
+            description: path,
+          })
+          return
+        }
         await window.electronAPI.showInFolder(path)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error'

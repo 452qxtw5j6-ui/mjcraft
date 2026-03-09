@@ -61,6 +61,7 @@ export const RPC_CHANNELS = {
     READ_ATTACHMENT: 'file:readAttachment',
     STORE_ATTACHMENT: 'file:storeAttachment',
     GENERATE_THUMBNAIL: 'file:generateThumbnail',
+    SAVE_REMOTE_COPY: 'file:saveRemoteCopy',
   },
   fs: {
     SEARCH: 'fs:search',

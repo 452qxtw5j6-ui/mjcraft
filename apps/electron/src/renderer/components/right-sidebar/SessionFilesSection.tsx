@@ -29,6 +29,7 @@ import { cn } from '@/lib/utils'
 import * as storage from '@/lib/local-storage'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { getFileManagerName } from '@/lib/platform'
+import { toast } from 'sonner'
 
 /**
  * Stagger animation variants for child items - matches LeftSidebar pattern
@@ -489,7 +490,14 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
 
   // Reveal a file/folder in the system file manager
   const handleRevealInFileManager = useCallback((path: string) => {
-    window.electronAPI.showInFolder(path)
+    void window.electronAPI.getTransportConnectionState().then(async (transport) => {
+      if (transport.mode === 'remote') {
+        await navigator.clipboard.writeText(path)
+        toast.success('Copied host path', { description: path })
+        return
+      }
+      await window.electronAPI.showInFolder(path)
+    }).catch(() => {})
   }, [])
 
   // Handle file click — preview in-app if possible, open directory in file manager
@@ -536,15 +544,15 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
       {!hideHeader && (
         <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
           <span className="text-xs font-medium text-muted-foreground">Session Files</span>
-          {sessionFolderPath && (
-            <button
-              type="button"
-              onClick={() => window.electronAPI.showInFolder(sessionFolderPath)}
-              className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
-            >
-              {`View in ${fileManagerName}`}
-            </button>
-          )}
+        {sessionFolderPath && (
+          <button
+            type="button"
+            onClick={() => handleRevealInFileManager(sessionFolderPath)}
+            className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
+          >
+            {`View in ${fileManagerName}`}
+          </button>
+        )}
         </div>
       )}
 

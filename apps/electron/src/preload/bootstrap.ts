@@ -26,9 +26,12 @@ import {
   CLIENT_CONFIRM_DIALOG,
   CLIENT_OPEN_FILE_DIALOG,
   CLIENT_BROWSER_HOST_INVOKE,
+  CLIENT_READ_FILE_ATTACHMENT,
+  CLIENT_SAVE_FILE,
   LOCAL_CLIENT_CAPABILITIES,
 } from '@craft-agent/server-core/transport'
 import type { ConfirmDialogSpec, FileDialogSpec } from '@craft-agent/server-core/transport'
+import { readFileAttachment } from '@craft-agent/shared/utils'
 
 // Connection details — from env (remote server) or main process (local)
 let wsUrl: string
@@ -102,6 +105,18 @@ client.handleCapability(CLIENT_OPEN_FILE_DIALOG, async (spec: FileDialogSpec) =>
 
 client.handleCapability(CLIENT_BROWSER_HOST_INVOKE, async (request: unknown) => {
   return await ipcRenderer.invoke('__browser-host:invoke', request)
+})
+
+client.handleCapability(CLIENT_READ_FILE_ATTACHMENT, async (path: string) => {
+  try {
+    return readFileAttachment(path)
+  } catch {
+    return null
+  }
+})
+
+client.handleCapability(CLIENT_SAVE_FILE, async (args: { suggestedName: string; base64: string }) => {
+  return await ipcRenderer.invoke('__file:saveFromBase64', args)
 })
 
 client.connect()

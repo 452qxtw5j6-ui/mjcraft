@@ -11,7 +11,7 @@ import { sanitizeFilename, validateFilePath } from '@craft-agent/server-core/han
 import { MarkItDown } from 'markitdown-js'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
-import { requestClientOpenFileDialog } from '@craft-agent/server-core/transport'
+import { requestClientOpenFileDialog, requestClientReadFileAttachment, requestClientSaveFile } from '@craft-agent/server-core/transport'
 
 // Re-export from server-core for backward compatibility
 export { sanitizeFilename, validateFilePath } from '@craft-agent/server-core/handlers'
@@ -24,6 +24,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.file.READ_ATTACHMENT,
   RPC_CHANNELS.file.STORE_ATTACHMENT,
   RPC_CHANNELS.file.GENERATE_THUMBNAIL,
+  RPC_CHANNELS.file.SAVE_REMOTE_COPY,
   RPC_CHANNELS.fs.SEARCH,
 ] as const
 
@@ -109,25 +110,30 @@ export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): voi
   })
 
   // Read file and return as FileAttachment with Quick Look thumbnail
-  server.handle(RPC_CHANNELS.file.READ_ATTACHMENT, async (_ctx, path: string) => {
+  server.handle(RPC_CHANNELS.file.READ_ATTACHMENT, async (ctx, path: string) => {
     try {
-      // Validate path first to prevent path traversal
-      const safePath = await validateFilePath(path)
-      // Use shared utility that handles file type detection, encoding, etc.
-      const attachment = await readFileAttachment(safePath)
+      let attachment: FileAttachment | null
+      const canReadLocally = ctx.webContentsId == null
+      if (canReadLocally) {
+        const safePath = await validateFilePath(path)
+        attachment = await readFileAttachment(safePath)
+      } else {
+        attachment = await requestClientReadFileAttachment(server, ctx.clientId, path)
+      }
       if (!attachment) return null
 
       // Generate thumbnail for image preview
       // Only works for image formats the processor supports — PDFs/Office files get icon fallback
-      try {
-        const thumbBuffer = await deps.platform.imageProcessor.process(safePath, {
-          resize: { width: 200, height: 200 },
-          format: 'png',
-        })
-        ;(attachment as { thumbnailBase64?: string }).thumbnailBase64 = thumbBuffer.toString('base64')
-      } catch (thumbError) {
-        // Thumbnail generation failed (non-image file or corrupt) — icon fallback
-        deps.platform.logger.info('Thumbnail generation failed (using fallback):', thumbError instanceof Error ? thumbError.message : thumbError)
+      if (attachment.base64 && attachment.type === 'image') {
+        try {
+          const thumbBuffer = await deps.platform.imageProcessor.process(Buffer.from(attachment.base64, 'base64'), {
+            resize: { width: 200, height: 200 },
+            format: 'png',
+          })
+          ;(attachment as { thumbnailBase64?: string }).thumbnailBase64 = thumbBuffer.toString('base64')
+        } catch (thumbError) {
+          deps.platform.logger.info('Thumbnail generation failed (using fallback):', thumbError instanceof Error ? thumbError.message : thumbError)
+        }
       }
 
       return attachment
@@ -151,6 +157,15 @@ export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): voi
       deps.platform.logger.info('generateThumbnail failed:', error instanceof Error ? error.message : error)
       return null
     }
+  })
+
+  server.handle(RPC_CHANNELS.file.SAVE_REMOTE_COPY, async (ctx, path: string, suggestedName?: string) => {
+    const safePath = await validateFilePath(path)
+    const buffer = await readFile(safePath)
+    return await requestClientSaveFile(server, ctx.clientId, {
+      suggestedName: suggestedName || safePath.split('/').pop() || 'download.bin',
+      base64: buffer.toString('base64'),
+    })
   })
 
   // Store an attachment to disk and generate thumbnail/markdown conversion
