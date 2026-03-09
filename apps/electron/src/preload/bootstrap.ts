@@ -119,6 +119,10 @@ client.handleCapability(CLIENT_SAVE_FILE, async (args: { suggestedName: string; 
   return await ipcRenderer.invoke('__file:saveFromBase64', args)
 })
 
+;(api as any).openClientPath = async (path: string) => {
+  return await ipcRenderer.invoke('__shell:openClientPath', path)
+}
+
 client.connect()
 
 // Build the full ElectronAPI proxy — identical shape to the IPC preload.

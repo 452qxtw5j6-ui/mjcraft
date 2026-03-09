@@ -300,6 +300,7 @@ export interface ElectronAPI {
   // Shell operations
   openUrl(url: string): Promise<void>
   openFile(path: string): Promise<void>
+  openClientPath?(path: string): Promise<{ error?: string }>
   showInFolder(path: string): Promise<void>
 
   // Menu event listeners

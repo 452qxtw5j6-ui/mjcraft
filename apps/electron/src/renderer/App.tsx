@@ -1242,7 +1242,10 @@ export default function App() {
         if (transport.mode === 'remote') {
           const result = await window.electronAPI.saveRemoteCopy(path)
           if (!result.canceled && result.path) {
-            await window.electronAPI.openFile(result.path)
+            const openResult = await window.electronAPI.openClientPath?.(result.path)
+            if (openResult?.error) {
+              throw new Error(openResult.error)
+            }
           }
           return
         }
@@ -1273,7 +1276,10 @@ export default function App() {
           if (transport.mode === 'remote') {
             const result = await window.electronAPI.saveRemoteCopy(url)
             if (!result.canceled && result.path) {
-              await window.electronAPI.openFile(result.path)
+              const openResult = await window.electronAPI.openClientPath?.(result.path)
+              if (openResult?.error) {
+                throw new Error(openResult.error)
+              }
             }
             return
           }

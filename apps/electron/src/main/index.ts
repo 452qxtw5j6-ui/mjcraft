@@ -578,6 +578,10 @@ app.whenReady().then(async () => {
       await writeFile(result.filePath, buffer)
       return { canceled: false, path: result.filePath }
     })
+    ipcMain.handle('__shell:openClientPath', async (_event, path: string) => {
+      const error = await shell.openPath(path)
+      return { error: error || undefined }
+    })
     ipcMain.handle('__browser-host:invoke', async (_event, request) => {
       playwrightBrowserHost ??= new PlaywrightBrowserHost()
       return await playwrightBrowserHost.invoke(request)
