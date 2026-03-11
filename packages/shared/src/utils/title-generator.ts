@@ -17,9 +17,10 @@ export function buildTitlePrompt(message: string): string {
   const snippet = message.slice(0, 500);
   return [
     'What topic or area is the user exploring? Reply with ONLY a short topic label (2-5 words).',
+    'Always write the title in Korean.',
     'Use a noun phrase — NOT a verb/action. Use plain text only - no markdown.',
     'If the user has a clear specific task, name the area it belongs to, not the action.',
-    'Examples: "Auto Title Generation", "Dark Mode Support", "API Authentication", "Database Schema Design", "React Performance"',
+    'Examples: "자동 제목 생성", "다크 모드 지원", "API 인증", "데이터베이스 스키마 설계", "리액트 성능"',
     '',
     'User: ' + snippet,
     '',
@@ -46,8 +47,9 @@ export function buildRegenerateTitlePrompt(
   return [
     'Based on these recent messages, what topic or area is this conversation about?',
     'Reply with ONLY a short topic label (2-5 words).',
+    'Always write the title in Korean.',
     'Use a noun phrase — NOT a verb/action. Use plain text only - no markdown.',
-    'Examples: "Auto Title Generation", "Dark Mode Support", "API Authentication", "Database Schema Design"',
+    'Examples: "자동 제목 생성", "다크 모드 지원", "API 인증", "데이터베이스 스키마 설계", "리액트 성능"',
     '',
     'Recent user messages:',
     userContext,
