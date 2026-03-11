@@ -216,6 +216,14 @@ export class PrerequisiteManager {
     const filePath = (toolInput.file_path as string) || (toolInput.path as string);
     if (!filePath) return;
 
+    this.markFileRead(filePath);
+  }
+
+  /**
+   * Mark an arbitrary prerequisite file as already read.
+   * Used by harness code that preloads source guides before the first tool call.
+   */
+  markFileRead(filePath: string): void {
     const expanded = expandPath(filePath);
     this.readFiles.add(expanded);
 

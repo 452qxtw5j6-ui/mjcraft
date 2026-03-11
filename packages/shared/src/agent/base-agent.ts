@@ -618,6 +618,14 @@ export abstract class BaseAgent implements AgentBackend {
     this.temporaryClarifications = text;
   }
 
+  /**
+   * Mark an arbitrary prerequisite file as already read.
+   * Used by session harness code that preloads a source guide.
+   */
+  markFileRead(filePath: string): void {
+    this.prerequisiteManager.markFileRead(filePath);
+  }
+
   // ============================================================
   // Manager Accessors (for advanced queries)
   // ============================================================

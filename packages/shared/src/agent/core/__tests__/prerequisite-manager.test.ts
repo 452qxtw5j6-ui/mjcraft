@@ -178,6 +178,17 @@ describe('PrerequisiteManager', () => {
       expect(manager.checkPrerequisites('mcp__linear__createIssue').allowed).toBe(true);
       expect(manager.checkPrerequisites('mcp__slack__sendMessage').allowed).toBe(false);
     });
+
+    it('allows harness code to mark a guide as read directly', () => {
+      const guideFile = guidePath('notion');
+      mockExistsPaths.add(guideFile);
+
+      expect(manager.checkPrerequisites('mcp__notion__search').allowed).toBe(false);
+
+      manager.markFileRead(guideFile);
+
+      expect(manager.checkPrerequisites('mcp__notion__search').allowed).toBe(true);
+    });
   });
 
   // ============================================================

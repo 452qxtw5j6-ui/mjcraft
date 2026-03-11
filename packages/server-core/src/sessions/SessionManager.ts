@@ -77,6 +77,7 @@ import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
 import { listLabels } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { resolveRequestedSource } from './source-intent-resolver'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -262,6 +263,20 @@ async function buildServersFromSources(
 
   span.end()
   return result
+}
+
+function hasExplicitSourceMention(message: string): boolean {
+  return /\[source:[\w-]+\]/i.test(message)
+}
+
+function buildSourceRoutingClarification(source: LoadedSource, guideSummary?: string): string {
+  const summary = guideSummary || source.config.tagline || source.config.provider
+  return [
+    `Selected source for this request: ${source.config.name} (${source.config.slug}).`,
+    summary ? `Guide summary: ${summary}` : null,
+    'Prefer this source\'s structured tools first for this request.',
+    'If the source tools are insufficient, you may still use Bash or browser automation.',
+  ].filter(Boolean).join('\n')
 }
 
 /**
@@ -4305,7 +4320,52 @@ export class SessionManager implements ISessionManager {
     // Always set all sources for context (even if none are enabled), including built-ins
     const workspaceRootPath = managed.workspace.rootPath
     const allSources = loadAllSources(workspaceRootPath)
+    let turnSourceGuidePath: string | null = null
+    let turnClarification: string | null = null
+
+    if (!hasExplicitSourceMention(message)) {
+      const resolvedIntent = await resolveRequestedSource(
+        message,
+        allSources,
+        agent.getSummarizeCallback(),
+      )
+
+      if (resolvedIntent) {
+        const candidate = allSources.find(source => source.config.slug === resolvedIntent.sourceSlug)
+        if (candidate && isSourceUsable(candidate)) {
+          turnClarification = buildSourceRoutingClarification(candidate, resolvedIntent.guideSummary)
+
+          const currentSlugs = new Set(managed.enabledSourceSlugs || [])
+          if (!currentSlugs.has(candidate.config.slug)) {
+            currentSlugs.add(candidate.config.slug)
+            managed.enabledSourceSlugs = Array.from(currentSlugs)
+            sessionLog.info(`Auto-enabled resolved source for session ${sessionId}: ${candidate.config.slug}`)
+            this.persistSession(managed)
+            this.sendEvent({
+              type: 'sources_changed',
+              sessionId,
+              enabledSourceSlugs: managed.enabledSourceSlugs,
+            }, managed.workspace.id)
+          }
+
+          const guidePath = join(candidate.folderPath, 'guide.md')
+          if (existsSync(guidePath)) {
+            turnSourceGuidePath = guidePath
+          }
+        }
+      }
+    }
+
     agent.setAllSources(allSources)
+    ;(agent as AgentInstance & {
+      setTemporaryClarifications?: (text: string | null) => void
+      markFileRead?: (filePath: string) => void
+    }).setTemporaryClarifications?.(turnClarification)
+    if (turnSourceGuidePath) {
+      ;(agent as AgentInstance & {
+        markFileRead?: (filePath: string) => void
+      }).markFileRead?.(turnSourceGuidePath)
+    }
     sendSpan.mark('sources.loaded')
 
     // Apply source servers if any are enabled
@@ -4549,6 +4609,9 @@ export class SessionManager implements ISessionManager {
         this.onProcessingStopped(sessionId, 'error')
       }
     } finally {
+      ;(agent as AgentInstance & {
+        setTemporaryClarifications?: (text: string | null) => void
+      }).setTemporaryClarifications?.(null)
       // Only handle cleanup for unexpected exits (loop break without complete event)
       // Normal completion returns early after calling onProcessingStopped
       // Errors are handled in catch block

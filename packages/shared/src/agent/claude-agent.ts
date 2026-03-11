@@ -1682,6 +1682,9 @@ export class ClaudeAgent extends BaseAgent {
     );
 
     parts.push(...contextParts);
+    if (this.temporaryClarifications) {
+      parts.push(`<turn_clarification>\n${this.temporaryClarifications}\n</turn_clarification>`);
+    }
 
     // Add file attachments with stored path info (agent uses Read tool to access content)
     // Text files are NOT embedded inline to prevent context overflow from large files
@@ -1724,6 +1727,12 @@ export class ClaudeAgent extends BaseAgent {
 
     for (const part of contextParts) {
       contentBlocks.push({ type: 'text', text: part });
+    }
+    if (this.temporaryClarifications) {
+      contentBlocks.push({
+        type: 'text',
+        text: `<turn_clarification>\n${this.temporaryClarifications}\n</turn_clarification>`,
+      });
     }
 
     // Add attachments - images/PDFs are uploaded inline, text files are path-only

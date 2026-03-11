@@ -1665,6 +1665,9 @@ export class PiAgent extends BaseAgent {
       const fullSystemPrompt = [
         systemPrompt,
         ...contextParts,
+        this.temporaryClarifications
+          ? `<turn_clarification>\n${this.temporaryClarifications}\n</turn_clarification>`
+          : null,
       ].filter(Boolean).join('\n\n');
 
       // User message: attachments + the actual message
