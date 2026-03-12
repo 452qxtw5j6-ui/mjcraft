@@ -49,7 +49,7 @@ export interface SessionViewerProps {
 }
 
 /**
- * Noodle brand mark shown at the bottom of the transcript viewer.
+ * CraftAgentLogo - The Craft Agent "C" logo for branding
  */
 function CraftAgentLogo({ className }: { className?: string }) {
   return (
@@ -59,12 +59,10 @@ function CraftAgentLogo({ className }: { className?: string }) {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <g transform="translate(-1.5, 0.5)">
+      <g transform="translate(3.4502, 3)" fill="currentColor">
         <path
-          d="M12 12 C12 10, 14 9, 15 10 C17 12, 15 15, 12 15 C8 15, 6 12, 6 9 C6 5, 10 3, 14 3 C19 3, 21 7, 21 12 C21 16, 19 19, 15 20"
-          stroke="currentColor"
-          strokeWidth="2.8"
-          strokeLinecap="round"
+          d="M3.17890888,3.6 L3.17890888,0 L16,0 L16,3.6 L3.17890888,3.6 Z M9.642,7.2 L9.64218223,10.8 L0,10.8 L0,3.6 L16,3.6 L16,7.2 L9.642,7.2 Z M3.17890888,18 L3.178,14.4 L0,14.4 L0,10.8 L16,10.8 L16,18 L3.17890888,18 Z"
+          fillRule="nonzero"
         />
       </g>
     </svg>
@@ -226,7 +224,7 @@ export function SessionViewer({
 
             {/* Bottom branding */}
             <div className={CHAT_CLASSES.brandingContainer}>
-              <CraftAgentLogo className="w-8 h-8 text-accent/40" />
+              <CraftAgentLogo className="w-8 h-8 text-[#9570BE]/40" />
             </div>
             </div>
           </div>

@@ -20,7 +20,6 @@ import {
   Info_Table,
   Info_Markdown,
 } from '@/components/info'
-import { APP_PROTOCOL_SCHEME } from '../../shared/brand'
 import type { LoadedSkill } from '../../shared/types'
 
 interface SkillInfoPageProps {
@@ -105,7 +104,7 @@ export default function SkillInfoPage({ skillSlug, workspaceId }: SkillInfoPageP
 
   // Handle opening in new window
   const handleOpenInNewWindow = useCallback(() => {
-    window.electronAPI.openUrl(`${APP_PROTOCOL_SCHEME}://skills/skill/${skillSlug}?window=focused`)
+    window.electronAPI.openUrl(`craftagents://skills/skill/${skillSlug}?window=focused`)
   }, [skillSlug])
 
   // Get skill name for header

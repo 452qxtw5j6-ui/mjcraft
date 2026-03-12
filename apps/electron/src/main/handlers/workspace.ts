@@ -6,7 +6,6 @@ import { getActiveWorkspace, getWorkspaceByNameOrId, addWorkspace, setActiveWork
 import { perf } from '@craft-agent/shared/utils'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from './handler-deps'
-import { APP_PROTOCOL_SCHEME } from '../../shared/brand'
 
 export const CORE_HANDLED_CHANNELS = [
   RPC_CHANNELS.workspaces.GET,
@@ -443,7 +442,7 @@ export function registerWorkspaceGuiHandlers(server: RpcServer, deps: HandlerDep
   server.handle(RPC_CHANNELS.window.OPEN_SESSION_IN_NEW_WINDOW, async (_ctx, workspaceId: string, sessionId: string) => {
     if (!windowManager) return
     // Build deep link for session navigation
-    const deepLink = `${APP_PROTOCOL_SCHEME}://allSessions/session/${sessionId}`
+    const deepLink = `craftagents://allSessions/session/${sessionId}`
     windowManager.createWindow({
       workspaceId,
       focused: true,

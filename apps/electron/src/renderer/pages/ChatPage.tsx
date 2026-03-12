@@ -23,7 +23,6 @@ import { ensureSessionMessagesLoadedAtom, loadedSessionsAtom, sessionMetaMapAtom
 import { getSessionTitle } from '@/utils/session'
 // Model resolution: connection.defaultModel (no hardcoded defaults)
 import { resolveEffectiveConnectionSlug, isSessionConnectionUnavailable } from '@config/llm-connections'
-import { APP_PROTOCOL_SCHEME } from '../../shared/brand'
 
 export interface ChatPageProps {
   sessionId: string
@@ -370,7 +369,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   const handleOpenInNewWindow = React.useCallback(async () => {
     const route = routes.view.allSessions(sessionId)
     const separator = route.includes('?') ? '&' : '?'
-    const url = `${APP_PROTOCOL_SCHEME}://${route}${separator}window=focused`
+    const url = `craftagents://${route}${separator}window=focused`
     try {
       await window.electronAPI?.openUrl(url)
     } catch (error) {

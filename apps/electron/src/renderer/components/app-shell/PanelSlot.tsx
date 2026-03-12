@@ -92,7 +92,7 @@ export function PanelSlot({
         className={cn(
           'h-full overflow-hidden relative',
           !isOnly && isFocusedPanel ? 'shadow-focused z-[1]' : 'shadow-middle z-0',
-          'app-panel-surface',
+          'bg-foreground-2',
         )}
         style={{
           // In multi-panel, unfocused panels override --background so all

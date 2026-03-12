@@ -91,7 +91,7 @@ export function CredentialsStep({
     return (
       <StepFormLayout
         title="Connect ChatGPT"
-        description="Use your ChatGPT subscription to power Noodle."
+        description="Use your ChatGPT subscription to power Craft Agents."
         actions={
           <>
             <BackButton onClick={onBack} disabled={status === 'validating'} />
@@ -131,7 +131,7 @@ export function CredentialsStep({
     return (
       <StepFormLayout
         title="Connect GitHub Copilot"
-        description="Use your GitHub Copilot subscription to power Noodle."
+        description="Use your GitHub Copilot subscription to power Craft Agents."
         actions={
           <>
             <BackButton onClick={onBack} disabled={status === 'validating'} />

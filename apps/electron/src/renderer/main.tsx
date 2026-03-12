@@ -10,22 +10,6 @@ import { windowWorkspaceIdAtom } from './atoms/sessions'
 import { Toaster } from '@/components/ui/sonner'
 import './index.css'
 
-window.addEventListener('error', (event) => {
-  console.error('[renderer-error]', event.message, {
-    source: event.filename,
-    lineno: event.lineno,
-    colno: event.colno,
-    stack: event.error instanceof Error ? event.error.stack : undefined,
-  })
-})
-
-window.addEventListener('unhandledrejection', (event) => {
-  const reason = event.reason instanceof Error
-    ? { message: event.reason.message, stack: event.reason.stack }
-    : event.reason
-  console.error('[renderer-unhandledrejection]', reason)
-})
-
 // Known-harmless console messages that should NOT be sent to Sentry.
 // These are dev-mode noise or expected warnings that aren't actionable.
 const IGNORED_CONSOLE_PATTERNS = [
@@ -101,32 +85,6 @@ function CrashFallback() {
   )
 }
 
-class LoggingErrorBoundary extends React.Component<
-  { children: React.ReactNode },
-  { hasError: boolean }
-> {
-  state = { hasError: false }
-
-  static getDerivedStateFromError() {
-    return { hasError: true }
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('[renderer-error-boundary]', {
-      message: error.message,
-      stack: error.stack,
-      componentStack: errorInfo.componentStack,
-    })
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return <CrashFallback />
-    }
-    return this.props.children
-  }
-}
-
 /**
  * Root component - loads workspace ID for theme context and renders App
  * App.tsx handles window mode detection internally (main vs tab-content)
@@ -147,9 +105,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <Sentry.ErrorBoundary fallback={<CrashFallback />}>
       <JotaiProvider>
-        <LoggingErrorBoundary>
-          <Root />
-        </LoggingErrorBoundary>
+        <Root />
       </JotaiProvider>
     </Sentry.ErrorBoundary>
   </React.StrictMode>

@@ -137,7 +137,7 @@ export function PanelStackContainer({
           transition={transition}
           className={cn(
             'h-full overflow-hidden relative shrink-0 z-[2]',
-            'app-navigator-surface shadow-middle',
+            'bg-background shadow-middle',
           )}
           style={{
             borderTopLeftRadius: RADIUS_INNER,

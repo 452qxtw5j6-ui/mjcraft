@@ -115,7 +115,7 @@ function saveTheme(theme: StoredTheme): void {
 export function ThemeProvider({
   children,
   defaultMode = 'system',
-  defaultColorTheme = 'noodle',
+  defaultColorTheme = 'default',
   defaultFont = 'system',
   activeWorkspaceId = null
 }: ThemeProviderProps) {

@@ -1,27 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <defs>
-    <!-- Coral-Peach-Mint diagonal gradient -->
-    <linearGradient id="bg1" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#FFB5B5"/>
-      <stop offset="40%" stop-color="#FFDAB5"/>
-      <stop offset="75%" stop-color="#F5F0EB"/>
-      <stop offset="100%" stop-color="#B5E8E3"/>
-    </linearGradient>
-    <!-- Subtle inner glow -->
-    <radialGradient id="glow1" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="rgba(255,255,255,0.25)"/>
-      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
-    </radialGradient>
-  </defs>
-  <!-- Rounded square background -->
-  <rect width="1024" height="1024" rx="224" fill="url(#bg1)"/>
-  <!-- Soft center glow -->
-  <rect width="1024" height="1024" rx="224" fill="url(#glow1)"/>
-  <!-- Spiral Snap symbol — centered with optical correction -->
-  <g transform="translate(512, 512) scale(18) translate(-12, -12)">
-    <g transform="translate(-1.5, 0.5)">
-      <path d="M12 12 C12 10, 14 9, 15 10 C17 12, 15 15, 12 15 C8 15, 6 12, 6 9 C6 5, 10 3, 14 3 C19 3, 21 7, 21 12 C21 16, 19 19, 15 20"
-        stroke="#FF6B6B" stroke-width="2.8" stroke-linecap="round" fill="none" opacity="0.9"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="299px" height="300px" viewBox="0 0 299 300" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>craft_logo_c</title>
+    <g id="craft_logo_c" stroke="none" fill="none" fill-rule="evenodd" stroke-width="1">
+        <g id="Group">
+            <path d="M137.879,300.001 L137.875,300.001 C62.3239,300.001 0.966154,239.232 0.0117188,163.908 L2.56478e-10,162.126 L137.879,162.126 L137.879,300.001 Z" id="Path" fill="#06367A"></path>
+            <path d="M137.879,0 L137.875,0 C61.729,0 0,61.729 0,137.875 L0,137.878 L137.879,137.878 L137.879,0 Z" id="Path" fill="#FF51FF"></path>
+            <path d="M160.558,137.883 L160.561,137.883 C236.707,137.883 298.436,76.1537 298.436,0.00758561 L298.436,0.00562043 L160.558,0.00562043 L160.558,137.883 Z" id="Path" fill="#007CFF"></path>
+            <path d="M160.558,162.123 L160.561,162.123 C236.112,162.123 297.471,222.891 298.426,298.216 L298.436,299.998 L160.558,299.998 L160.558,162.123 Z" id="Path" fill="#0A377B"></path>
+        </g>
     </g>
-  </g>
 </svg>

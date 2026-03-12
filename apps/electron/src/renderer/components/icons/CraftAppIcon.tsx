@@ -6,13 +6,13 @@ interface CraftAppIconProps {
 }
 
 /**
- * CraftAppIcon - Displays the current branded app icon asset.
+ * CraftAppIcon - Displays the Craft logo (colorful "C" icon)
  */
 export function CraftAppIcon({ className, size = 64 }: CraftAppIconProps) {
   return (
     <img
       src={craftLogo}
-      alt="Noodle"
+      alt="Craft"
       width={size}
       height={size}
       className={className}

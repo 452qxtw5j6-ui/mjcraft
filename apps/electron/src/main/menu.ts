@@ -5,7 +5,6 @@ import type { MenuItem } from '../shared/menu-schema'
 import type { WindowManager } from './window-manager'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { mainLog } from './logger'
-import { APP_NAME } from '../shared/brand'
 
 type ClientResolver = (webContentsId: number) => string | undefined
 
@@ -16,7 +15,7 @@ let cachedClientResolver: ClientResolver | null = null
 
 /**
  * Creates and sets the application menu for macOS.
- * Includes only relevant items for the branded desktop app.
+ * Includes only relevant items for the Craft Agents app.
  *
  * Call rebuildMenu() when update state changes to refresh the menu.
  */
@@ -40,7 +39,7 @@ export function setMenuEventSink(sink: EventSink, resolver: ClientResolver): voi
  * Rebuilds the application menu with current update state.
  * Call this when update availability changes.
  *
- * On Windows/Linux: Menu is hidden - all functionality is in the app logo menu.
+ * On Windows/Linux: Menu is hidden - all functionality is in the Craft logo menu.
  * On macOS: Native menu is required by Apple guidelines, so we keep it synced.
  */
 export async function rebuildMenu(): Promise<void> {
@@ -79,9 +78,9 @@ export async function rebuildMenu(): Promise<void> {
   const template: Electron.MenuItemConstructorOptions[] = [
     // App menu (macOS only)
     ...(isMac ? [{
-      label: APP_NAME,
+      label: 'Craft Agents',
       submenu: [
-        { role: 'about' as const, label: `About ${APP_NAME}` },
+        { role: 'about' as const, label: 'About Craft Agents' },
         updateMenuItem,
         { type: 'separator' as const },
         {
@@ -91,11 +90,11 @@ export async function rebuildMenu(): Promise<void> {
           click: () => sendToRenderer(RPC_CHANNELS.menu.OPEN_SETTINGS)
         },
         { type: 'separator' as const },
-        { role: 'hide' as const, label: `Hide ${APP_NAME}` },
+        { role: 'hide' as const, label: 'Hide Craft Agents' },
         { role: 'hideOthers' as const },
         { role: 'unhide' as const },
         { type: 'separator' as const },
-        { role: 'quit' as const, label: `Quit ${APP_NAME}` }
+        { role: 'quit' as const, label: 'Quit Craft Agents' }
       ]
     }] : []),
 
@@ -219,7 +218,7 @@ export async function rebuildMenu(): Promise<void> {
             await dialog.showMessageBox({
               type: 'info',
               message: 'Reset to Defaults',
-              detail: `To reset ${APP_NAME} to defaults, quit the app and run:\n\nbun run fresh-start\n\nThis will delete all configuration, credentials, workspaces, and sessions.`,
+              detail: 'To reset Craft Agent to defaults, quit the app and run:\n\nbun run fresh-start\n\nThis will delete all configuration, credentials, workspaces, and sessions.',
               buttons: ['OK']
             })
           }

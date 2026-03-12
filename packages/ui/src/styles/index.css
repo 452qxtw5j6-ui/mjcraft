@@ -1,7 +1,7 @@
 /**
  * @craft-agent/ui - Shared Tailwind CSS v4 theme
  *
- * This file provides the base theme configuration for all Noodle UIs.
+ * This file provides the base theme configuration for all Craft Agent UIs.
  * Import this in your app's main CSS file:
  *
  *   @import "@craft-agent/ui/styles";
@@ -13,10 +13,10 @@
  * 6-Color System:
  * - background: Light/dark surface
  * - foreground: Text and icons
- * - accent: Brand coral (highlights, Auto mode)
- * - info: Mint (warnings, Ask mode)
- * - success: Mint (connected, checkmarks)
- * - destructive: Coral (errors, failed)
+ * - accent: Brand purple (highlights, Auto mode)
+ * - info: Amber (warnings, Ask mode)
+ * - success: Green (connected, checkmarks)
+ * - destructive: Red (errors, failed)
  *
  * Variants:
  * - /50 = 50% alpha (transparency) - for borders, hovers, overlays
@@ -32,17 +32,17 @@
 
 :root {
   /* === 6 BASE COLORS === */
-  --background: #fffdfa;
-  --foreground: #2b2624;
-  --foreground-rgb: 43, 38, 36;             /* RGB for shadow borders */
-  --accent: #ff6b6b;                        /* coral - brand, Auto mode */
-  --accent-rgb: 179, 75, 75;                /* darkened RGB for shadow-tinted (70% of accent) */
-  --info: #4ecdc4;                          /* mint - warnings, Ask mode */
-  --success: #4ecdc4;                       /* mint - connected, checkmarks */
-  --destructive: #ff6b6b;                   /* coral - errors, failed */
-  --destructive-rgb: 255, 107, 107;         /* RGB for shadow-tinted */
-  --info-rgb: 78, 205, 196;                 /* RGB for shadow-tinted */
-  --success-rgb: 78, 205, 196;              /* RGB for shadow-tinted */
+  --background: oklch(0.98 0.003 265);
+  --foreground: oklch(0.185 0.01 270);
+  --foreground-rgb: 38, 36, 42;             /* RGB for shadow borders */
+  --accent: oklch(0.58 0.22 293);           /* purple - brand, Auto mode */
+  --accent-rgb: 104, 78, 133;               /* darkened RGB for shadow-tinted (70% of accent) */
+  --info: oklch(0.75 0.16 70);              /* amber - warnings, Ask mode */
+  --success: oklch(0.55 0.17 145);          /* green - connected, checkmarks */
+  --destructive: oklch(0.58 0.24 28);       /* red - errors, failed */
+  --destructive-rgb: 180, 60, 50;           /* RGB for shadow-tinted */
+  --info-rgb: 180, 120, 40;                 /* RGB for shadow-tinted */
+  --success-rgb: 34, 120, 60;               /* RGB for shadow-tinted */
 
   /* === TEXT VARIANTS (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
@@ -69,17 +69,17 @@
   --foreground-95: color-mix(in oklch, var(--foreground) 95%, var(--background));
 
   /* === SHADCN COMPATIBILITY (derived from 6 base colors) === */
-  --secondary: oklch(from var(--foreground) l c h / 0.035);
+  --secondary: oklch(from var(--foreground) l c h / 0.05);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(from var(--foreground) l c h / 0.035);
+  --muted: oklch(from var(--foreground) l c h / 0.05);
   --muted-foreground: var(--foreground-50);
-  --card: #ffffff;
+  --card: var(--background);
   --card-foreground: var(--foreground);
-  --popover: rgba(255, 255, 255, 0.92);
+  --popover: var(--background);
   --popover-foreground: var(--foreground);
-  --border: oklch(from var(--foreground) l c h / 0.075);
-  --input: rgba(255, 255, 255, 0.92);
-  --ring: color-mix(in srgb, var(--accent) 35%, white);
+  --border: oklch(from var(--foreground) l c h / 0.05);
+  --input: oklch(from var(--foreground) l c h / 0.1);
+  --ring: oklch(from var(--foreground) l c h / 0.25);
   --ring-width: 1px;
   --ring-offset: 0px;
 
@@ -88,8 +88,8 @@
   --md-counters: var(--foreground-50);
 
   /* Fonts - System fonts for UI, JetBrains Mono for code */
-  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-serif: "DM Serif Display", Georgia, serif;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --font-default: var(--font-sans);
 
@@ -106,17 +106,17 @@
 
 .dark {
   /* === 6 BASE COLORS === */
-  --background: #1f1a19;
-  --foreground: #f5f0eb;
-  --foreground-rgb: 245, 240, 235;          /* RGB for shadow borders */
-  --accent: #ff8a8a;                        /* brighter coral in dark */
-  --accent-rgb: 179, 97, 97;                /* darkened RGB for shadow-tinted (70% of accent) */
-  --info: #6fe0d8;                          /* brighter mint */
-  --success: #6fe0d8;                       /* brighter mint */
-  --destructive: #ff8a8a;                   /* brighter coral in dark */
-  --destructive-rgb: 255, 138, 138;         /* RGB for shadow-tinted */
-  --info-rgb: 111, 224, 216;                /* RGB for shadow-tinted */
-  --success-rgb: 111, 224, 216;             /* RGB for shadow-tinted */
+  --background: oklch(0.2 0.005 270);
+  --foreground: oklch(0.92 0.005 270);
+  --foreground-rgb: 227, 226, 229;           /* RGB for shadow borders */
+  --accent: oklch(0.65 0.20 293);            /* brighter purple in dark */
+  --accent-rgb: 118, 92, 147;                /* darkened RGB for shadow-tinted (70% of accent) */
+  --info: oklch(0.70 0.16 70);               /* amber */
+  --success: oklch(0.60 0.17 145);           /* green */
+  --destructive: oklch(0.70 0.19 22);        /* brighter red in dark */
+  --destructive-rgb: 200, 80, 70;            /* RGB for shadow-tinted */
+  --info-rgb: 200, 140, 60;                  /* RGB for shadow-tinted */
+  --success-rgb: 50, 140, 80;                /* RGB for shadow-tinted */
 
   /* === TEXT VARIANTS (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
@@ -143,17 +143,17 @@
   --foreground-95: color-mix(in oklch, var(--foreground) 95%, var(--background));
 
   /* === SHADCN COMPATIBILITY (derived from 6 base colors) === */
-  --secondary: oklch(from var(--foreground) l c h / 0.04);
+  --secondary: oklch(from var(--foreground) l c h / 0.05);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(from var(--foreground) l c h / 0.04);
+  --muted: oklch(from var(--foreground) l c h / 0.05);
   --muted-foreground: var(--foreground-50);
-  --card: #272120;
+  --card: var(--background);
   --card-foreground: var(--foreground);
-  --popover: rgba(39, 33, 32, 0.94);
+  --popover: var(--background);
   --popover-foreground: var(--foreground);
-  --border: oklch(from var(--foreground) l c h / 0.09);
-  --input: rgba(39, 33, 32, 0.94);
-  --ring: color-mix(in srgb, var(--accent) 40%, black);
+  --border: oklch(from var(--foreground) l c h / 0.05);
+  --input: oklch(from var(--foreground) l c h / 0.1);
+  --ring: oklch(from var(--foreground) l c h / 0.25);
 
   /* Markdown list markers */
   --md-bullets: var(--foreground-50);

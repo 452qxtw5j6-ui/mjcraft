@@ -1,9 +1,9 @@
 {
   "version": "1.0",
-  "description": "Default configuration values for Noodle",
+  "description": "Default configuration values for Craft Agents",
   "defaults": {
     "notificationsEnabled": true,
-    "colorTheme": "noodle",
+    "colorTheme": "default",
     "autoCapitalisation": true,
     "sendMessageKey": "enter",
     "spellCheck": false,

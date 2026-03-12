@@ -6,7 +6,6 @@ import { EntityListEmptyScreen } from '@/components/ui/entity-list-empty'
 import { skillSelection } from '@/hooks/useEntitySelection'
 import { SkillMenu } from './SkillMenu'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
-import { APP_PROTOCOL_SCHEME } from '../../../shared/brand'
 import type { LoadedSkill } from '../../../shared/types'
 
 export interface SkillsListPanelProps {
@@ -64,7 +63,7 @@ export function SkillsListPanel({
           <SkillMenu
             skillSlug={skill.slug}
             skillName={skill.metadata.name}
-            onOpenInNewWindow={() => window.electronAPI.openUrl(`${APP_PROTOCOL_SCHEME}://skills/skill/${skill.slug}?window=focused`)}
+            onOpenInNewWindow={() => window.electronAPI.openUrl(`craftagents://skills/skill/${skill.slug}?window=focused`)}
             onShowInFinder={() => { if (workspaceId) window.electronAPI.openSkillInFinder(workspaceId, skill.slug) }}
             onDelete={() => onDeleteSkill(skill.slug)}
           />

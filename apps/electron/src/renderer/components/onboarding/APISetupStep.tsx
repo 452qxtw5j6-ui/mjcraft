@@ -9,7 +9,7 @@ export type ProviderSegment = 'anthropic' | 'pi'
 
 const SEGMENT_LABELS: Record<ProviderSegment, string> = {
   anthropic: 'Claude',
-  pi: 'Noodle Backend',
+  pi: 'Craft Agents Backend',
 }
 
 const BetaBadge = () => (
@@ -20,7 +20,7 @@ const BetaBadge = () => (
 
 const SEGMENT_DESCRIPTIONS: Record<ProviderSegment, React.ReactNode> = {
   anthropic: <>Use Claude Agent SDK as the main agent.<br />Configure with your Claude subscription or API key.</>,
-  pi: <>Use Noodle Backend as the main agent.<BetaBadge /><br />Configure with your API key, OAuth subscription, or custom endpoint.</>,
+  pi: <>Use Craft Agents Backend as the main agent.<BetaBadge /><br />Configure with your API key, OAuth subscription, or custom endpoint.</>,
 }
 
 /**
@@ -87,21 +87,21 @@ const API_SETUP_OPTIONS: ApiSetupOption[] = [
   {
     id: 'pi_chatgpt_oauth',
     name: 'ChatGPT Plus',
-    description: 'Use your ChatGPT subscription with Noodle Backend.',
+    description: 'Use your ChatGPT subscription with Craft Agents Backend.',
     icon: <Cpu className="size-4" />,
     providerType: 'pi',
   },
   {
     id: 'pi_copilot_oauth',
     name: 'GitHub Copilot',
-    description: 'Use your GitHub Copilot subscription with Noodle Backend.',
+    description: 'Use your GitHub Copilot subscription with Craft Agents Backend.',
     icon: <Cpu className="size-4" />,
     providerType: 'pi',
   },
   {
     id: 'pi_api_key',
     name: 'API Key',
-    description: 'Use provider presets (Anthropic, OpenAI, Google, etc.) via Noodle Backend.',
+    description: 'Use provider presets (Anthropic, OpenAI, Google, etc.) via Craft Agents Backend.',
     icon: <Key className="size-4" />,
     providerType: 'pi',
   },

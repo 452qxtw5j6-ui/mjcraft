@@ -1,38 +1,25 @@
 {
   "name": "Default",
-  "description": "Default Noodle theme",
-  "author": "\uccad\uc5f0 \ub9c8\ucf00\ud305\ud300",
+  "description": "Clean purple-tinted neutral theme",
+  "author": "Craft Agent",
   "license": "MIT",
-  "supportedModes": [
-    "light",
-    "dark"
-  ],
-  "background": "#FFFDFA",
-  "foreground": "#2B2624",
-  "accent": "#FF6B6B",
-  "info": "#4ECDC4",
-  "success": "#4ECDC4",
-  "destructive": "#FF6B6B",
-  "paper": "#FFFFFF",
-  "navigator": "#FBF4EE",
-  "input": "#FFFFFF",
-  "popover": "rgba(255, 255, 255, 0.92)",
-  "popoverSolid": "#FFFFFF",
-  "dark": {
-    "background": "#1F1A19",
-    "foreground": "#F5F0EB",
-    "accent": "#FF8A8A",
-    "info": "#6FE0D8",
-    "success": "#6FE0D8",
-    "destructive": "#FF8A8A",
-    "paper": "#272120",
-    "navigator": "#221D1C",
-    "input": "#2A2322",
-    "popover": "rgba(39, 33, 32, 0.94)",
-    "popoverSolid": "#272120"
-  },
+  "supportedModes": ["light", "dark"],
   "shikiTheme": {
     "light": "github-light",
     "dark": "github-dark"
+  },
+  "background": "#faf9fb",
+  "foreground": "#1a1625",
+  "accent": "#8b5cf6",
+  "info": "#d97706",
+  "success": "#16a34a",
+  "destructive": "#dc2626",
+  "dark": {
+    "background": "#1e1d21",
+    "foreground": "#f5f5f7",
+    "accent": "#a78bfa",
+    "info": "#fbbf24",
+    "success": "#22c55e",
+    "destructive": "#ef4444"
   }
 }

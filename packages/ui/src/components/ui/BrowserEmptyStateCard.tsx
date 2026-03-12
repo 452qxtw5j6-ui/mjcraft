@@ -57,7 +57,7 @@ export function BrowserEmptyStateCard({
         {showSafetyHint && (
           <div className="px-4 py-2.5 border-t border-border/30 flex items-center gap-2 bg-muted/20 text-[13px] text-foreground/55">
             <p>
-              Noodle only controls browser windows when you ask it to.
+              Craft Agents only control browser windows when you ask them to.
             </p>
           </div>
         )}

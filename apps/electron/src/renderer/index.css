@@ -28,25 +28,25 @@
 @property --accent {
   syntax: "<color>";
   inherits: true;
-  initial-value: #ff6b6b;
+  initial-value: oklch(0.62 0.13 293);
 }
 
 @property --info {
   syntax: "<color>";
   inherits: true;
-  initial-value: #4ecdc4;
+  initial-value: oklch(0.65 0.16 70);
 }
 
 @property --success {
   syntax: "<color>";
   inherits: true;
-  initial-value: #4ecdc4;
+  initial-value: oklch(0.55 0.17 145);
 }
 
 @property --destructive {
   syntax: "<color>";
   inherits: true;
-  initial-value: #ff6b6b;
+  initial-value: oklch(0.55 0.22 27);
 }
 
 /* =============================================================================
@@ -70,21 +70,21 @@
 /* Light Mode */
 :root {
   /* === 6 BASE COLORS === */
-  --background: #fffdfa;
+  --background: oklch(0.98 0.003 265);
   --background-elevated: color-mix(in srgb, var(--foreground) 1.5%, var(--background));
-  --foreground: #2b2624;
-  --foreground-dimmed: color-mix(in srgb, var(--foreground) 72%, var(--background)); /* unfocused panel text */
-  --foreground-rgb: 43, 38, 36;             /* RGB for shadow borders */
+  --foreground: oklch(0.185 0.01 270);
+  --foreground-dimmed: color-mix(in srgb, var(--foreground) 80%, var(--background)); /* unfocused panel text */
+  --foreground-rgb: 38, 36, 42;             /* RGB for shadow borders */
   --user-message-bubble: oklch(from var(--foreground) l c h / 0.05);
   --user-message-bubble-dimmed: oklch(from var(--foreground) l c h / 0.03);
-  --accent: #ff6b6b;                        /* coral - brand, Auto mode */
-  --accent-rgb: 179, 75, 75;                /* darkened RGB for shadow-tinted (70% of accent) */
-  --info: #4ecdc4;                          /* mint - warnings, Ask mode */
-  --info-rgb: 78, 205, 196;                 /* RGB for shadow-tinted */
-  --success: #4ecdc4;                       /* mint - connected, checkmarks */
-  --success-rgb: 78, 205, 196;              /* RGB for shadow-tinted */
-  --destructive: #ff6b6b;                   /* coral - errors, failed */
-  --destructive-rgb: 255, 107, 107;         /* RGB for shadow-tinted */
+  --accent: oklch(0.62 0.13 293);           /* purple - brand, Auto mode */
+  --accent-rgb: 104, 78, 133;               /* darkened RGB for shadow-tinted (70% of accent) */
+  --info: oklch(0.75 0.16 70);              /* amber - warnings, Ask mode */
+  --info-rgb: 180, 120, 40;                 /* RGB for shadow-tinted */
+  --success: oklch(0.55 0.17 145);          /* green - connected, checkmarks */
+  --success-rgb: 34, 120, 60;               /* RGB for shadow-tinted */
+  --destructive: oklch(0.58 0.24 28);       /* red - errors, failed */
+  --destructive-rgb: 180, 60, 50;           /* RGB for shadow-tinted */
 
   /* === SHADOW OPACITY (light mode = subtle, dark mode = stronger) === */
   --shadow-border-opacity: 0.08;            /* Border ring opacity */
@@ -139,17 +139,17 @@
 
   /* === SHADCN COMPATIBILITY (derived from 6 base colors) === */
   /* These variables exist for shadcn/ui component updates */
-  --secondary: oklch(from var(--foreground) l c h / 0.035);
+  --secondary: oklch(from var(--foreground) l c h / 0.05);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(from var(--foreground) l c h / 0.035);
+  --muted: oklch(from var(--foreground) l c h / 0.05);
   --muted-foreground: var(--foreground-50);
-  --card: #ffffff;
+  --card: var(--background);
   --card-foreground: var(--foreground);
-  --popover: rgba(255, 255, 255, 0.92);
+  --popover: var(--background);
   --popover-foreground: var(--foreground);
-  --border: oklch(from var(--foreground) l c h / 0.075);
-  --input: rgba(255, 255, 255, 0.92);
-  --ring: color-mix(in srgb, var(--accent) 35%, white);
+  --border: oklch(from var(--foreground) l c h / 0.05);
+  --input: oklch(from var(--foreground) l c h / 0.1);
+  --ring: oklch(from var(--foreground) l c h / 0.25);
   --ring-width: 1px;
   --ring-offset: 0px;
 
@@ -168,8 +168,8 @@
   --step-actions-margin: 2rem;
 
   /* Fonts - System fonts as default, Inter via data-font="inter" */
-  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-serif: "DM Serif Display", Georgia, serif;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --font-default: var(--font-sans);
 
@@ -218,21 +218,21 @@
 /* Dark Mode */
 .dark {
   /* === 6 BASE COLORS === */
-  --background: #1f1a19;
+  --background: oklch(0.2 0.005 270);
   --background-elevated: color-mix(in srgb, var(--foreground) 1.5%, var(--background));
-  --foreground: #f5f0eb;
+  --foreground: oklch(0.92 0.005 270);
   --foreground-dimmed: color-mix(in srgb, var(--foreground) 80%, var(--background)); /* unfocused panel text */
-  --foreground-rgb: 245, 240, 235;           /* RGB for shadow borders */
+  --foreground-rgb: 227, 226, 229;           /* RGB for shadow borders */
   --user-message-bubble: oklch(from var(--foreground) l c h / 0.05);
   --user-message-bubble-dimmed: oklch(from var(--foreground) l c h / 0.03);
-  --accent: #ff8a8a;                         /* brighter coral in dark */
-  --accent-rgb: 179, 97, 97;                 /* darkened RGB for shadow-tinted (70% of accent) */
-  --info: #6fe0d8;                           /* brighter mint */
-  --info-rgb: 111, 224, 216;                 /* RGB for shadow-tinted */
-  --success: #6fe0d8;                        /* brighter mint */
-  --success-rgb: 111, 224, 216;              /* RGB for shadow-tinted */
-  --destructive: #ff8a8a;                    /* brighter coral in dark */
-  --destructive-rgb: 255, 138, 138;          /* RGB for shadow-tinted */
+  --accent: oklch(0.68 0.13 293);            /* brighter purple in dark */
+  --accent-rgb: 118, 92, 147;                /* darkened RGB for shadow-tinted (70% of accent) */
+  --info: oklch(0.70 0.16 70);               /* amber */
+  --info-rgb: 200, 140, 60;                  /* RGB for shadow-tinted */
+  --success: oklch(0.60 0.17 145);           /* green */
+  --success-rgb: 50, 140, 80;                /* RGB for shadow-tinted */
+  --destructive: oklch(0.70 0.19 22);        /* brighter red in dark */
+  --destructive-rgb: 200, 80, 70;            /* RGB for shadow-tinted */
 
   /* === SHADOW OPACITY (stronger in dark mode for visibility) === */
   --shadow-border-opacity: 0.15;
@@ -261,17 +261,17 @@
   --info-text: color-mix(in oklab, var(--info) 50%, var(--foreground));
 
   /* === SHADCN COMPATIBILITY (derived from 6 base colors) === */
-  --secondary: oklch(from var(--foreground) l c h / 0.04);
+  --secondary: oklch(from var(--foreground) l c h / 0.05);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(from var(--foreground) l c h / 0.04);
+  --muted: oklch(from var(--foreground) l c h / 0.05);
   --muted-foreground: var(--foreground-50);
-  --card: #272120;
+  --card: var(--background);
   --card-foreground: var(--foreground);
-  --popover: rgba(39, 33, 32, 0.94);
+  --popover: var(--background);
   --popover-foreground: var(--foreground);
-  --border: oklch(from var(--foreground) l c h / 0.09);
-  --input: rgba(39, 33, 32, 0.94);
-  --ring: color-mix(in srgb, var(--accent) 40%, black);
+  --border: oklch(from var(--foreground) l c h / 0.05);
+  --input: oklch(from var(--foreground) l c h / 0.1);
+  --ring: oklch(from var(--foreground) l c h / 0.25);
 
   /* Markdown list markers */
   --md-bullets: var(--foreground-50);
@@ -283,9 +283,7 @@ html[data-theme-override]::before {
   content: '';
   position: fixed;
   inset: 0;
-  background:
-    radial-gradient(48rem 48rem at 24% 28%, rgba(255, 255, 255, 0.26), transparent 58%),
-    linear-gradient(135deg, #FFB5B5 0%, #FFDAB5 40%, #F5F0EB 75%, #B5E8E3 100%);
+  background: color-mix(in srgb, var(--background) 50%, transparent);
   z-index: -1;
   pointer-events: none;
 }
@@ -389,8 +387,8 @@ html[data-font="inter"] {
   --color-foreground-95: var(--foreground-95);
 
   /* === SEMANTIC SURFACE COLORS === */
-  /* Sidebar hover surface - slightly brighter than the surrounding sidebar glass */
-  --color-sidebar-hover: color-mix(in srgb, white 84%, var(--accent) 16%);
+  /* Subtle hover background for sidebar list items (2% foreground opacity) */
+  --color-sidebar-hover: oklch(from var(--foreground) l c h / 0.02);
   /* User message bubble background (overridden on unfocused panels) */
   --color-user-message-bubble: var(--user-message-bubble);
 
@@ -654,41 +652,6 @@ html[data-font="inter"] {
 
   .shadow-modal-small {
     box-shadow: var(--shadow-modal-small);
-  }
-
-  .app-toolbar-surface {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.7));
-    backdrop-filter: blur(18px) saturate(1.15);
-    -webkit-backdrop-filter: blur(18px) saturate(1.15);
-    box-shadow: inset 0 -1px 0 rgba(var(--foreground-rgb), 0.06);
-  }
-
-  .app-sidebar-surface {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.66)),
-      linear-gradient(135deg, rgba(255, 181, 181, 0.18) 0%, rgba(255, 218, 181, 0.12) 40%, rgba(245, 240, 235, 0.1) 75%, rgba(181, 232, 227, 0.16) 100%);
-    backdrop-filter: blur(18px) saturate(1.08);
-    -webkit-backdrop-filter: blur(18px) saturate(1.08);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.65),
-      0 0 0 1px rgba(var(--foreground-rgb), 0.05),
-      0 12px 30px -20px rgba(63, 44, 38, 0.18);
-  }
-
-  .app-navigator-surface {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.84)),
-      linear-gradient(135deg, rgba(255, 181, 181, 0.08) 0%, rgba(255, 218, 181, 0.06) 40%, rgba(245, 240, 235, 0.02) 75%, rgba(181, 232, 227, 0.08) 100%);
-    backdrop-filter: blur(20px) saturate(1.12);
-    -webkit-backdrop-filter: blur(20px) saturate(1.12);
-  }
-
-  .app-panel-surface {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.82)),
-      linear-gradient(135deg, rgba(255, 181, 181, 0.06) 0%, rgba(255, 218, 181, 0.04) 40%, rgba(245, 240, 235, 0.02) 75%, rgba(181, 232, 227, 0.06) 100%);
-    backdrop-filter: blur(16px) saturate(1.06);
-    -webkit-backdrop-filter: blur(16px) saturate(1.06);
   }
 
   /* =============================================================================

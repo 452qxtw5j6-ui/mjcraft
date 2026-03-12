@@ -19,7 +19,6 @@ import type { ContentBadge, Session, CreateSessionOptions } from '../../../share
 import { useActiveWorkspace, useAppShellContext, useSession } from '@/context/AppShellContext'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { ChatDisplay } from '../app-shell/ChatDisplay'
-import { APP_PROTOCOL_SCHEME } from '../../../shared/brand'
 
 /** Rotating placeholders for compact mode input - short, action-oriented */
 const COMPACT_PLACEHOLDERS = [
@@ -916,7 +915,7 @@ export function EditPopover({
     const modelParam = model ? `&model=${encodeURIComponent(model)}` : ''
     const systemPromptParam = systemPromptPreset ? `&systemPrompt=${encodeURIComponent(systemPromptPreset)}` : ''
     // Navigate in same window by omitting window=focused parameter
-    const url = `${APP_PROTOCOL_SCHEME}://action/new-session?input=${encodedInput}&send=true&mode=${permissionMode}&badges=${encodedBadges}${workdirParam}${modelParam}${systemPromptParam}`
+    const url = `craftagents://action/new-session?input=${encodedInput}&send=true&mode=${permissionMode}&badges=${encodedBadges}${workdirParam}${modelParam}${systemPromptParam}`
 
     window.electronAPI.openUrl(url)
     setOpen(false)

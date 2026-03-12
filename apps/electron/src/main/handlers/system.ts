@@ -8,7 +8,6 @@ import { isUsableGitBashPath, validateGitBashPath } from '@craft-agent/server-co
 import { validateFilePath } from '@craft-agent/server-core/handlers'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from './handler-deps'
-import { APP_PROTOCOL_SCHEME } from '../../shared/brand'
 import {
   requestClientOpenExternal,
   requestClientOpenPath,
@@ -202,14 +201,14 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
     deps.platform.logger.info('[renderer]', ...args)
   })
 
-  // Shell operations - open URL in external browser (or handle app deeplinks internally)
+  // Shell operations - open URL in external browser (or handle craftagents:// internally)
   server.handle(RPC_CHANNELS.shell.OPEN_URL, async (ctx, url: string) => {
     deps.platform.logger.info('[OPEN_URL] Received request:', url)
     try {
       const parsed = new URL(url)
 
-      // Handle branded deeplink URLs internally via deep link handler (GUI only)
-      if (parsed.protocol === `${APP_PROTOCOL_SCHEME}:`) {
+      // Handle craftagents:// URLs internally via deep link handler (GUI only)
+      if (parsed.protocol === 'craftagents:') {
         if (!windowManager) return
         deps.platform.logger.info('[OPEN_URL] Handling as deep link')
         const { handleDeepLink } = await import('../deep-link')
