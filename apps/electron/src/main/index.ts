@@ -102,7 +102,6 @@ import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath } from '@craft-agent/server-core/services'
 import { NotionTaskService } from './notion-task-service'
 import { SlackBotService } from './slack-bot'
-<<<<<<< HEAD
 import { PlaywrightBrowserHost } from './playwright-browser-host'
 
 // Initialize electron-log for renderer process support
@@ -653,6 +652,7 @@ app.whenReady().then(async () => {
         oauthFlowStore,
         notionTaskService: null,
       }
+      handlerDeps = deps
 
       // Register RPC handlers (must happen before window creation)
       registerAllRpcHandlers(server, deps)
@@ -712,7 +712,7 @@ app.whenReady().then(async () => {
             workspaceRootPath: integrationWorkspace.rootPath,
             sessionManager,
           })
-          deps.notionTaskService = notionTaskService
+          if (handlerDeps) handlerDeps.notionTaskService = notionTaskService
           await notionTaskService.start()
         } catch (error) {
           mainLog.error('Notion task service startup failed; continuing app startup without Notion queue:', error)
@@ -722,7 +722,7 @@ app.whenReady().then(async () => {
             })
           }
           notionTaskService = null
-          deps.notionTaskService = null
+          if (handlerDeps) handlerDeps.notionTaskService = null
         }
       } else {
         mainLog.warn('Skipping Slack/Notion services startup: no workspace available')
