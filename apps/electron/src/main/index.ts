@@ -5,7 +5,9 @@ loadShellEnv()
 
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, shell } from 'electron'
 import { createHash, randomUUID } from 'crypto'
+import { writeFile } from 'fs/promises'
 import { hostname, homedir } from 'os'
+import { basename } from 'path'
 import * as Sentry from '@sentry/electron/main'
 
 // Initialize Sentry error tracking as early as possible after app import.
@@ -98,6 +100,9 @@ import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeC
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath } from '@craft-agent/server-core/services'
+import { NotionTaskService } from './notion-task-service'
+import { SlackBotService } from './slack-bot'
+import { PlaywrightBrowserHost } from './playwright-browser-host'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -185,6 +190,9 @@ let browserPaneManager: BrowserPaneManager | null = null
 let oauthFlowStore: OAuthFlowStore | null = null
 let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
+let notionTaskService: NotionTaskService | null = null
+let slackBotService: SlackBotService | null = null
+let playwrightBrowserHost: PlaywrightBrowserHost | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
@@ -569,6 +577,24 @@ app.whenReady().then(async () => {
       const result = await dialog.showOpenDialog(win, spec)
       return { canceled: result.canceled, filePaths: result.filePaths }
     })
+    ipcMain.handle('__file:saveFromBase64', async (event, args: { suggestedName: string; base64: string }) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+        || BrowserWindow.getFocusedWindow()
+        || BrowserWindow.getAllWindows()[0]
+      const result = await dialog.showSaveDialog(win, {
+        defaultPath: basename(args.suggestedName || 'download.bin'),
+      })
+      if (result.canceled || !result.filePath) {
+        return { canceled: true }
+      }
+      const buffer = Buffer.from(args.base64, 'base64')
+      await writeFile(result.filePath, buffer)
+      return { canceled: false, path: result.filePath }
+    })
+    ipcMain.handle('__browser-host:invoke', async (_event, request) => {
+      playwrightBrowserHost ??= new PlaywrightBrowserHost()
+      return await playwrightBrowserHost.invoke(request)
+    })
 
     if (!isClientOnly) {
       // Create WS RPC server (local WebSocket transport)
@@ -661,6 +687,52 @@ app.whenReady().then(async () => {
     // In headless mode the server runs without any UI — skip window creation.
     if (!isHeadless) {
       await createInitialWindows()
+    }
+
+    if (!isClientOnly && sessionManager) {
+      const configuredWorkspaces = getWorkspaces()
+      const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
+      const integrationWorkspace =
+        (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
+        || configuredWorkspaces[0]
+
+      if (integrationWorkspace) {
+        try {
+          slackBotService = new SlackBotService({
+            workspaceId: integrationWorkspace.id,
+            workspaceRootPath: integrationWorkspace.rootPath,
+            sessionManager,
+          })
+          await slackBotService.start()
+        } catch (error) {
+          mainLog.error('Slack bot startup failed; continuing app startup without Slack integration:', error)
+          if (slackBotService) {
+            await slackBotService.stop().catch(stopError => {
+              mainLog.warn('Failed to stop Slack bot after startup failure:', stopError)
+            })
+          }
+          slackBotService = null
+        }
+
+        try {
+          notionTaskService = new NotionTaskService({
+            workspaceId: integrationWorkspace.id,
+            workspaceRootPath: integrationWorkspace.rootPath,
+            sessionManager,
+          })
+          await notionTaskService.start()
+        } catch (error) {
+          mainLog.error('Notion task service startup failed; continuing app startup without Notion queue:', error)
+          if (notionTaskService) {
+            await notionTaskService.stop().catch(stopError => {
+              mainLog.warn('Failed to stop Notion task service after startup failure:', stopError)
+            })
+          }
+          notionTaskService = null
+        }
+      } else {
+        mainLog.warn('Skipping Slack/Notion services startup: no workspace available')
+      }
     }
 
     // Run credential health check at startup to detect issues early
@@ -807,6 +879,23 @@ app.on('before-quit', async (event) => {
       browserPaneManager.destroyAll()
     }
 
+    if (notionTaskService) {
+      await notionTaskService.stop()
+      notionTaskService = null
+    }
+
+    if (slackBotService) {
+      await slackBotService.stop()
+      slackBotService = null
+    }
+
+    if (playwrightBrowserHost) {
+      await playwrightBrowserHost.dispose().catch((error) => {
+        mainLog.warn('[browser-host] Failed to dispose Playwright host:', error instanceof Error ? error.message : String(error))
+      })
+      playwrightBrowserHost = null
+    }
+
     // Clean up OAuth flow store (stop periodic cleanup timer)
     if (oauthFlowStore) {
       oauthFlowStore.dispose()
@@ -828,6 +917,15 @@ app.on('before-quit', async (event) => {
     }
 
     // Now actually quit
+    app.exit(0)
+  }
+
+  if (playwrightBrowserHost) {
+    event.preventDefault()
+    await playwrightBrowserHost.dispose().catch((error) => {
+      mainLog.warn('[browser-host] Failed to dispose Playwright host:', error instanceof Error ? error.message : String(error))
+    })
+    playwrightBrowserHost = null
     app.exit(0)
   }
 })

@@ -31,8 +31,17 @@ interface ClientConnection {
   workspaceId: string | null
   webContentsId: number | null
   capabilities: Set<string>
+  connectedAt: number
   missedPongs: number
   alive: boolean
+}
+
+export interface ConnectedClientInfo {
+  clientId: string
+  workspaceId: string | null
+  webContentsId: number | null
+  capabilities: string[]
+  connectedAt: number
 }
 
 interface PendingInvoke {
@@ -187,6 +196,16 @@ export class WsRpcServer implements RpcServer {
       }
       this.safeSend(client.ws, serializeEnvelope(envelope))
     })
+  }
+
+  listClients(): ConnectedClientInfo[] {
+    return Array.from(this.clients.values()).map((client) => ({
+      clientId: client.id,
+      workspaceId: client.workspaceId,
+      webContentsId: client.webContentsId,
+      capabilities: [...client.capabilities],
+      connectedAt: client.connectedAt,
+    }))
   }
 
   // -------------------------------------------------------------------------
@@ -345,6 +364,7 @@ export class WsRpcServer implements RpcServer {
           workspaceId: envelope.workspaceId ?? null,
           webContentsId: envelope.webContentsId ?? null,
           capabilities: new Set(envelope.clientCapabilities ?? []),
+          connectedAt: Date.now(),
           missedPongs: 0,
           alive: true,
         }

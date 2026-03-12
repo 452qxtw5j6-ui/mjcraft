@@ -17,6 +17,7 @@ import type {
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
 import type { CustomEndpointConfig } from '../config/llm-connections'
+import type { SessionOrigin, NotionSessionRef, SlackSessionRef } from '../sessions'
 import type {
   AuthRequest as SharedAuthRequest,
   CredentialInputMode as SharedCredentialInputMode,
@@ -47,6 +48,9 @@ export interface Session {
   id: string
   workspaceId: string
   workspaceName: string
+  sessionOrigin?: SessionOrigin
+  notionRef?: NotionSessionRef
+  slackRef?: SlackSessionRef
   name?: string
   /** Preview of first user message (from JSONL header, for lazy-loaded sessions) */
   preview?: string
@@ -121,6 +125,9 @@ export interface CreateSessionOptions {
   labels?: string[]
   isFlagged?: boolean
   enabledSourceSlugs?: string[]
+  sessionOrigin?: SessionOrigin
+  notionRef?: NotionSessionRef
+  slackRef?: SlackSessionRef
   /**
    * Message ID to branch from. This is a hard context cutoff:
    * the new session must not include model context from later parent messages.
@@ -519,6 +526,135 @@ export interface BrowserInstanceInfo {
   isVisible: boolean
   agentControlActive: boolean
   themeColor: string | null
+}
+
+export interface RemoteBrowserWindowInfo {
+  id: string
+  url: string
+  title: string
+  favicon: string | null
+  isLoading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  isVisible: boolean
+}
+
+export interface RemoteBrowserSnapshotNode {
+  ref: string
+  role: string
+  name: string
+  value?: string
+  description?: string
+  focused?: boolean
+  checked?: boolean
+  disabled?: boolean
+}
+
+export interface RemoteBrowserSnapshot {
+  url: string
+  title: string
+  nodes: RemoteBrowserSnapshotNode[]
+}
+
+export type RemoteBrowserOp =
+  | 'ensure_window'
+  | 'destroy_window'
+  | 'focus_window'
+  | 'hide_window'
+  | 'list_windows'
+  | 'navigate'
+  | 'go_back'
+  | 'go_forward'
+  | 'snapshot'
+  | 'click'
+  | 'click_at'
+  | 'drag'
+  | 'fill'
+  | 'type'
+  | 'select'
+  | 'set_clipboard'
+  | 'get_clipboard'
+  | 'screenshot'
+  | 'screenshot_region'
+  | 'console_logs'
+  | 'window_resize'
+  | 'network_logs'
+  | 'wait_for'
+  | 'send_key'
+  | 'downloads'
+  | 'upload'
+  | 'scroll'
+  | 'evaluate'
+  | 'detect_challenge'
+
+export interface RemoteBrowserInvokeArgs {
+  op: RemoteBrowserOp
+  instanceId?: string
+  show?: boolean
+  url?: string
+  ref?: string
+  value?: string
+  text?: string
+  expression?: string
+  direction?: 'up' | 'down' | 'left' | 'right'
+  amount?: number
+  x?: number
+  y?: number
+  x1?: number
+  y1?: number
+  x2?: number
+  y2?: number
+  width?: number
+  height?: number
+  filePaths?: string[]
+  key?: string
+  modifiers?: Array<'shift' | 'control' | 'alt' | 'meta'>
+  level?: 'all' | 'log' | 'info' | 'warn' | 'error'
+  limit?: number
+  status?: 'all' | 'failed' | '2xx' | '3xx' | '4xx' | '5xx'
+  method?: string
+  resourceType?: string
+  action?: 'list' | 'wait'
+  timeoutMs?: number
+  pollMs?: number
+  idleMs?: number
+  kind?: 'selector' | 'text' | 'url' | 'network-idle'
+  selector?: string
+  padding?: number
+  format?: 'png' | 'jpeg'
+  jpegQuality?: number
+  annotate?: boolean
+  includeLastAction?: boolean
+  includeMetadata?: boolean
+  target?: {
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    ref?: string
+    selector?: string
+    padding?: number
+    format?: 'png' | 'jpeg'
+    jpegQuality?: number
+  }
+  waitFor?: 'none' | 'navigation' | 'network-idle'
+}
+
+export interface RemoteBrowserInvokeResult {
+  info?: RemoteBrowserWindowInfo
+  windows?: RemoteBrowserWindowInfo[]
+  snapshot?: RemoteBrowserSnapshot
+  clipboard?: string
+  imageBuffer?: Uint8Array
+  imageFormat?: 'png' | 'jpeg'
+  metadata?: Record<string, unknown>
+  consoleLogs?: Array<{ timestamp: number; level: 'log' | 'info' | 'warn' | 'error'; message: string }>
+  networkLogs?: Array<{ timestamp: number; method: string; url: string; status: number; resourceType: string; ok: boolean }>
+  downloads?: Array<{ id: string; timestamp: number; url: string; filename: string; state: string; bytesReceived: number; totalBytes: number; mimeType: string; savePath?: string }>
+  waitResult?: { ok: true; kind: string; elapsedMs: number; detail: string }
+  evaluateResult?: unknown
+  resizeResult?: { width: number; height: number }
+  challenge?: { detected: boolean; provider: string; signals: string[] }
 }
 
 export interface DeepLinkNavigation {

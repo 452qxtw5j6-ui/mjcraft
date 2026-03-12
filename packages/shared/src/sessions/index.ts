@@ -11,6 +11,9 @@
 // Types
 export type {
   SessionStatus,
+  SessionOrigin,
+  NotionSessionRef,
+  SlackSessionRef,
   SessionTokenUsage,
   StoredMessage,
   SessionConfig,
@@ -109,5 +112,4 @@ export {
   validateSessionId,
   sanitizeSessionId,
 } from './validation.ts';
-
 

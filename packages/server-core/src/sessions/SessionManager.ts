@@ -56,6 +56,9 @@ import {
   type SessionMetadata,
   type SessionStatus,
   type SessionHeader,
+  type SessionOrigin,
+  type NotionSessionRef,
+  type SlackSessionRef,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
@@ -78,6 +81,7 @@ import { listLabels } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
 import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { resolveRequestedSource } from './source-intent-resolver'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -399,6 +403,20 @@ async function buildServersFromSources(
 
   span.end()
   return result
+}
+
+function hasExplicitSourceMention(message: string): boolean {
+  return /\[source:[\w-]+\]/i.test(message)
+}
+
+function buildSourceRoutingClarification(source: LoadedSource, guideSummary?: string): string {
+  const summary = guideSummary || source.config.tagline || source.config.provider
+  return [
+    `Selected source for this request: ${source.config.name} (${source.config.slug}).`,
+    summary ? `Guide summary: ${summary}` : null,
+    'Prefer this source\'s structured tools first for this request.',
+    'If the source tools are insufficient, you may still use Bash or browser automation.',
+  ].filter(Boolean).join('\n')
 }
 
 /**
@@ -745,6 +763,10 @@ interface ManagedSession {
   // See: packages/shared/src/agent/tool-matching.ts
   // Session name (user-defined or AI-generated)
   name?: string
+  lastUsedAt?: number
+  sessionOrigin?: SessionOrigin
+  notionRef?: NotionSessionRef
+  slackRef?: SlackSessionRef
   isFlagged: boolean
   /** Whether this session is archived */
   isArchived?: boolean
@@ -956,6 +978,14 @@ const DEFAULT_TOKEN_USAGE = {
   contextTokens: 0, costUsd: 0,
 }
 
+function buildSlackThreadIndexKey(workspaceId: string, channelId: string, threadTs: string): string {
+  return `${workspaceId}:slack:${channelId}:${threadTs}`
+}
+
+function buildNotionPageIndexKey(workspaceId: string, pageId: string): string {
+  return `${workspaceId}:notion:${pageId}`
+}
+
 /**
  * Convert a ManagedSession to a renderer-side Session object.
  * Uses pickSessionFields() for persistent fields so new fields propagate automatically.
@@ -990,6 +1020,9 @@ interface PendingDelta {
 
 export class SessionManager implements ISessionManager {
   private sessions: Map<string, ManagedSession> = new Map()
+  private slackThreadSessionIndex: Map<string, Set<string>> = new Map()
+  private notionPageSessionIndex: Map<string, Set<string>> = new Map()
+  private sessionLinkIndexKeys: Map<string, { slackKey?: string; notionKey?: string }> = new Map()
   // Delta batching for performance - reduces IPC events from 50+/sec to ~20/sec
   private pendingDeltas: Map<string, PendingDelta> = new Map()
   private deltaFlushTimers: Map<string, NodeJS.Timeout> = new Map()
@@ -1032,6 +1065,70 @@ export class SessionManager implements ISessionManager {
    *  Resolves immediately if already initialized. */
   waitForInit(): Promise<void> {
     return this.initGate.wait()
+  }
+
+  private addSessionLinkIndexEntry(index: Map<string, Set<string>>, key: string, sessionId: string): void {
+    const current = index.get(key) ?? new Set<string>()
+    current.add(sessionId)
+    index.set(key, current)
+  }
+
+  private removeSessionLinkIndexEntry(index: Map<string, Set<string>>, key: string, sessionId: string): void {
+    const current = index.get(key)
+    if (!current) return
+    current.delete(sessionId)
+    if (current.size === 0) {
+      index.delete(key)
+      return
+    }
+    index.set(key, current)
+  }
+
+  private pickBestLinkedSession(sessionIds: Set<string>): ManagedSession | null {
+    const candidates = Array.from(sessionIds)
+      .map(sessionId => this.sessions.get(sessionId))
+      .filter((session): session is ManagedSession => !!session)
+
+    if (candidates.length === 0) return null
+
+    candidates.sort((a, b) => {
+      const byLastUsed = (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0)
+      if (byLastUsed !== 0) return byLastUsed
+      return (b.createdAt ?? 0) - (a.createdAt ?? 0)
+    })
+    return candidates[0] ?? null
+  }
+
+  private updateSessionLinkIndexes(managed: Pick<ManagedSession, 'id' | 'workspace' | 'slackRef' | 'notionRef'>): void {
+    const previous = this.sessionLinkIndexKeys.get(managed.id)
+    if (previous?.slackKey) this.removeSessionLinkIndexEntry(this.slackThreadSessionIndex, previous.slackKey, managed.id)
+    if (previous?.notionKey) this.removeSessionLinkIndexEntry(this.notionPageSessionIndex, previous.notionKey, managed.id)
+
+    const next: { slackKey?: string; notionKey?: string } = {}
+    if (managed.slackRef?.channelId && managed.slackRef.threadTs) {
+      const slackKey = buildSlackThreadIndexKey(managed.workspace.id, managed.slackRef.channelId, managed.slackRef.threadTs)
+      this.addSessionLinkIndexEntry(this.slackThreadSessionIndex, slackKey, managed.id)
+      next.slackKey = slackKey
+    }
+    if (managed.notionRef?.pageId) {
+      const notionKey = buildNotionPageIndexKey(managed.workspace.id, managed.notionRef.pageId)
+      this.addSessionLinkIndexEntry(this.notionPageSessionIndex, notionKey, managed.id)
+      next.notionKey = notionKey
+    }
+
+    if (next.slackKey || next.notionKey) {
+      this.sessionLinkIndexKeys.set(managed.id, next)
+    } else {
+      this.sessionLinkIndexKeys.delete(managed.id)
+    }
+  }
+
+  private removeSessionLinkIndexes(sessionId: string): void {
+    const previous = this.sessionLinkIndexKeys.get(sessionId)
+    if (!previous) return
+    if (previous.slackKey) this.removeSessionLinkIndexEntry(this.slackThreadSessionIndex, previous.slackKey, sessionId)
+    if (previous.notionKey) this.removeSessionLinkIndexEntry(this.notionPageSessionIndex, previous.notionKey, sessionId)
+    this.sessionLinkIndexKeys.delete(sessionId)
   }
 
   private browserPaneManager: IBrowserPaneManager | null = null
@@ -1158,8 +1255,28 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
+    if ((managed.sessionOrigin ?? null) !== (header.sessionOrigin ?? null)) {
+      managed.sessionOrigin = header.sessionOrigin
+      changed = true
+    }
+
+    const oldNotionRef = JSON.stringify(managed.notionRef ?? null)
+    const newNotionRef = JSON.stringify(header.notionRef ?? null)
+    if (oldNotionRef !== newNotionRef) {
+      managed.notionRef = header.notionRef
+      changed = true
+    }
+
+    const oldSlackRef = JSON.stringify(managed.slackRef ?? null)
+    const newSlackRef = JSON.stringify(header.slackRef ?? null)
+    if (oldSlackRef !== newSlackRef) {
+      managed.slackRef = header.slackRef
+      changed = true
+    }
+
     if (changed) {
       sessionLog.info(`External metadata change detected for session ${sessionId}`)
+      this.updateSessionLinkIndexes(managed)
 
       // Prevent stale pending writes from reverting externally-updated metadata.
       sessionPersistenceQueue.cancel(sessionId)
@@ -1588,6 +1705,7 @@ export class SessionManager implements ISessionManager {
           }
 
           this.sessions.set(meta.id, managed)
+          this.updateSessionLinkIndexes(managed)
 
           // Initialize session metadata in AutomationSystem for diffing
           const automationSystem = this.automationSystems.get(workspaceRootPath)
@@ -2287,6 +2405,9 @@ export class SessionManager implements ISessionManager {
       sessionStatus: options?.sessionStatus,
       labels: options?.labels,
       isFlagged: options?.isFlagged,
+      sessionOrigin: options?.sessionOrigin,
+      notionRef: options?.notionRef,
+      slackRef: options?.slackRef,
     })
 
     // Branch: copy messages from source session up to and including the branch point
@@ -2407,6 +2528,7 @@ export class SessionManager implements ISessionManager {
     }
 
     this.sessions.set(storedSession.id, managed)
+    this.updateSessionLinkIndexes(managed)
 
     // Initialize session metadata in AutomationSystem for diffing
     const automationSystem = this.automationSystems.get(workspaceRootPath)
@@ -2421,6 +2543,52 @@ export class SessionManager implements ISessionManager {
     }
 
     return managedToSession(managed, isBranch ? { messages: managed.messages } : undefined)
+  }
+
+  async findSessionBySlackThread(workspaceId: string, channelId: string, threadTs: string): Promise<Session | null> {
+    const sessionIds = this.slackThreadSessionIndex.get(buildSlackThreadIndexKey(workspaceId, channelId, threadTs))
+    if (!sessionIds || sessionIds.size === 0) return null
+    const managed = this.pickBestLinkedSession(sessionIds)
+    if (!managed) return null
+    return managedToSession(managed)
+  }
+
+  async findSessionByNotionPage(workspaceId: string, pageId: string): Promise<Session | null> {
+    const sessionIds = this.notionPageSessionIndex.get(buildNotionPageIndexKey(workspaceId, pageId))
+    if (!sessionIds || sessionIds.size === 0) return null
+    const managed = this.pickBestLinkedSession(sessionIds)
+    if (!managed) return null
+    return managedToSession(managed)
+  }
+
+  notifySessionCreated(sessionId: string): void {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+    this.sendEvent({ type: 'session_created', sessionId }, managed.workspace.id)
+  }
+
+  async linkSessionToSlack(sessionId: string, slackRef: SlackSessionRef): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+    managed.slackRef = slackRef
+    this.updateSessionLinkIndexes(managed)
+    if (managed.messagesLoaded) {
+      this.persistSession(managed)
+      return
+    }
+    await updateSessionMetadata(managed.workspace.rootPath, sessionId, { slackRef })
+  }
+
+  async linkSessionToNotion(sessionId: string, notionRef: NotionSessionRef): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+    managed.notionRef = notionRef
+    this.updateSessionLinkIndexes(managed)
+    if (managed.messagesLoaded) {
+      this.persistSession(managed)
+      return
+    }
+    await updateSessionMetadata(managed.workspace.rootPath, sessionId, { notionRef })
   }
 
   /**
@@ -4423,6 +4591,7 @@ export class SessionManager implements ISessionManager {
     }
 
     this.sessions.delete(sessionId)
+    this.removeSessionLinkIndexes(sessionId)
 
     // Clean up session metadata in AutomationSystem (prevents memory leak)
     const automationSystem = this.automationSystems.get(workspaceRootPath)
@@ -4687,7 +4856,51 @@ export class SessionManager implements ISessionManager {
     // Always set all sources for context (even if none are enabled), including built-ins
     const workspaceRootPath = managed.workspace.rootPath
     const allSources = loadAllSources(workspaceRootPath)
+    let turnSourceGuidePath: string | null = null
+    let turnClarification: string | null = null
+
+    if (!hasExplicitSourceMention(message)) {
+      const resolvedIntent = await resolveRequestedSource(
+        message,
+        allSources,
+        agent.getSummarizeCallback(),
+      )
+
+      if (resolvedIntent) {
+        const candidate = allSources.find(source => source.config.slug === resolvedIntent.sourceSlug)
+        if (candidate && isSourceUsable(candidate)) {
+          turnClarification = buildSourceRoutingClarification(candidate, resolvedIntent.guideSummary)
+
+          const currentSlugs = new Set(managed.enabledSourceSlugs || [])
+          if (!currentSlugs.has(candidate.config.slug)) {
+            currentSlugs.add(candidate.config.slug)
+            managed.enabledSourceSlugs = Array.from(currentSlugs)
+            sessionLog.info(`Auto-enabled resolved source for session ${sessionId}: ${candidate.config.slug}`)
+            this.persistSession(managed)
+            this.sendEvent({
+              type: 'sources_changed',
+              sessionId,
+              enabledSourceSlugs: managed.enabledSourceSlugs,
+            }, managed.workspace.id)
+          }
+
+          const guidePath = join(candidate.folderPath, 'guide.md')
+          if (existsSync(guidePath)) {
+            turnSourceGuidePath = guidePath
+          }
+        }
+      }
+    }
     agent.setAllSources(allSources)
+    ;(agent as AgentInstance & {
+      setTemporaryClarifications?: (text: string | null) => void
+      markFileRead?: (filePath: string) => void
+    }).setTemporaryClarifications?.(turnClarification)
+    if (turnSourceGuidePath) {
+      ;(agent as AgentInstance & {
+        markFileRead?: (filePath: string) => void
+      }).markFileRead?.(turnSourceGuidePath)
+    }
     sendSpan.mark('sources.loaded')
 
     // Apply source servers if any are enabled
@@ -4936,6 +5149,9 @@ export class SessionManager implements ISessionManager {
         this.onProcessingStopped(sessionId, 'error')
       }
     } finally {
+      ;(agent as AgentInstance & {
+        setTemporaryClarifications?: (text: string | null) => void
+      }).setTemporaryClarifications?.(null)
       // Only handle cleanup for unexpected exits (loop break without complete event)
       // Normal completion returns early after calling onProcessingStopped
       // Errors are handled in catch block

@@ -4,6 +4,7 @@
  */
 
 import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { startHeadlessServer } from '@craft-agent/server-core/bootstrap'
 import { registerCoreRpcHandlers } from '../main/handlers/index'
 import { cleanupSessionFileWatchForClient } from '@craft-agent/server-core/handlers/rpc'
@@ -11,13 +12,36 @@ import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@cra
 import { initModelRefreshService, setFetcherPlatform } from '@craft-agent/server-core/model-fetchers'
 import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/services'
 import type { HandlerDeps } from '../main/handlers/handler-deps'
+import type { WsRpcTlsOptions } from '@craft-agent/server-core/transport'
+import { getWorkspaces, loadStoredConfig } from '@craft-agent/shared/config'
+import { SlackBotService } from '../main/slack-bot'
+import { NotionTaskService } from '../main/notion-task-service'
+import { RemoteBrowserPaneAdapter } from './remote-browser-pane-adapter'
 
 const bundledAssetsRoot = join(import.meta.dir, '..', '..')
 
-const instance = await (async (): Promise<{ host: string; port: number; token: string; stop: () => Promise<void> }> => {
+let slackBotService: SlackBotService | null = null
+let notionTaskService: NotionTaskService | null = null
+
+let tls: WsRpcTlsOptions | undefined
+const tlsCertPath = process.env.CRAFT_RPC_TLS_CERT
+const tlsKeyPath = process.env.CRAFT_RPC_TLS_KEY
+if (tlsCertPath || tlsKeyPath) {
+  if (!tlsCertPath || !tlsKeyPath) {
+    throw new Error('TLS requires both CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY.')
+  }
+  tls = {
+    cert: readFileSync(tlsCertPath),
+    key: readFileSync(tlsKeyPath),
+    ...(process.env.CRAFT_RPC_TLS_CA ? { ca: readFileSync(process.env.CRAFT_RPC_TLS_CA) } : {}),
+  }
+}
+
+const instance = await (async () => {
   try {
     return await startHeadlessServer<SessionManager, HandlerDeps>({
       bundledAssetsRoot,
+      tls,
       applyPlatformToSubsystems: (platform) => {
         setFetcherPlatform(platform)
         setSessionPlatform(platform)
@@ -75,10 +99,62 @@ const instance = await (async (): Promise<{ host: string; port: number; token: s
   }
 })()
 
-console.log(`CRAFT_SERVER_URL=ws://${instance.host}:${instance.port}`)
+instance.sessionManager.setBrowserPaneManager(
+  new RemoteBrowserPaneAdapter(instance.wsServer, instance.sessionManager),
+)
+
+const configuredWorkspaces = getWorkspaces()
+const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
+const integrationWorkspace =
+  (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
+  || configuredWorkspaces[0]
+
+if (integrationWorkspace) {
+  try {
+    slackBotService = new SlackBotService({
+      workspaceId: integrationWorkspace.id,
+      workspaceRootPath: integrationWorkspace.rootPath,
+      sessionManager: instance.sessionManager,
+    })
+    await slackBotService.start()
+  } catch (error) {
+    console.error('Slack bot startup failed; continuing headless startup without Slack integration:', error instanceof Error ? error.message : String(error))
+    if (slackBotService) {
+      await slackBotService.stop().catch(() => {})
+    }
+    slackBotService = null
+  }
+
+  try {
+    notionTaskService = new NotionTaskService({
+      workspaceId: integrationWorkspace.id,
+      workspaceRootPath: integrationWorkspace.rootPath,
+      sessionManager: instance.sessionManager,
+    })
+    await notionTaskService.start()
+  } catch (error) {
+    console.error('Notion task service startup failed; continuing headless startup without Notion queue:', error instanceof Error ? error.message : String(error))
+    if (notionTaskService) {
+      await notionTaskService.stop().catch(() => {})
+    }
+    notionTaskService = null
+  }
+} else {
+  console.warn('Skipping Slack/Notion services startup: no workspace available')
+}
+
+console.log(`CRAFT_SERVER_URL=${tls ? 'wss' : 'ws'}://${instance.host}:${instance.port}`)
 console.log(`CRAFT_SERVER_TOKEN=${instance.token}`)
 
 const shutdown = async () => {
+  if (slackBotService) {
+    await slackBotService.stop().catch(() => {})
+    slackBotService = null
+  }
+  if (notionTaskService) {
+    await notionTaskService.stop().catch(() => {})
+    notionTaskService = null
+  }
   await instance.stop()
   process.exit(0)
 }
