@@ -391,20 +391,20 @@ export function formatLargeResponseMessage(opts: FormatOptions): string {
   const { estimatedTokens, relativePath, absolutePath, summary, preview } = opts;
 
   const fileRef = [
-    `Full data saved to: ${absolutePath}`,
-    `- Use Read/Grep to access specific content`,
-    `- Use transform_data with inputFiles: ["${relativePath}"] for data analysis`,
+    `Full output saved: ${absolutePath}`,
+    `Next: use Read/Grep on that path for details`,
+    `Data analysis: transform_data inputFiles: ["${relativePath}"]`,
   ].join('\n');
 
   if (summary) {
-    return `[Large response (~${estimatedTokens} tokens) summarized]\n\n${fileRef}\n\n${summary}`;
+    return `[Large output saved and summarized (~${estimatedTokens} tokens)]\n\n${fileRef}\n\n${summary}`;
   }
 
   if (preview) {
-    return `[Response too large (~${estimatedTokens} tokens)]\n\n${fileRef}\n\nPreview:\n${preview}...`;
+    return `[Large output saved (~${estimatedTokens} tokens)]\n\n${fileRef}\n\nPreview:\n${preview}...`;
   }
 
-  return `[Response too large (~${estimatedTokens} tokens)]\n\n${fileRef}`;
+  return `[Large output saved (~${estimatedTokens} tokens)]\n\n${fileRef}`;
 }
 
 // ============================================================

@@ -9,6 +9,7 @@ import { APP_VERSION } from '../version/index.ts';
 import { readPluginName } from '../utils/workspace.ts';
 import { globSync } from 'glob';
 import os from 'os';
+import type { LlmProviderType } from '../config/llm-connections.ts';
 
 /** Maximum size of CLAUDE.md file to include (10KB) */
 const MAX_CONTEXT_FILE_SIZE = 10 * 1024;
@@ -268,6 +269,18 @@ export interface PromptGuidanceCapabilities {
   livePlanningGuide?: boolean;
 }
 
+export interface PromptGuidanceProfileInput {
+  backendName?: string;
+  providerType?: LlmProviderType;
+  piAuthProvider?: string;
+  model?: string;
+}
+
+export interface PromptGuidanceProfileDecision {
+  profile: 'default' | 'pi-runtime' | 'legacy-codex';
+  capabilities: Required<PromptGuidanceCapabilities>;
+}
+
 /**
  * System prompt preset types for different agent contexts.
  * - 'default': Full Craft Agent system prompt
@@ -346,7 +359,8 @@ export function getSystemPrompt(
   const basePrompt = getCraftAssistantPrompt(
     workspaceRootPath,
     backendName,
-    resolvePromptGuidanceCapabilities(backendName, promptCapabilities),
+    resolvePromptGuidanceProfile({ backendName }).capabilities,
+    promptCapabilities,
   );
   const fullPrompt = `${basePrompt}${preferences}${debugContext}${projectContextFiles}`;
 
@@ -425,15 +439,50 @@ function getCraftAgentEnvironmentMarker(): string {
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
  */
 function resolvePromptGuidanceCapabilities(
-  backendName: string | undefined,
+  defaults: Required<PromptGuidanceCapabilities>,
   promptCapabilities?: PromptGuidanceCapabilities,
 ): Required<PromptGuidanceCapabilities> {
-  const legacyCodexDefault = backendName === 'Codex';
   return {
-    submitPlanGuide: promptCapabilities?.submitPlanGuide ?? legacyCodexDefault,
-    mcpNamingGuide: promptCapabilities?.mcpNamingGuide ?? legacyCodexDefault,
-    sourceManagementGuide: promptCapabilities?.sourceManagementGuide ?? legacyCodexDefault,
-    livePlanningGuide: promptCapabilities?.livePlanningGuide ?? legacyCodexDefault,
+    submitPlanGuide: promptCapabilities?.submitPlanGuide ?? defaults.submitPlanGuide,
+    mcpNamingGuide: promptCapabilities?.mcpNamingGuide ?? defaults.mcpNamingGuide,
+    sourceManagementGuide: promptCapabilities?.sourceManagementGuide ?? defaults.sourceManagementGuide,
+    livePlanningGuide: promptCapabilities?.livePlanningGuide ?? defaults.livePlanningGuide,
+  };
+}
+
+export function resolvePromptGuidanceProfile(
+  input: PromptGuidanceProfileInput,
+  promptCapabilities?: PromptGuidanceCapabilities,
+): PromptGuidanceProfileDecision {
+  let profile: PromptGuidanceProfileDecision['profile'] = 'default';
+  let defaults: Required<PromptGuidanceCapabilities> = {
+    submitPlanGuide: false,
+    mcpNamingGuide: false,
+    sourceManagementGuide: false,
+    livePlanningGuide: false,
+  };
+
+  if (input.backendName === 'Codex') {
+    profile = 'legacy-codex';
+    defaults = {
+      submitPlanGuide: true,
+      mcpNamingGuide: true,
+      sourceManagementGuide: true,
+      livePlanningGuide: true,
+    };
+  } else if (input.providerType === 'pi' || input.providerType === 'pi_compat') {
+    profile = 'pi-runtime';
+    defaults = {
+      submitPlanGuide: true,
+      mcpNamingGuide: true,
+      sourceManagementGuide: true,
+      livePlanningGuide: false,
+    };
+  }
+
+  return {
+    profile,
+    capabilities: resolvePromptGuidanceCapabilities(defaults, promptCapabilities),
   };
 }
 
@@ -463,8 +512,7 @@ Recommended flow:
 ${flowSteps.map((step, index) => `${index + 1}. ${step}`).join('\n')}
 ` : ''}
 ${submitPlanGuide ? `
-**Writing plan files:** Create plan files using shell commands. Do NOT use heredocs (\`<<EOF\`) as they are blocked by the sandbox.
-
+**Writing plan files:** Use shell commands. Do NOT use heredocs (\`<<EOF\`) because they are blocked.
 Examples (replace \`$PLANS_PATH\` with your actual \`plansFolderPath\` value):
 
 Unix/macOS:
@@ -492,12 +540,9 @@ MCP tools from connected sources follow the naming pattern \`mcp__sources__{slug
 - **\`slug\`** is the source's **slug** from the \`<sources>\` block above (e.g., \`linear\`, \`github\`)
 - Do **NOT** use source IDs, provider names, or config.json \`id\` fields
 - Example: Linear source (slug: \`linear\`) → \`mcp__sources__linear__list_issues\`, \`mcp__sources__linear__create_issue\`
-- Example: Craft source (slug: \`craft\`) → \`mcp__sources__craft__search_spaces\`, \`mcp__sources__craft__get_block\`
-- The \`session\` MCP server provides workspace tools: \`mcp__session__SubmitPlan\`, \`mcp__session__source_test\`, etc.
-
-**Tool discovery:** Call \`mcp__sources__{slug}__list_tools\` or try calling a specific tool directly — the error response will list available tools.
-- **NEVER** use \`list_mcp_resources\` — it lists resources, not tools. It will not help you discover available tools.
-- **NEVER** use shell/bash to call MCP tools. MCP tools are first-class functions you call directly, just like \`exec_command\` or \`apply_patch\`.
+- Discover tools with \`mcp__sources__{slug}__list_tools\`
+- The \`session\` MCP server provides workspace tools such as \`mcp__session__SubmitPlan\`
+- Do **NOT** use \`list_mcp_resources\` or shell/bash to discover or call MCP tools
 `;
 }
 
@@ -509,7 +554,7 @@ function getSourceManagementGuidance(
   return `
 ## Source Management Tools
 
-**After OAuth completes:** MCP tools become available on the next turn. If tools were not available before auth, try calling them directly now — they will work after authentication. Do NOT keep running \`source_test\` to check — just call the tools.
+**After OAuth completes:** use the source tool on the next turn. Do **NOT** keep rerunning \`source_test\`.
 
 The \`session\` MCP server provides tools for managing external sources:
 
@@ -524,27 +569,23 @@ The \`session\` MCP server provides tools for managing external sources:
 
 **Source creation workflow:**
 1. Read \`${DOC_REFS.sources}\` for the full setup guide
-2. Search \`craft-agents-docs\` for service-specific guides
-3. Create \`config.json\` in \`sources/{slug}/\`
-4. Create \`permissions.json\` for Explore mode
-5. Write \`guide.md\` with usage instructions
-6. Run \`source_test\` to validate — **once only, before auth**
-7. Trigger the appropriate auth tool
+2. Create \`config.json\`, \`permissions.json\`, and \`guide.md\` in \`sources/{slug}/\`
+3. Run \`source_test\` **once** before auth
+4. Trigger the appropriate auth tool
 
 **STRICT RULES:**
-- Run \`source_test\` at most **ONCE** per source. It validates config structure only. Repeating it gives the same result.
-- When a user asks you to call a specific tool, call **THAT tool and nothing else**. Do not run \`source_test\` or other tools instead.
-- **Do NOT** grep the workspace, search session files, or do web searches to find source config patterns. Read the source's \`config.json\` and \`guide.md\` directly.
-- **If an existing source is already configured**, read its \`config.json\` + \`guide.md\`, then use it. Do not recreate or search for how to set it up.
-
-**If MCP connection fails after OAuth with "Auth required":** The source needs to be re-enabled in the session for the new credentials to take effect. Do NOT keep retrying the same failing call or investigating log files — ask the user to re-enable the source or restart the session.
+- Run \`source_test\` at most **once** per source.
+- When a user asks for a specific tool, call that tool directly.
+- Read the source's \`config.json\` and \`guide.md\` directly instead of searching elsewhere.
+- If MCP still says "Auth required" after OAuth, ask the user to re-enable the source or restart the session.
 `;
 }
 
 function getCraftAssistantPrompt(
   workspaceRootPath?: string,
   backendName: string = 'Claude Code',
-  promptCapabilities: Required<PromptGuidanceCapabilities> = resolvePromptGuidanceCapabilities(backendName),
+  defaultCapabilities: Required<PromptGuidanceCapabilities> = resolvePromptGuidanceProfile({ backendName }).capabilities,
+  promptCapabilities?: PromptGuidanceCapabilities,
 ): string {
   // Default to ${APP_ROOT}/workspaces/{id} if no path provided
   const workspacePath = workspaceRootPath || `${APP_ROOT}/workspaces/{id}`;
@@ -557,6 +598,7 @@ function getCraftAssistantPrompt(
 
   // Environment marker for SDK JSONL detection
   const environmentMarker = getCraftAgentEnvironmentMarker();
+  const mergedCapabilities = resolvePromptGuidanceCapabilities(defaultCapabilities, promptCapabilities);
 
   return `${environmentMarker}
 
@@ -687,9 +729,9 @@ Never try to execute a plan without submitting it first - it will fail, especial
 
 **CRITICAL:** You MUST write plan files to the **exact \`plansFolderPath\`** and data files to the **exact \`dataFolderPath\`** from \`<session_state>\`. These folders already exist (created by the system). Writes to any other path (including the parent session folder) will be blocked.
 **Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — those paths will be rejected. Use ONLY \`plansFolderPath\` or \`dataFolderPath\`.
-${getPlanningGuidance(promptCapabilities)}
-${getMcpNamingGuidance(promptCapabilities)}
-${getSourceManagementGuidance(promptCapabilities)}
+${getPlanningGuidance(mergedCapabilities)}
+${getMcpNamingGuidance(mergedCapabilities)}
+${getSourceManagementGuidance(mergedCapabilities)}
 **Full reference on what commands are enablled:** \`${DOC_REFS.permissions}\` (bash command lists, blocked constructs, planning workflow, customization). Read if unsure, or user has questions about permissions.
 
 ## Web Search
