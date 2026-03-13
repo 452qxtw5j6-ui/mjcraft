@@ -233,8 +233,8 @@ export class PiAgent extends BaseAgent {
     if (modelDef?.contextWindow) {
       this.adapter.setContextWindow(modelDef.contextWindow);
     }
-    if (config.miniModel) {
-      this.adapter.setMiniModel(config.miniModel);
+    if (config.subtaskModel || config.miniModel) {
+      this.adapter.setSubtaskModel(config.subtaskModel ?? config.miniModel);
     }
 
     // Set session dir on adapter for concurrent-safe toolMetadataStore lookups
@@ -399,6 +399,7 @@ export class PiAgent extends BaseAgent {
       workingDirectory,
       plansFolderPath,
       miniModel: this.config.miniModel,
+      subtaskModel: this.config.subtaskModel,
       providerType: this.config.providerType,
       authType: this.config.authType,
       workspaceId: this.config.workspace.id,
@@ -432,10 +433,10 @@ export class PiAgent extends BaseAgent {
     const sessionToolDefs = getSessionToolProxyDefs();
 
     // Patch call_llm description with provider-specific model hint
-    if (this.config.miniModel) {
+    if (this.config.subtaskModel || this.config.miniModel) {
       const callLlmDef = sessionToolDefs.find(d => d.name === 'mcp__session__call_llm');
       if (callLlmDef) {
-        callLlmDef.description += `\n\nDefault fast model for this session: ${this.config.miniModel}. Omit the model parameter to use it automatically.`;
+        callLlmDef.description += `\n\nDefault secondary model for this session: ${this.config.subtaskModel ?? this.config.miniModel}. Omit the model parameter to use it automatically.`;
       }
     }
 
@@ -1969,7 +1970,7 @@ export class PiAgent extends BaseAgent {
    * Run a simple text completion via the subprocess.
    * Sends a mini_completion request and waits for the result.
    */
-  async runMiniCompletion(prompt: string): Promise<string | null> {
+  private async runSubprocessCompletion(prompt: string, model?: string): Promise<string | null> {
     // If subprocess isn't running, spawn it
     await this.ensureSubprocess();
 
@@ -1978,7 +1979,7 @@ export class PiAgent extends BaseAgent {
       this.pendingMiniCompletions.set(id, { resolve, reject });
     });
 
-    this.send({ type: 'mini_completion', id, prompt });
+    this.send({ type: 'mini_completion', id, prompt, model });
 
     // Keep this aligned with the subprocess-side queryLlm timeout.
     const timeout = new Promise<string | null>((resolve) => {
@@ -1996,6 +1997,10 @@ export class PiAgent extends BaseAgent {
     return text;
   }
 
+  async runMiniCompletion(prompt: string): Promise<string | null> {
+    return this.runSubprocessCompletion(prompt, this.config.miniModel);
+  }
+
   /**
    * Execute an LLM query via the subprocess.
    * Used by session-scoped tool callbacks (call_llm).
@@ -2003,10 +2008,11 @@ export class PiAgent extends BaseAgent {
   async queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
     this.debug('[PiAgent.queryLlm] Starting');
 
-    const text = await this.runMiniCompletion(request.prompt);
+    const effectiveModel = request.model || this.config.subtaskModel || this.config.miniModel;
+    const text = await this.runSubprocessCompletion(request.prompt, effectiveModel);
     return {
       text: text || '',
-      model: request.model || this.config.miniModel || '',
+      model: effectiveModel || '',
     };
   }
 

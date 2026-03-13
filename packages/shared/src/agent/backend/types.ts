@@ -166,6 +166,9 @@ export interface CoreBackendConfig {
   /** Mini/utility model for summarization/title generation/mini-completions */
   miniModel?: string;
 
+  /** Higher-quality secondary model for call_llm and large-result summarization */
+  subtaskModel?: string;
+
   /** Initial thinking level */
   thinkingLevel?: ThinkingLevel;
 

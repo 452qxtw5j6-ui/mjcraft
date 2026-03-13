@@ -80,6 +80,7 @@ interface InitMessage {
   workingDirectory: string;
   plansFolderPath: string;
   miniModel?: string;
+  subtaskModel?: string;
   agentDir?: string;
   providerType?: string;
   authType?: string;
@@ -101,7 +102,7 @@ type InboundMessage =
   | { type: 'tool_execute_response'; requestId: string; result: { content: string; isError: boolean } }
   | { type: 'pre_tool_use_response'; requestId: string; action: 'allow' | 'block' | 'modify'; input?: Record<string, unknown>; reason?: string }
   | { type: 'abort' }
-  | { type: 'mini_completion'; id: string; prompt: string }
+  | { type: 'mini_completion'; id: string; prompt: string; model?: string }
   | { type: 'ensure_session_ready'; id: string }
   | { type: 'set_model'; model: string }
   | { type: 'set_thinking_level'; level: string }
@@ -807,11 +808,11 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
 
   debugLog('[queryLlm] Starting');
 
-  // Pick mini model. If the configured miniModel uses a different provider than
+  // Pick secondary model. If the configured subtask/mini model uses a different provider than
   // what the user authenticated with (e.g. gemini-2.5-pro when only anthropic
   // credentials exist), fall back to the default summarization model which uses
   // the same provider family.
-  let model = request.model ?? initConfig.miniModel ?? getDefaultSummarizationModel();
+  let model = request.model ?? initConfig.subtaskModel ?? initConfig.miniModel ?? getDefaultSummarizationModel();
 
   // Create authenticated registry upfront — used by both the provider guard and the ephemeral session.
   const { authStorage, modelRegistry } = createAuthenticatedRegistry();
@@ -951,6 +952,7 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
   const fallbackCandidates = [
     'pi/gpt-5.1-codex-mini',
     'pi/gpt-5-mini',
+    initConfig.subtaskModel,
     initConfig.miniModel,
     getDefaultSummarizationModel(),
   ].filter((candidate): candidate is string => !!candidate && !isDeniedMiniModelId(candidate));
@@ -1000,12 +1002,15 @@ async function preExecuteCallLlm(input: Record<string, unknown>): Promise<LLMQue
     ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId)
     : undefined;
   const request = await buildCallLlmRequest(input, { backendName: 'Pi', sessionPath });
+  if (!request.model && initConfig?.subtaskModel) {
+    request.model = initConfig.subtaskModel;
+  }
   return queryLlm(request);
 }
 
 async function runMiniCompletion(prompt: string): Promise<string | null> {
   try {
-    const result = await queryLlm({ prompt });
+    const result = await queryLlm({ prompt, model: initConfig?.subtaskModel ?? initConfig?.miniModel });
     const text = result.text || null;
     debugLog(`[runMiniCompletion] Result: ${text ? `"${text.slice(0, 200)}"` : 'null'}`);
     return text;
@@ -1269,7 +1274,7 @@ async function handleMiniCompletion(msg: Extract<InboundMessage, { type: 'mini_c
   // as 'error' messages instead of being swallowed and returned as null.
   // runMiniCompletion is kept for the summarize callback where null is acceptable.
   try {
-    const result = await queryLlm({ prompt: msg.prompt });
+    const result = await queryLlm({ prompt: msg.prompt, model: msg.model ?? initConfig?.miniModel });
     send({ type: 'mini_completion_result', id: msg.id, text: result.text || null });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
