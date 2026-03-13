@@ -83,6 +83,22 @@ const systemPromptWithDebug = getSystemPrompt(
 );
 console.log(`${colors.dim}With debug mode: ${systemPromptWithDebug.length.toLocaleString()} characters (+${(systemPromptWithDebug.length - systemPrompt.length).toLocaleString()})${colors.reset}`);
 
+const gpt54PiPrompt = getSystemPrompt(
+  undefined,
+  { enabled: false },
+  '/Users/example/.craft-agent/workspaces/abc123',
+  '/Users/example/projects/my-app',
+  'default',
+  'Craft Agents Backend',
+  {
+    submitPlanGuide: true,
+    mcpNamingGuide: true,
+    sourceManagementGuide: true,
+    livePlanningGuide: false,
+  }
+);
+console.log(`${colors.dim}GPT-5.4 Pi profile: ${gpt54PiPrompt.length.toLocaleString()} characters${colors.reset}`);
+
 // ------------------------------------------------------------
 // PART 2: DYNAMIC USER MESSAGE CONTEXT
 // ------------------------------------------------------------

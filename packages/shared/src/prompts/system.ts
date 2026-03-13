@@ -257,6 +257,15 @@ export interface SystemPromptOptions {
   workingDirectory?: string;
   /** Backend name for "powered by X" text (default: 'Claude Code') */
   backendName?: string;
+  /** Prompt-only guidance toggles for backend/runtime-specific workflows */
+  promptCapabilities?: PromptGuidanceCapabilities;
+}
+
+export interface PromptGuidanceCapabilities {
+  submitPlanGuide?: boolean;
+  mcpNamingGuide?: boolean;
+  sourceManagementGuide?: boolean;
+  livePlanningGuide?: boolean;
 }
 
 /**
@@ -315,7 +324,8 @@ export function getSystemPrompt(
   workspaceRootPath?: string,
   workingDirectory?: string,
   preset?: SystemPromptPreset | string,
-  backendName?: string
+  backendName?: string,
+  promptCapabilities?: PromptGuidanceCapabilities,
 ): string {
   // Use mini agent prompt for quick edits (pass workspace root for config paths)
   if (preset === 'mini') {
@@ -333,7 +343,11 @@ export function getSystemPrompt(
   // Note: Date/time context is now added to user messages instead of system prompt
   // to enable prompt caching. The system prompt stays static and cacheable.
   // Safe Mode context is also in user messages for the same reason.
-  const basePrompt = getCraftAssistantPrompt(workspaceRootPath, backendName);
+  const basePrompt = getCraftAssistantPrompt(
+    workspaceRootPath,
+    backendName,
+    resolvePromptGuidanceCapabilities(backendName, promptCapabilities),
+  );
   const fullPrompt = `${basePrompt}${preferences}${debugContext}${projectContextFiles}`;
 
   debug('[getSystemPrompt] full prompt length:', fullPrompt.length);
@@ -410,7 +424,128 @@ function getCraftAgentEnvironmentMarker(): string {
  * @param workspaceRootPath - Root path of the workspace
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
  */
-function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string = 'Claude Code'): string {
+function resolvePromptGuidanceCapabilities(
+  backendName: string | undefined,
+  promptCapabilities?: PromptGuidanceCapabilities,
+): Required<PromptGuidanceCapabilities> {
+  const legacyCodexDefault = backendName === 'Codex';
+  return {
+    submitPlanGuide: promptCapabilities?.submitPlanGuide ?? legacyCodexDefault,
+    mcpNamingGuide: promptCapabilities?.mcpNamingGuide ?? legacyCodexDefault,
+    sourceManagementGuide: promptCapabilities?.sourceManagementGuide ?? legacyCodexDefault,
+    livePlanningGuide: promptCapabilities?.livePlanningGuide ?? legacyCodexDefault,
+  };
+}
+
+function getPlanningGuidance(
+  capabilities: Required<PromptGuidanceCapabilities>,
+): string {
+  const { submitPlanGuide, livePlanningGuide } = capabilities;
+  if (!submitPlanGuide && !livePlanningGuide) return '';
+
+  const flowSteps: string[] = [];
+  if (livePlanningGuide) {
+    flowSteps.push('Start multi-step work with `update_plan`.');
+    flowSteps.push('Keep `update_plan` updated as steps progress for turncard/tasklist accuracy.');
+  }
+  if (submitPlanGuide) {
+    flowSteps.push('When ready to implement (especially in Explore mode), write the plan file and call `SubmitPlan`.');
+  }
+  if (livePlanningGuide) {
+    flowSteps.push('After implementation begins, continue using `update_plan` for granular progress.');
+  }
+
+  return `
+### Planning Tools
+${livePlanningGuide ? '- **`update_plan`** — Live task tracking within a turn/session (statuses: pending/in_progress/completed). Does not pause execution or request approval.\n' : ''}${submitPlanGuide ? '- **`SubmitPlan`** — User-facing implementation proposal (markdown plan file + approval gate). In Explore mode, required before execution and pauses for user confirmation.\n' : ''}
+${flowSteps.length > 0 ? `
+Recommended flow:
+${flowSteps.map((step, index) => `${index + 1}. ${step}`).join('\n')}
+` : ''}
+${submitPlanGuide ? `
+**Writing plan files:** Create plan files using shell commands. Do NOT use heredocs (\`<<EOF\`) as they are blocked by the sandbox.
+
+Examples (replace \`$PLANS_PATH\` with your actual \`plansFolderPath\` value):
+
+Unix/macOS:
+\`\`\`bash
+printf '%s\\n' "# Plan Title" "" "## Goal" "Description" "" "## Steps" "1. Step one" > "$PLANS_PATH/my-plan.md"
+\`\`\`
+
+Windows (PowerShell) - use single quotes to avoid escaping issues:
+\`\`\`powershell
+@('# Plan Title', '', '## Goal', 'Description', '', '## Steps', '1. Step one') | Out-File -FilePath '$PLANS_PATH\\my-plan.md' -Encoding utf8
+\`\`\`
+` : ''}`;
+}
+
+function getMcpNamingGuidance(
+  capabilities: Required<PromptGuidanceCapabilities>,
+): string {
+  if (!capabilities.mcpNamingGuide) return '';
+
+  return `
+## MCP Tool Naming
+
+MCP tools from connected sources follow the naming pattern \`mcp__sources__{slug}__{tool}\`:
+
+- **\`slug\`** is the source's **slug** from the \`<sources>\` block above (e.g., \`linear\`, \`github\`)
+- Do **NOT** use source IDs, provider names, or config.json \`id\` fields
+- Example: Linear source (slug: \`linear\`) → \`mcp__sources__linear__list_issues\`, \`mcp__sources__linear__create_issue\`
+- Example: Craft source (slug: \`craft\`) → \`mcp__sources__craft__search_spaces\`, \`mcp__sources__craft__get_block\`
+- The \`session\` MCP server provides workspace tools: \`mcp__session__SubmitPlan\`, \`mcp__session__source_test\`, etc.
+
+**Tool discovery:** Call \`mcp__sources__{slug}__list_tools\` or try calling a specific tool directly — the error response will list available tools.
+- **NEVER** use \`list_mcp_resources\` — it lists resources, not tools. It will not help you discover available tools.
+- **NEVER** use shell/bash to call MCP tools. MCP tools are first-class functions you call directly, just like \`exec_command\` or \`apply_patch\`.
+`;
+}
+
+function getSourceManagementGuidance(
+  capabilities: Required<PromptGuidanceCapabilities>,
+): string {
+  if (!capabilities.sourceManagementGuide) return '';
+
+  return `
+## Source Management Tools
+
+**After OAuth completes:** MCP tools become available on the next turn. If tools were not available before auth, try calling them directly now — they will work after authentication. Do NOT keep running \`source_test\` to check — just call the tools.
+
+The \`session\` MCP server provides tools for managing external sources:
+
+| Tool | Purpose |
+|------|---------|
+| \`source_test\` | Validate config, test connection, check auth status |
+| \`source_oauth_trigger\` | Start OAuth for MCP sources (Linear, Notion, etc.) |
+| \`source_google_oauth_trigger\` | Google OAuth (Gmail, Calendar, Drive) |
+| \`source_slack_oauth_trigger\` | Slack OAuth |
+| \`source_microsoft_oauth_trigger\` | Microsoft OAuth (Outlook, Teams, OneDrive) |
+| \`source_credential_prompt\` | Prompt user for API key / bearer token |
+
+**Source creation workflow:**
+1. Read \`${DOC_REFS.sources}\` for the full setup guide
+2. Search \`craft-agents-docs\` for service-specific guides
+3. Create \`config.json\` in \`sources/{slug}/\`
+4. Create \`permissions.json\` for Explore mode
+5. Write \`guide.md\` with usage instructions
+6. Run \`source_test\` to validate — **once only, before auth**
+7. Trigger the appropriate auth tool
+
+**STRICT RULES:**
+- Run \`source_test\` at most **ONCE** per source. It validates config structure only. Repeating it gives the same result.
+- When a user asks you to call a specific tool, call **THAT tool and nothing else**. Do not run \`source_test\` or other tools instead.
+- **Do NOT** grep the workspace, search session files, or do web searches to find source config patterns. Read the source's \`config.json\` and \`guide.md\` directly.
+- **If an existing source is already configured**, read its \`config.json\` + \`guide.md\`, then use it. Do not recreate or search for how to set it up.
+
+**If MCP connection fails after OAuth with "Auth required":** The source needs to be re-enabled in the session for the new credentials to take effect. Do NOT keep retrying the same failing call or investigating log files — ask the user to re-enable the source or restart the session.
+`;
+}
+
+function getCraftAssistantPrompt(
+  workspaceRootPath?: string,
+  backendName: string = 'Claude Code',
+  promptCapabilities: Required<PromptGuidanceCapabilities> = resolvePromptGuidanceCapabilities(backendName),
+): string {
   // Default to ${APP_ROOT}/workspaces/{id} if no path provided
   const workspacePath = workspaceRootPath || `${APP_ROOT}/workspaces/{id}`;
 
@@ -552,78 +687,9 @@ Never try to execute a plan without submitting it first - it will fail, especial
 
 **CRITICAL:** You MUST write plan files to the **exact \`plansFolderPath\`** and data files to the **exact \`dataFolderPath\`** from \`<session_state>\`. These folders already exist (created by the system). Writes to any other path (including the parent session folder) will be blocked.
 **Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — those paths will be rejected. Use ONLY \`plansFolderPath\` or \`dataFolderPath\`.
-${backendName === 'Codex' ? `
-### Planning tools (Codex)
-- **update_plan** — Live task tracking within a turn/session (statuses: pending/in_progress/completed). Does not pause execution or request approval.
-- **SubmitPlan** — User-facing implementation proposal (markdown plan file + approval gate). In Explore mode, required before execution and pauses for user confirmation.
-
-Recommended flow:
-1. Start multi-step work with \`update_plan\`.
-2. Keep \`update_plan\` updated as steps progress for turncard/tasklist accuracy.
-3. When ready to implement (especially in Explore mode), write the plan file and call \`SubmitPlan\`.
-4. After acceptance and execution starts, continue using \`update_plan\` for granular progress.
-
-**Writing plan files (Codex):** Create plan files using shell commands. Do NOT use heredocs (\`<<EOF\`) as they are blocked by the sandbox.
-
-Examples (replace \`$PLANS_PATH\` with your actual \`plansFolderPath\` value):
-
-Unix/macOS:
-\`\`\`bash
-printf '%s\\n' "# Plan Title" "" "## Goal" "Description" "" "## Steps" "1. Step one" > "$PLANS_PATH/my-plan.md"
-\`\`\`
-
-Windows (PowerShell) - use single quotes to avoid escaping issues:
-\`\`\`powershell
-@('# Plan Title', '', '## Goal', 'Description', '', '## Steps', '1. Step one') | Out-File -FilePath '$PLANS_PATH\\my-plan.md' -Encoding utf8
-\`\`\`
-` : ''}
-${backendName === 'Codex' ? `
-## MCP Tool Naming
-
-MCP tools from connected sources follow the naming pattern \`mcp__sources__{slug}__{tool}\`:
-
-- **\`slug\`** is the source's **slug** from the \`<sources>\` block above (e.g., \`linear\`, \`github\`)
-- Do **NOT** use source IDs, provider names, or config.json \`id\` fields
-- Example: Linear source (slug: \`linear\`) → \`mcp__sources__linear__list_issues\`, \`mcp__sources__linear__create_issue\`
-- Example: Craft source (slug: \`craft\`) → \`mcp__sources__craft__search_spaces\`, \`mcp__sources__craft__get_block\`
-- The \`session\` MCP server provides workspace tools: \`mcp__session__SubmitPlan\`, \`mcp__session__source_test\`, etc.
-
-**Tool discovery:** Call \`mcp__sources__{slug}__list_tools\` or try calling a specific tool directly — the error response will list available tools.
-- **NEVER** use \`list_mcp_resources\` — it lists resources, not tools. It will not help you discover available tools.
-- **NEVER** use shell/bash to call MCP tools. MCP tools are first-class functions you call directly, just like \`exec_command\` or \`apply_patch\`.
-
-**After OAuth completes:** MCP tools become available on the next turn. If tools were not available before auth, try calling them directly now — they will work after authentication. Do NOT keep running \`source_test\` to check — just call the tools.
-
-## Source Management Tools
-
-The \`session\` MCP server provides tools for managing external sources:
-
-| Tool | Purpose |
-|------|---------|
-| \`source_test\` | Validate config, test connection, check auth status |
-| \`source_oauth_trigger\` | Start OAuth for MCP sources (Linear, Notion, etc.) |
-| \`source_google_oauth_trigger\` | Google OAuth (Gmail, Calendar, Drive) |
-| \`source_slack_oauth_trigger\` | Slack OAuth |
-| \`source_microsoft_oauth_trigger\` | Microsoft OAuth (Outlook, Teams, OneDrive) |
-| \`source_credential_prompt\` | Prompt user for API key / bearer token |
-
-**Source creation workflow:**
-1. Read \`${DOC_REFS.sources}\` for the full setup guide
-2. Search \`craft-agents-docs\` for service-specific guides
-3. Create \`config.json\` in \`sources/{slug}/\`
-4. Create \`permissions.json\` for Explore mode
-5. Write \`guide.md\` with usage instructions
-6. Run \`source_test\` to validate — **once only, before auth**
-7. Trigger the appropriate auth tool
-
-**STRICT RULES:**
-- Run \`source_test\` at most **ONCE** per source. It validates config structure only. Repeating it gives the same result.
-- When a user asks you to call a specific tool, call **THAT tool and nothing else**. Do not run \`source_test\` or other tools instead.
-- **Do NOT** grep the workspace, search session files, or do web searches to find source config patterns. Read the source's \`config.json\` and \`guide.md\` directly.
-- **If an existing source is already configured**, read its \`config.json\` + \`guide.md\`, then use it. Do not recreate or search for how to set it up.
-
-**If MCP connection fails after OAuth with "Auth required":** The source needs to be re-enabled in the session for the new credentials to take effect. Do NOT keep retrying the same failing call or investigating log files — ask the user to re-enable the source or restart the session.
-` : ''}
+${getPlanningGuidance(promptCapabilities)}
+${getMcpNamingGuidance(promptCapabilities)}
+${getSourceManagementGuidance(promptCapabilities)}
 **Full reference on what commands are enablled:** \`${DOC_REFS.permissions}\` (bash command lists, blocked constructs, planning workflow, customization). Read if unsure, or user has questions about permissions.
 
 ## Web Search

@@ -1634,13 +1634,24 @@ export class PiAgent extends BaseAgent {
       }
 
       // Build system prompt
+      const piAuthProvider = getBackendRuntime(this.config).piAuthProvider;
+      const promptCapabilities = piAuthProvider === 'openai-codex' && this._model === 'pi/gpt-5.4'
+        ? {
+            submitPlanGuide: true,
+            mcpNamingGuide: true,
+            sourceManagementGuide: true,
+            livePlanningGuide: false,
+          }
+        : undefined;
+
       const systemPrompt = getSystemPrompt(
         undefined, // pinnedPreferencesPrompt
         this.config.debugMode,
         this.config.workspace.rootPath,
         this.config.session?.workingDirectory,
         this.config.systemPromptPreset,
-        'Craft Agents Backend' // backendName
+        'Craft Agents Backend', // backendName
+        promptCapabilities,
       );
 
       // Build context from sources
