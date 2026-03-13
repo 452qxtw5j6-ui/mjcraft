@@ -6,7 +6,7 @@
  * Run with: bun run print:system-prompt
  */
 
-import { getSystemPrompt, getDateTimeContext, getWorkingDirectoryContext } from './system.ts';
+import { getSystemPrompt, getDateTimeContext, getWorkingDirectoryContext, resolvePromptGuidanceProfile } from './system.ts';
 import { formatSessionState } from '../agent/mode-manager.ts';
 
 // ANSI color codes for terminal output
@@ -90,12 +90,7 @@ const gpt54PiPrompt = getSystemPrompt(
   '/Users/example/projects/my-app',
   'default',
   'Craft Agents Backend',
-  {
-    submitPlanGuide: true,
-    mcpNamingGuide: true,
-    sourceManagementGuide: true,
-    livePlanningGuide: false,
-  }
+  resolvePromptGuidanceProfile({ backendName: 'Craft Agents Backend', providerType: 'pi', piAuthProvider: 'openai-codex', model: 'pi/gpt-5.4' }).capabilities,
 );
 console.log(`${colors.dim}GPT-5.4 Pi profile: ${gpt54PiPrompt.length.toLocaleString()} characters${colors.reset}`);
 

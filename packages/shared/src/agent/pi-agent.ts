@@ -42,6 +42,7 @@ import { EventQueue } from './backend/event-queue.ts';
 
 // System prompt for Craft Agent context
 import { getSystemPrompt } from '../prompts/system.ts';
+import { resolvePromptGuidanceProfile } from '../prompts/system.ts';
 
 // Credential manager for token storage
 import { getCredentialManager } from '../credentials/manager.ts';
@@ -1155,8 +1156,11 @@ export class PiAgent extends BaseAgent {
     }
 
     // Unknown tool
+    const mcpHint = toolName.startsWith('mcp__')
+      ? 'MCP source tools use `mcp__sources__{slug}__{tool}`. Try `mcp__sources__{slug}__list_tools` or confirm the source is enabled for this session.'
+      : 'Check the available tool list and use the exact tool name exposed in this session.';
     return {
-      content: `Unknown proxy tool: ${toolName}`,
+      content: `[ERROR] Unknown proxy tool: ${toolName}. ${mcpHint}`,
       isError: true,
     };
   }
@@ -1635,14 +1639,12 @@ export class PiAgent extends BaseAgent {
 
       // Build system prompt
       const piAuthProvider = getBackendRuntime(this.config).piAuthProvider;
-      const promptCapabilities = piAuthProvider === 'openai-codex' && this._model === 'pi/gpt-5.4'
-        ? {
-            submitPlanGuide: true,
-            mcpNamingGuide: true,
-            sourceManagementGuide: true,
-            livePlanningGuide: false,
-          }
-        : undefined;
+      const promptCapabilities = resolvePromptGuidanceProfile({
+        backendName: 'Craft Agents Backend',
+        providerType: this.config.providerType,
+        piAuthProvider,
+        model: this._model,
+      }).capabilities;
 
       const systemPrompt = getSystemPrompt(
         undefined, // pinnedPreferencesPrompt
