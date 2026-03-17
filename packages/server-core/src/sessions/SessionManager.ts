@@ -73,7 +73,7 @@ import { type Session, type SessionEvent, type FileAttachment, type SendMessageO
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/shared/skills'
-import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
+import { getToolIconsDir, getMiniModel, getSubtaskModel } from '@craft-agent/shared/config'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
@@ -2769,6 +2769,7 @@ export class SessionManager implements ISessionManager {
         coreConfig: {
         workspace: managed.workspace,
         miniModel: connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined,
+        subtaskModel: connection ? (getSubtaskModel(connection) ?? connection.defaultModel) : undefined,
         thinkingLevel: managed.thinkingLevel,
         session: sessionConfig,
         onSdkSessionIdUpdate,
@@ -5859,6 +5860,7 @@ export class SessionManager implements ISessionManager {
         agent = createBackendFromConnection(managed.llmConnection, {
           workspace: managed.workspace,
           miniModel: connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined,
+          subtaskModel: connection ? (getSubtaskModel(connection) ?? connection.defaultModel) : undefined,
           session: {
             id: `title-${managed.id}`,
             workspaceRootPath: managed.workspace.rootPath,

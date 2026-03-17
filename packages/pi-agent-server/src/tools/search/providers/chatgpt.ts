@@ -14,7 +14,7 @@ import { parseResponsesApiResults, type ResponsesApiResponse } from './responses
 
 /**
  * Codex backend request contract (search path):
- * - model: gpt-5.3-codex
+ * - model: gpt-5.4
  * - store: false
  * - stream: true (backend may return JSON or SSE)
  * - instructions + tool_choice + text.verbosity
@@ -24,7 +24,7 @@ import { parseResponsesApiResults, type ResponsesApiResponse } from './responses
  *   - ./chatgpt.test.ts
  *   - ../SEARCH_PAYLOAD_CONTRACT.md
  */
-const DEFAULT_SEARCH_MODEL = 'gpt-5.3-codex';
+const DEFAULT_SEARCH_MODEL = 'gpt-5.4';
 const API_BASE = 'https://chatgpt.com/backend-api/codex';
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth';
 const ERROR_TEXT_LIMIT = 600;

@@ -16,12 +16,14 @@ import type { WsRpcTlsOptions } from '@craft-agent/server-core/transport'
 import { getWorkspaces, loadStoredConfig } from '@craft-agent/shared/config'
 import { SlackBotService } from '../main/slack-bot'
 import { NotionTaskService } from '../main/notion-task-service'
+import { LinearAgentBridgeService } from '../main/linear-agent-bridge'
 import { RemoteBrowserPaneAdapter } from './remote-browser-pane-adapter'
 
 const bundledAssetsRoot = join(import.meta.dir, '..', '..')
 
 let slackBotService: SlackBotService | null = null
 let notionTaskService: NotionTaskService | null = null
+let linearAgentBridgeService: LinearAgentBridgeService | null = null
 
 let tls: WsRpcTlsOptions | undefined
 const tlsCertPath = process.env.CRAFT_RPC_TLS_CERT
@@ -139,8 +141,23 @@ if (integrationWorkspace) {
     }
     notionTaskService = null
   }
+
+  try {
+    linearAgentBridgeService = new LinearAgentBridgeService({
+      workspaceId: integrationWorkspace.id,
+      workspaceRootPath: integrationWorkspace.rootPath,
+      sessionManager: instance.sessionManager,
+    })
+    await linearAgentBridgeService.start()
+  } catch (error) {
+    console.error('Linear agent bridge startup failed; continuing headless startup without Linear bridge:', error instanceof Error ? error.message : String(error))
+    if (linearAgentBridgeService) {
+      await linearAgentBridgeService.stop().catch(() => {})
+    }
+    linearAgentBridgeService = null
+  }
 } else {
-  console.warn('Skipping Slack/Notion services startup: no workspace available')
+  console.warn('Skipping Slack/Notion/Linear services startup: no workspace available')
 }
 
 console.log(`CRAFT_SERVER_URL=${tls ? 'wss' : 'ws'}://${instance.host}:${instance.port}`)
@@ -154,6 +171,10 @@ const shutdown = async () => {
   if (notionTaskService) {
     await notionTaskService.stop().catch(() => {})
     notionTaskService = null
+  }
+  if (linearAgentBridgeService) {
+    await linearAgentBridgeService.stop().catch(() => {})
+    linearAgentBridgeService = null
   }
   await instance.stop()
   process.exit(0)

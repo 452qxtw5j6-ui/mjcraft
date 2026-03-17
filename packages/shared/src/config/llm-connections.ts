@@ -235,6 +235,23 @@ export function getSummarizationModel(connection: Pick<LlmConnection, 'models' |
 }
 
 /**
+ * Get the default subtask model ID for a connection.
+ * Used for higher-quality secondary calls like call_llm and large-response summarization.
+ *
+ * Current policy:
+ * - Pi + openai-codex style model lists: prefer the connection's default model
+ * - Everything else: fall back to the provider-aware small model
+ */
+export function getSubtaskModel(
+  connection: Pick<LlmConnection, 'models' | 'providerType' | 'defaultModel'>
+): string | undefined {
+  if (isPiProvider(connection.providerType) && connection.defaultModel) {
+    return connection.defaultModel;
+  }
+  return findSmallModel(connection);
+}
+
+/**
  * Provider-aware small model resolution.
  * Shared implementation for getMiniModel() and getSummarizationModel().
  *
