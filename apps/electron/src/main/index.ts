@@ -102,6 +102,7 @@ import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath } from '@craft-agent/server-core/services'
 import { NotionTaskService } from './notion-task-service'
 import { SlackBotService } from './slack-bot'
+import { LinearAgentBridgeService } from './linear-agent-bridge'
 import { PlaywrightBrowserHost } from './playwright-browser-host'
 
 // Initialize electron-log for renderer process support
@@ -192,6 +193,7 @@ let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
 let notionTaskService: NotionTaskService | null = null
 let slackBotService: SlackBotService | null = null
+let linearAgentBridgeService: LinearAgentBridgeService | null = null
 let playwrightBrowserHost: PlaywrightBrowserHost | null = null
 
 // Store pending deep link if app not ready yet (cold start)
@@ -730,8 +732,25 @@ app.whenReady().then(async () => {
           }
           notionTaskService = null
         }
+
+        try {
+          linearAgentBridgeService = new LinearAgentBridgeService({
+            workspaceId: integrationWorkspace.id,
+            workspaceRootPath: integrationWorkspace.rootPath,
+            sessionManager,
+          })
+          await linearAgentBridgeService.start()
+        } catch (error) {
+          mainLog.error('Linear agent bridge startup failed; continuing app startup without Linear bridge:', error)
+          if (linearAgentBridgeService) {
+            await linearAgentBridgeService.stop().catch(stopError => {
+              mainLog.warn('Failed to stop Linear agent bridge after startup failure:', stopError)
+            })
+          }
+          linearAgentBridgeService = null
+        }
       } else {
-        mainLog.warn('Skipping Slack/Notion services startup: no workspace available')
+        mainLog.warn('Skipping Slack/Notion/Linear services startup: no workspace available')
       }
     }
 
@@ -887,6 +906,11 @@ app.on('before-quit', async (event) => {
     if (slackBotService) {
       await slackBotService.stop()
       slackBotService = null
+    }
+
+    if (linearAgentBridgeService) {
+      await linearAgentBridgeService.stop()
+      linearAgentBridgeService = null
     }
 
     if (playwrightBrowserHost) {

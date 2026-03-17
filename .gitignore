@@ -51,6 +51,8 @@ pnpm-lock.yaml
 
 # Craft Agent local data (sessions, credentials, config)
 .craft-agent/
+.linear-agent/
+sessions/
 
 # SSH keys and secrets
 *.pem
