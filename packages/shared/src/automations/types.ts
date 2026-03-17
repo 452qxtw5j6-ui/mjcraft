@@ -63,7 +63,84 @@ export interface PromptAction {
   model?: string;
 }
 
-export type AutomationAction = PromptAction;
+/** HTTP method for webhook actions */
+export type WebhookHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/** Body format for webhook actions */
+export type WebhookBodyFormat = 'json' | 'form' | 'raw';
+
+/** Authentication shorthand for webhook actions */
+export type WebhookAuth =
+  | { type: 'basic'; username: string; password: string }
+  | { type: 'bearer'; token: string };
+
+/** A webhook action - sends an HTTP request to an endpoint */
+export interface WebhookAction {
+  type: 'webhook';
+  /** The URL to send the webhook to (http or https) */
+  url: string;
+  /** HTTP method (default: POST) */
+  method?: WebhookHttpMethod;
+  /** HTTP headers as key-value pairs */
+  headers?: Record<string, string>;
+  /** Body format: 'json' sends Content-Type application/json, 'form' URL-encodes, 'raw' sends as-is */
+  bodyFormat?: WebhookBodyFormat;
+  /** Request body — JSON object when bodyFormat is 'json' or 'form', string when 'raw' */
+  body?: unknown;
+  /** Capture response body in result (truncated to 4KB). Default: false */
+  captureResponse?: boolean;
+  /** Authentication shorthand (applied before custom headers) */
+  auth?: WebhookAuth;
+}
+
+export type AutomationAction = PromptAction | WebhookAction;
+
+// ============================================================================
+// Condition Types
+// ============================================================================
+
+/** Time-of-day and day-of-week condition */
+export interface TimeCondition {
+  condition: 'time';
+  /** Start time in 24h HH:MM format */
+  after?: string;
+  /** End time in 24h HH:MM format */
+  before?: string;
+  /** Days of week (3-letter lowercase: mon, tue, wed, thu, fri, sat, sun) */
+  weekday?: string[];
+  /** IANA timezone (falls back to matcher timezone, then system local) */
+  timezone?: string;
+}
+
+/** State/field check condition with HA-style from/to for transitions */
+export interface StateCondition {
+  condition: 'state';
+  /** Field name to check (e.g. 'permissionMode', 'sessionStatus', 'labels', 'isFlagged') */
+  field: string;
+  /** Exact value match */
+  value?: unknown;
+  /** Transition: previous value (mapped via TRANSITION_FIELDS) */
+  from?: unknown;
+  /** Transition: new value (mapped via TRANSITION_FIELDS) */
+  to?: unknown;
+  /** Array membership check */
+  contains?: string;
+  /** Negation: matches anything except this value */
+  not_value?: unknown;
+}
+
+/** Logical composition condition (and/or/not) */
+export interface LogicalCondition {
+  condition: 'and' | 'or' | 'not';
+  conditions: AutomationCondition[];
+}
+
+/** Union of all condition types */
+export type AutomationCondition = TimeCondition | StateCondition | LogicalCondition;
+
+// ============================================================================
+// Matcher Definition
+// ============================================================================
 
 export interface AutomationMatcher {
   /** Short 6-character hex ID for stable identification across config changes. */
@@ -82,6 +159,8 @@ export interface AutomationMatcher {
   labels?: string[];
   /** Whether this automation matcher is enabled. Defaults to true. Set to false to disable without removing. */
   enabled?: boolean;
+  /** Optional conditions that must all pass (AND) after matcher matches, before actions fire */
+  conditions?: AutomationCondition[];
   actions: AutomationAction[];
 }
 
@@ -113,7 +192,26 @@ export interface PromptActionResult {
   references: PromptReferences;
 }
 
-export type ActionExecutionResult = PromptActionResult;
+/** Result of a webhook action */
+export interface WebhookActionResult {
+  type: 'webhook';
+  /** The URL that was called */
+  url: string;
+  /** HTTP status code from the response */
+  statusCode: number;
+  /** Whether the request was successful (2xx status) */
+  success: boolean;
+  /** Error message if the request failed */
+  error?: string;
+  /** Number of attempts made (1 = no retry, 2+ = retried) */
+  attempts?: number;
+  /** Total duration including retries, in ms */
+  durationMs?: number;
+  /** Captured response body (only when captureResponse is true, truncated to 4KB) */
+  responseBody?: string;
+}
+
+export type ActionExecutionResult = PromptActionResult | WebhookActionResult;
 
 /** A pending prompt with its metadata */
 export interface PendingPrompt {

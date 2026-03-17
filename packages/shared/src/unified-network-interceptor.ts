@@ -35,6 +35,58 @@ import { resolveRequestContext } from './interceptor-request-utils.ts';
 type HeadersInitType = Headers | Record<string, string> | string[][];
 
 // ============================================================================
+// PROXY CONFIGURATION (from env vars injected by parent process)
+// ============================================================================
+
+const PROXY_URL = process.env.HTTPS_PROXY || process.env.https_proxy
+  || process.env.HTTP_PROXY || process.env.http_proxy || '';
+const NO_PROXY = process.env.NO_PROXY || process.env.no_proxy || '';
+
+/** Strip credentials from a proxy URL, returning only scheme://host:port */
+function redactProxyUrl(proxyUrl: string): string {
+  try {
+    const parsed = new URL(proxyUrl);
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return '(invalid proxy URL)';
+  }
+}
+
+/** Parse NO_PROXY into hostname patterns for bypass matching. */
+const noProxyPatterns: string[] = NO_PROXY
+  ? NO_PROXY.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  : [];
+
+/** Check if a URL should bypass the proxy based on NO_PROXY rules. */
+function shouldBypassProxy(url: string): boolean {
+  if (noProxyPatterns.length === 0) return false;
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return noProxyPatterns.some(pattern => {
+      if (pattern === '*') return true;
+      // .example.com matches any subdomain of example.com
+      if (pattern.startsWith('.')) return hostname.endsWith(pattern);
+      // exact match or subdomain match
+      return hostname === pattern || hostname.endsWith('.' + pattern);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Get the proxy URL for a given request URL, or undefined to go direct. */
+function getProxyForUrl(url: string): string | undefined {
+  if (!PROXY_URL || shouldBypassProxy(url)) return undefined;
+  return PROXY_URL;
+}
+
+if (PROXY_URL) {
+  debugLog(`[proxy] Configured: ${redactProxyUrl(PROXY_URL)}${NO_PROXY ? `, NO_PROXY: ${NO_PROXY}` : ''}`);
+}
+
+// ============================================================================
 // API ADAPTER INTERFACE
 // ============================================================================
 
@@ -118,6 +170,20 @@ function captureMetadataFromInput(toolId: string, toolName: string, parsed: Reco
     return true;
   }
   return false;
+}
+
+/**
+ * Best-effort regex removal of metadata fields from raw JSON string.
+ * Used as fallback when JSON.parse fails — ensures _intent/_displayName
+ * never leak to the SDK even with malformed JSON.
+ *
+ * Exported for focused unit tests.
+ */
+export function stripMetadataFieldsFromRawJson(json: string): string {
+  return json
+    .replace(/"_intent"\s*:\s*"(?:[^"\\]|\\.)*"\s*,?\s*/g, '')
+    .replace(/"_displayName"\s*:\s*"(?:[^"\\]|\\.)*"\s*,?\s*/g, '')
+    .replace(/,\s*}/g, '}');
 }
 
 // ============================================================================
@@ -307,13 +373,14 @@ export function createAnthropicSseStrippingStream(): TransformStream<Uint8Array,
       };
       emitSseEvent('content_block_delta', JSON.stringify(deltaEvent), controller);
     } catch {
-      debugLog(`[SSE Strip] Failed to parse buffered JSON for ${block.name} (${block.id}), passing through`);
+      debugLog(`[SSE Strip] Failed to parse buffered JSON for ${block.name} (${block.id}), stripping via regex`);
+      const stripped = stripMetadataFieldsFromRawJson(block.bufferedJson);
       const deltaEvent = {
         type: 'content_block_delta',
         index,
         delta: {
           type: 'input_json_delta',
-          partial_json: block.bufferedJson,
+          partial_json: stripped,
         },
       };
       emitSseEvent('content_block_delta', JSON.stringify(deltaEvent), controller);
@@ -1130,6 +1197,7 @@ async function captureApiError(response: Response, url: string): Promise<void> {
   try {
     const errorText = await errorClone.text();
     let errorMessage = response.statusText;
+    let isHtmlResponse = false;
 
     try {
       const errorJson = JSON.parse(errorText);
@@ -1139,7 +1207,21 @@ async function captureApiError(response: Response, url: string): Promise<void> {
         errorMessage = errorJson.message;
       }
     } catch {
-      if (errorText) errorMessage = errorText;
+      if (errorText) {
+        isHtmlResponse = errorText.trimStart().startsWith('<');
+        errorMessage = errorText;
+      }
+    }
+
+    // An HTML response to a JSON API call means something intercepted the request —
+    // a proxy, CDN, captive portal, or firewall. Never show raw HTML to the user.
+    if (isHtmlResponse) {
+      if (PROXY_URL) {
+        errorMessage = `Received an unexpected HTML error page (HTTP ${response.status}) instead of a JSON API response. This may be caused by your network proxy (${redactProxyUrl(PROXY_URL)}). Check your proxy settings in Settings > Network.`;
+      } else {
+        errorMessage = `Received an unexpected HTML error page (HTTP ${response.status}) instead of a JSON API response. This could be caused by a firewall, captive portal, or network issue.`;
+      }
+      debugLog(`[Detected HTML error response — replaced raw HTML with clean message]`);
     }
 
     setStoredError({
@@ -1303,9 +1385,11 @@ async function interceptedFetch(
           parsed = result.body;
         }
 
+        const proxy = getProxyForUrl(url);
         const finalInit = {
           ...modifiedInit,
           body: JSON.stringify(parsed),
+          ...(proxy ? { proxy } : {}),
         };
 
         debugLog(`[${adapter.name}] Intercepted request to ${url}`);
@@ -1325,6 +1409,17 @@ async function interceptedFetch(
           return logResponse(processedResponse, url, startTime, adapter);
         }
 
+        // Non-SSE response — strip metadata from JSON body if present
+        if (contentType.includes('application/json') && response.body) {
+          const text = await response.text();
+          const stripped = stripMetadataFieldsFromRawJson(text);
+          return logResponse(new Response(stripped, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          }), url, startTime, adapter);
+        }
+
         return logResponse(response, url, startTime, adapter);
       }
     } catch (e) {
@@ -1332,7 +1427,9 @@ async function interceptedFetch(
     }
   }
 
-  const response = await originalFetch(input, init);
+  const proxy = getProxyForUrl(url);
+  const proxyInit = proxy ? { ...init, proxy } : init;
+  const response = await originalFetch(input, proxyInit);
   return logResponse(response, url, startTime);
 }
 

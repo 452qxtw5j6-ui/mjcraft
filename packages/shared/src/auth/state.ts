@@ -318,7 +318,7 @@ export async function getAuthState(): Promise<AuthState> {
 /**
  * Derive what setup steps are needed based on current auth state
  */
-export function getSetupNeeds(state: AuthState): SetupNeeds {
+export function getSetupNeeds(state: AuthState, setupDeferred?: boolean): SetupNeeds {
   // Need billing config if no billing type is set
   const needsBillingConfig = state.billing.type === null;
 
@@ -328,7 +328,8 @@ export function getSetupNeeds(state: AuthState): SetupNeeds {
   return {
     needsBillingConfig,
     needsCredentials,
-    isFullyConfigured: !needsBillingConfig && !needsCredentials,
+    // Fully configured if setup is complete OR user chose "Setup later"
+    isFullyConfigured: (!needsBillingConfig && !needsCredentials) || !!setupDeferred,
     needsMigration: state.billing.migrationRequired,
   };
 }

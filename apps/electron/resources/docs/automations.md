@@ -10,7 +10,8 @@ This guide explains how to configure automations in Craft Agent to automate work
 
 Automations allow you to trigger actions automatically when specific events occur in Craft Agent. You can:
 - Send prompts to create agent sessions based on events
-- Execute prompts on a schedule using cron expressions
+- Send webhook HTTP requests to external services (Slack, Discord, custom APIs, etc.)
+- Execute actions on a schedule using cron expressions
 - Automate workflows based on permission mode changes, flags, or session status changes
 
 ## automations.json Location
@@ -128,6 +129,151 @@ Send a prompt to Craft Agent (creates a new session for scheduled prompts).
 
 The `llmConnection` value is the slug of an LLM connection configured in AI Settings. The `model` value is a model ID supported by the provider. If either is invalid or not found, it gracefully falls back to the workspace default. Both can be used independently or together.
 
+### Webhook Actions
+
+Send an HTTP request to an external endpoint when an event fires. Useful for notifications (Slack, Discord), logging to external services, or triggering external workflows.
+
+```json
+{
+  "type": "webhook",
+  "url": "https://hooks.slack.com/services/${CRAFT_WH_SLACK_PATH}",
+  "method": "POST",
+  "body": {
+    "text": "Session ${CRAFT_SESSION_NAME} status changed to ${CRAFT_NEW_STATE}"
+  }
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `type` | `"webhook"` | Required | Action type |
+| `url` | string | Required | Target URL (http or https) |
+| `method` | `"GET"` \| `"POST"` \| `"PUT"` \| `"PATCH"` \| `"DELETE"` | `"POST"` | HTTP method |
+| `headers` | `Record<string, string>` | `{}` | HTTP headers as key-value pairs |
+| `bodyFormat` | `"json"` \| `"form"` \| `"raw"` | `"json"` | Body serialization format |
+| `body` | object or string | - | Request body (omitted for GET requests) |
+| `auth` | object | - | Authentication shorthand (see below) |
+| `captureResponse` | boolean | `false` | Capture response body in result (truncated to 4KB) |
+
+> **URL validation:** Literal URLs are validated at config load time. Templated URLs (containing `$VAR`) are validated at runtime after variable expansion. Both must resolve to `http://` or `https://` — other protocols are rejected.
+
+**Body format:**
+- `json` (default) — Body is serialized as JSON. `Content-Type: application/json` is set automatically unless you override it in `headers`.
+- `form` — Body object keys are URL-encoded as `application/x-www-form-urlencoded`. Useful for OAuth token endpoints, Stripe, and legacy APIs. Each value supports `$VAR` expansion.
+- `raw` — Body is sent as a plain string. Set `Content-Type` in `headers` yourself.
+
+**Authentication:**
+
+Instead of manually constructing `Authorization` headers, you can use the `auth` shorthand:
+
+**Bearer token:**
+```json
+{
+  "type": "webhook",
+  "url": "https://api.example.com/events",
+  "auth": {
+    "type": "bearer",
+    "token": "${CRAFT_WH_API_TOKEN}"
+  },
+  "body": { "event": "$CRAFT_EVENT" }
+}
+```
+
+**Basic auth (username/password):**
+```json
+{
+  "type": "webhook",
+  "url": "https://legacy.example.com/webhook",
+  "auth": {
+    "type": "basic",
+    "username": "${CRAFT_WH_USER}",
+    "password": "${CRAFT_WH_PASS}"
+  }
+}
+```
+
+The `auth` field is applied before custom `headers`, so you can override the generated `Authorization` header if needed. All auth field values support `$VAR` expansion.
+
+**Response capture:** By default, webhook response bodies are discarded after reading (to release connections). Set `captureResponse: true` to capture the response body (truncated to 4KB). The captured body is included in the execution result and recorded in automation history (truncated to 500 chars).
+
+```json
+{
+  "type": "webhook",
+  "url": "https://api.example.com/status",
+  "method": "GET",
+  "captureResponse": true
+}
+```
+
+> **Note:** Response capture adds memory overhead proportional to the response size. Only enable it for endpoints where you need to inspect the response.
+
+**Variable expansion:** The `url`, `headers` values, `body`, and `auth` fields all support `$VAR` and `${VAR}` syntax for environment variable expansion. See [Environment Variables](#environment-variables) below.
+
+**Security:** Webhook actions only have access to `CRAFT_*` system variables and `CRAFT_WH_*` user-defined secrets. They do **not** have access to your full system environment (e.g., `$HOME`, `$PATH`, or other process variables).
+
+## Environment Variables
+
+Both prompt and webhook actions support variable expansion using `$VAR` or `${VAR}` syntax.
+
+### System Variables (CRAFT_*)
+
+These are automatically set by the automation system based on the triggering event:
+
+| Variable | Description | Available For |
+|----------|-------------|---------------|
+| `$CRAFT_EVENT` | Event name (e.g., `LabelAdd`) | All events |
+| `$CRAFT_EVENT_DATA` | Full event payload as JSON | All events |
+| `$CRAFT_SESSION_ID` | Session ID | Events with session context |
+| `$CRAFT_SESSION_NAME` | Session name | Events with session context |
+| `$CRAFT_WORKSPACE_ID` | Workspace ID | All events |
+
+**Per-event variables:**
+
+| Event | Variable | Description |
+|-------|----------|-------------|
+| `LabelAdd` / `LabelRemove` | `$CRAFT_LABEL` | The label that was added/removed |
+| `PermissionModeChange` | `$CRAFT_OLD_MODE`, `$CRAFT_NEW_MODE` | Previous and new permission mode |
+| `FlagChange` | `$CRAFT_IS_FLAGGED` | `true` or `false` |
+| `SessionStatusChange` | `$CRAFT_OLD_STATE`, `$CRAFT_NEW_STATE` | Previous and new status |
+| `SchedulerTick` | `$CRAFT_LOCAL_TIME`, `$CRAFT_LOCAL_DATE` | Current time (`14:30`) and date (`2026-03-09`) |
+
+### User-Defined Webhook Secrets (CRAFT_WH_*)
+
+For webhook actions, you can define your own secrets by setting environment variables with the `CRAFT_WH_` prefix in your shell profile (e.g., `~/.zshrc`, `~/.bashrc`):
+
+```bash
+# In your shell profile
+export CRAFT_WH_SLACK_URL="https://hooks.slack.com/services/T.../B.../xxx"
+export CRAFT_WH_DISCORD_URL="https://discord.com/api/webhooks/123/abc"
+export CRAFT_WH_API_TOKEN="your-secret-token"
+```
+
+Then reference them in `automations.json`:
+
+```json
+{
+  "type": "webhook",
+  "url": "${CRAFT_WH_SLACK_URL}",
+  "method": "POST",
+  "body": { "text": "Hello from Craft Agent!" }
+}
+```
+
+```json
+{
+  "type": "webhook",
+  "url": "https://api.example.com/events",
+  "headers": { "Authorization": "Bearer ${CRAFT_WH_API_TOKEN}" },
+  "body": { "event": "${CRAFT_EVENT}", "session": "${CRAFT_SESSION_NAME}" }
+}
+```
+
+This keeps secrets out of `automations.json` (which may be shared or committed to version control).
+
+> **Note:** Only variables prefixed with `CRAFT_WH_` are injected into webhook actions. Other environment variables (like `$HOME` or `$DATABASE_URL`) are not accessible to webhooks.
+
+> **Note:** Environment variables are not expanded during test runs (the "Test" button in the UI). Tests send the raw URL/body as configured.
+
 ## Matcher Configuration
 
 ### Display Name
@@ -191,6 +337,114 @@ For `SchedulerTick` events, use cron expressions instead of regex:
 
 **Timezone:** Use IANA timezone names (e.g., `Europe/Budapest`, `America/New_York`). Defaults to system timezone if not specified.
 
+## Conditions
+
+Conditions are optional filters that run **after** the matcher/cron matches but **before** actions fire. All conditions in the array must pass (implicit AND). If the array is empty or omitted, actions fire unconditionally.
+
+```json
+{
+  "cron": "0 9 * * *",
+  "timezone": "Europe/Budapest",
+  "conditions": [
+    {
+      "condition": "time",
+      "weekday": ["mon", "tue", "wed", "thu", "fri"]
+    }
+  ],
+  "actions": [
+    { "type": "prompt", "prompt": "Good morning! Here's your daily briefing." }
+  ]
+}
+```
+
+### Time Conditions
+
+Check time-of-day and day-of-week in a given timezone.
+
+```json
+{
+  "condition": "time",
+  "after": "09:00",
+  "before": "17:00",
+  "weekday": ["mon", "tue", "wed", "thu", "fri"],
+  "timezone": "Europe/Budapest"
+}
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `after` | `"HH:MM"` | Start of time window (inclusive) |
+| `before` | `"HH:MM"` | End of time window (exclusive) |
+| `weekday` | `string[]` | Allowed days: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
+| `timezone` | string | IANA timezone. Falls back to matcher timezone, then system local |
+
+**Overnight ranges:** If `after` is later than `before` (e.g., `"after": "22:00", "before": "06:00"`), the range wraps across midnight.
+
+### State Conditions
+
+Check fields from the event payload. Useful for filtering on specific transitions or values.
+
+```json
+{
+  "condition": "state",
+  "field": "permissionMode",
+  "from": "safe",
+  "to": "allow-all"
+}
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `field` | string | Payload field name (e.g., `permissionMode`, `sessionStatus`, `labels`, `isFlagged`) |
+| `value` | any | Exact match |
+| `from` | any | Previous value (for transition events) |
+| `to` | any | New value (for transition events) |
+| `contains` | string | Array membership check (e.g., check if a label is present) |
+| `not_value` | any | Matches anything except this value |
+
+**Transition fields:** For `permissionMode` and `sessionStatus`, `from`/`to` automatically resolve to the correct payload keys (`oldMode`/`newMode`, `oldState`/`newState`).
+
+### Logical Composition
+
+Combine conditions with `and`, `or`, and `not`:
+
+```json
+{
+  "condition": "and",
+  "conditions": [
+    { "condition": "time", "weekday": ["mon", "tue", "wed", "thu", "fri"] },
+    { "condition": "time", "after": "09:00", "before": "17:00" }
+  ]
+}
+```
+
+```json
+{
+  "condition": "or",
+  "conditions": [
+    { "condition": "state", "field": "permissionMode", "value": "allow-all" },
+    { "condition": "state", "field": "isFlagged", "value": true }
+  ]
+}
+```
+
+```json
+{
+  "condition": "not",
+  "conditions": [
+    { "condition": "time", "weekday": ["sat", "sun"] }
+  ]
+}
+```
+
+| Type | Behaviour |
+|------|-----------|
+| `and` | All sub-conditions must pass |
+| `or` | At least one sub-condition must pass |
+| `not` | None of the sub-conditions may pass |
+
+**Nesting depth:** Conditions can be nested up to 8 levels deep. A simplification warning is emitted at depth 4. Unknown condition types fail closed (evaluate to false).
+
 ## Permission Mode
 
 The `permissionMode` field controls the permission level of sessions created by prompt actions.
@@ -242,6 +496,68 @@ This creates a session with the "Scheduled" and "morning-briefing" labels applie
         "labels": ["Scheduled", "weather"],
         "actions": [
           { "type": "prompt", "prompt": "Run the @weather skill and give me today's forecast" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Weekday-Only AI News (with Conditions)
+
+Use a `time` condition to restrict a daily schedule to weekdays only:
+
+```json
+{
+  "version": 2,
+  "automations": {
+    "SchedulerTick": [
+      {
+        "name": "Morning AI news",
+        "cron": "0 9 * * *",
+        "timezone": "Europe/Budapest",
+        "conditions": [
+          {
+            "condition": "time",
+            "weekday": ["mon", "tue", "wed", "thu", "fri"],
+            "timezone": "Europe/Budapest"
+          }
+        ],
+        "labels": ["Scheduled", "ai-news"],
+        "actions": [
+          { "type": "prompt", "prompt": "Run the @ai-news skill and summarize today's AI developments" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Permission Mode Gate (with Conditions)
+
+Only notify when permission mode changes specifically from `safe` to `allow-all`:
+
+```json
+{
+  "version": 2,
+  "automations": {
+    "PermissionModeChange": [
+      {
+        "conditions": [
+          {
+            "condition": "state",
+            "field": "permissionMode",
+            "from": "safe",
+            "to": "allow-all"
+          }
+        ],
+        "actions": [
+          {
+            "type": "webhook",
+            "url": "${CRAFT_WH_SLACK_URL}",
+            "method": "POST",
+            "body": { "text": ":warning: Permission escalated from safe to allow-all in *${CRAFT_SESSION_NAME}*" }
+          }
         ]
       }
     ]
@@ -309,6 +625,125 @@ This creates a session with the "Scheduled" and "morning-briefing" labels applie
 }
 ```
 
+### Slack Notification on Status Change
+
+Sends a Slack message when a session is marked as done. Requires `CRAFT_WH_SLACK_URL` in your shell profile.
+
+```json
+{
+  "version": 2,
+  "automations": {
+    "SessionStatusChange": [
+      {
+        "name": "Notify Slack on Done",
+        "matcher": "^done$",
+        "actions": [
+          {
+            "type": "webhook",
+            "url": "${CRAFT_WH_SLACK_URL}",
+            "method": "POST",
+            "body": {
+              "text": ":white_check_mark: Session *${CRAFT_SESSION_NAME}* marked as done"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Mixed Actions (Prompt + Webhook)
+
+A single automation can have both prompt and webhook actions. They execute in order.
+
+```json
+{
+  "version": 2,
+  "automations": {
+    "LabelAdd": [
+      {
+        "name": "Urgent: Notify and Triage",
+        "matcher": "^urgent$",
+        "actions": [
+          {
+            "type": "webhook",
+            "url": "${CRAFT_WH_SLACK_URL}",
+            "method": "POST",
+            "body": { "text": ":rotating_light: Urgent label added to *${CRAFT_SESSION_NAME}*" }
+          },
+          {
+            "type": "prompt",
+            "prompt": "An urgent label was added. Triage the session and summarise what needs immediate attention."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Form-Encoded Request (OAuth / Stripe)
+
+```json
+{
+  "version": 2,
+  "automations": {
+    "SchedulerTick": [
+      {
+        "name": "Refresh API Token",
+        "cron": "0 */6 * * *",
+        "actions": [
+          {
+            "type": "webhook",
+            "url": "https://auth.example.com/oauth/token",
+            "method": "POST",
+            "bodyFormat": "form",
+            "body": {
+              "grant_type": "client_credentials",
+              "client_id": "${CRAFT_WH_CLIENT_ID}",
+              "client_secret": "${CRAFT_WH_CLIENT_SECRET}"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Webhook with Custom Headers
+
+```json
+{
+  "version": 2,
+  "automations": {
+    "SessionStatusChange": [
+      {
+        "name": "Log to External API",
+        "actions": [
+          {
+            "type": "webhook",
+            "url": "https://api.example.com/craft-events",
+            "method": "POST",
+            "headers": {
+              "Authorization": "Bearer ${CRAFT_WH_API_TOKEN}",
+              "X-Source": "craft-agent"
+            },
+            "body": {
+              "event": "${CRAFT_EVENT}",
+              "session_id": "${CRAFT_SESSION_ID}",
+              "old_status": "${CRAFT_OLD_STATE}",
+              "new_status": "${CRAFT_NEW_STATE}"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ## Validation
 
 Automations are validated when:
@@ -342,6 +777,30 @@ Or use the `config_validate` tool directly with `target: "automations"`.
 cat automations.json | jq .
 ```
 
+## Retry Behavior
+
+Webhook actions have two levels of automatic retry:
+
+### Immediate retry (transient failures)
+
+When a webhook fails with a server error (5xx), timeout, or connection error, it is automatically retried up to **2 times** with exponential backoff (1s → 2s → 4s). Client errors (4xx) are not retried — they indicate a configuration problem.
+
+### Deferred retry (extended outages)
+
+If all immediate retries fail, the webhook is added to a **persistent retry queue**. The queue retries at increasing intervals:
+
+| Attempt | Delay | Cumulative |
+|---------|-------|------------|
+| 1st deferred | 5 minutes | 5 min |
+| 2nd deferred | 30 minutes | 35 min |
+| 3rd deferred | 1 hour | ~1.5 hours |
+
+After the final deferred attempt fails, the webhook is marked as permanently failed in the history. Deferred retries survive app restarts.
+
+> **Note:** Only transient failures (5xx, timeouts, connection errors) are retried. Client errors (4xx) indicate a configuration problem and should be fixed in `automations.json`.
+
+> **Retry and rate limiting:** Retried webhook requests count toward the per-endpoint rate limit (30/min per origin). If a retry would exceed the limit, it is deferred to the next retry window.
+
 ## Rate Limits
 
 To protect against runaway automations (e.g., an automation that indirectly triggers itself in a loop), the event bus enforces per-event-type rate limits:
@@ -369,9 +828,30 @@ When a limit is hit, further events of that type are **silently dropped** for th
 1. Check that the prompt is not empty
 2. Verify @mentions reference valid sources/skills
 
+### Webhook not working
+
+1. **Check URL** — Must be a valid `http://` or `https://` URL. Other protocols (ftp, ws, etc.) are rejected at runtime with a clear error.
+2. **Check env vars** — Ensure `CRAFT_WH_*` variables are set in your shell profile and Craft Agent was restarted after adding them. URLs using `$VAR` templates are validated after variable expansion — if the variable is empty or unset, the URL will be invalid.
+3. **Use the Test button** — Tests connectivity to the URL (note: env vars are not expanded during test)
+4. **Check method** — Some endpoints require specific HTTP methods (POST, PUT, etc.)
+5. **Check response** — The automation history shows HTTP status codes for webhook executions
+
+### Retrying failed webhooks
+
+When a webhook execution fails (shown with a red indicator in the timeline), you can retry it:
+
+1. Open the automation's detail page
+2. In the "Recent Activity" timeline, failed webhook entries show a **Retry** button
+3. Click "Retry" to re-execute the webhook actions immediately
+4. The retry result is recorded as a new history entry
+
+> **Note:** Retries execute the webhook actions as currently configured. If you've changed the URL or headers since the original failure, the retry uses the updated configuration. Environment variables are not expanded during replay (same as the Test button).
+
 ## Best Practices
 
 1. **Start simple** - Test with a basic prompt before building complex workflows
 2. **Use labels** - Tag scheduled sessions for easy filtering
 3. **Be specific** - Use matchers to avoid triggering on every event
 4. **Test cron** - Use [crontab.guru](https://crontab.guru/) to verify expressions
+5. **Keep secrets out of config** - Use `CRAFT_WH_*` env vars for webhook URLs and tokens instead of hardcoding them in automations.json
+6. **Combine actions** - Use both webhook and prompt actions in a single automation for notification + AI response workflows

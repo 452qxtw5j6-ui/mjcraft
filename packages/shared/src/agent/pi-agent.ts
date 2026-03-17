@@ -17,6 +17,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
 import type { AgentEvent } from '@craft-agent/core/types';
 import type { FileAttachment } from '../utils/files.ts';
+import { getProxyEnvVars } from '../config/proxy-env.ts';
 
 import type {
   BackendConfig,
@@ -320,6 +321,7 @@ export class PiAgent extends BaseAgent {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
+        ...getProxyEnvVars(),
         ...this.config.envOverrides,
         // Pass session dir for cross-process toolMetadataStore
         ...(sessionDir ? { CRAFT_SESSION_DIR: sessionDir } : {}),
@@ -748,8 +750,11 @@ export class PiAgent extends BaseAgent {
         break;
 
       case 'error': {
-        this.debug(`Subprocess error: ${msg.message}`);
-        const errorMsg = String(msg.message || '').toLowerCase();
+        const errorCode = typeof msg.code === 'string' ? msg.code : undefined;
+        const rawMessage = String(msg.message || 'Unknown subprocess error');
+
+        this.debug(`Subprocess error${errorCode ? ` (${errorCode})` : ''}: ${rawMessage}`);
+        const errorMsg = rawMessage.toLowerCase();
 
         // Detect auth errors and attempt token refresh for OAuth connections
         if (this.config.authType === 'oauth' && (
@@ -766,29 +771,45 @@ export class PiAgent extends BaseAgent {
           });
         }
 
-        // Reject any pending mini completions so errors propagate immediately
+        // Reject any pending mini completions so errors propagate immediately.
+        // mini_completion_error is an internal utility-path failure (title/summarization)
+        // and should not surface as a user-visible chat error.
         for (const [id, pending] of this.pendingMiniCompletions) {
-          pending.reject(new Error(String(msg.message)));
+          pending.reject(new Error(rawMessage));
           this.pendingMiniCompletions.delete(id);
         }
+
+        if (errorCode === 'mini_completion_error') {
+          this.debug('Ignoring mini completion subprocess error in chat stream');
+          break;
+        }
+
         // Reject pending ensure_session_ready requests (used by branch preflight)
         for (const [id, pending] of this.pendingEnsureSessionReady) {
-          pending.reject(new Error(String(msg.message)));
+          pending.reject(new Error(rawMessage));
           this.pendingEnsureSessionReady.delete(id);
         }
+
         // Reject pending compact/toggle requests
         for (const [id, pending] of this.pendingCompactions) {
-          pending.reject(new Error(String(msg.message)));
+          pending.reject(new Error(rawMessage));
           this.pendingCompactions.delete(id);
         }
         for (const [id, pending] of this.pendingAutoCompactionToggles) {
-          pending.reject(new Error(String(msg.message)));
+          pending.reject(new Error(rawMessage));
           this.pendingAutoCompactionToggles.delete(id);
         }
-        this.eventQueue.enqueue({
-          type: 'error',
-          message: `Pi subprocess error: ${msg.message}`,
-        });
+
+        const parsed = parseError(new Error(rawMessage));
+        if (parsed.code !== 'unknown_error') {
+          this.eventQueue.enqueue({ type: 'typed_error', error: parsed });
+        } else {
+          this.eventQueue.enqueue({
+            type: 'error',
+            message: `Pi subprocess error: ${rawMessage}`,
+          });
+        }
+
         // Note: The subprocess should follow this with a synthetic agent_end event
         // which will call eventQueue.complete(). If it doesn't, handleSubprocessExit()
         // will complete the queue when the process exits.

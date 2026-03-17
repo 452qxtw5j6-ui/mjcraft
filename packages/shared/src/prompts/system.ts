@@ -540,9 +540,12 @@ MCP tools from connected sources follow the naming pattern \`mcp__sources__{slug
 - **\`slug\`** is the source's **slug** from the \`<sources>\` block above (e.g., \`linear\`, \`github\`)
 - Do **NOT** use source IDs, provider names, or config.json \`id\` fields
 - Example: Linear source (slug: \`linear\`) → \`mcp__sources__linear__list_issues\`, \`mcp__sources__linear__create_issue\`
-- Discover tools with \`mcp__sources__{slug}__list_tools\`
-- The \`session\` MCP server provides workspace tools such as \`mcp__session__SubmitPlan\`
-- Do **NOT** use \`list_mcp_resources\` or shell/bash to discover or call MCP tools
+- Example: Craft source (slug: \`craft\`) → \`mcp__sources__craft__search_spaces\`, \`mcp__sources__craft__get_block\`
+- The \`session\` MCP server provides workspace tools such as \`mcp__session__SubmitPlan\`, \`mcp__session__source_test\`
+
+**Tool discovery:** call \`mcp__sources__{slug}__list_tools\` or try the tool directly and inspect the error response.
+- Never use \`list_mcp_resources\` for MCP tool discovery; it lists resources, not tools.
+- Never use shell/bash to discover or call MCP tools; call them as first-class tools.
 `;
 }
 
@@ -554,7 +557,7 @@ function getSourceManagementGuidance(
   return `
 ## Source Management Tools
 
-**After OAuth completes:** use the source tool on the next turn. Do **NOT** keep rerunning \`source_test\`.
+**After OAuth completes:** MCP tools become available on the next turn. Call the source tool directly; do **NOT** keep rerunning \`source_test\`.
 
 The \`session\` MCP server provides tools for managing external sources:
 
@@ -562,21 +565,25 @@ The \`session\` MCP server provides tools for managing external sources:
 |------|---------|
 | \`source_test\` | Validate config, test connection, check auth status |
 | \`source_oauth_trigger\` | Start OAuth for MCP sources (Linear, Notion, etc.) |
-| \`source_google_oauth_trigger\` | Google OAuth (Gmail, Calendar, Drive) |
+| \`source_google_oauth_trigger\` | Google OAuth (Gmail, Calendar, Drive, Docs, Sheets, YouTube, Search Console) |
 | \`source_slack_oauth_trigger\` | Slack OAuth |
 | \`source_microsoft_oauth_trigger\` | Microsoft OAuth (Outlook, Teams, OneDrive) |
 | \`source_credential_prompt\` | Prompt user for API key / bearer token |
 
 **Source creation workflow:**
 1. Read \`${DOC_REFS.sources}\` for the full setup guide
-2. Create \`config.json\`, \`permissions.json\`, and \`guide.md\` in \`sources/{slug}/\`
-3. Run \`source_test\` **once** before auth
-4. Trigger the appropriate auth tool
+2. Search \`craft-agents-docs\` for service-specific guides
+3. Create \`config.json\` in \`sources/{slug}/\`
+4. Create \`permissions.json\` for Explore mode
+5. Write \`guide.md\` with usage instructions
+6. Run \`source_test\` **once** before auth
+7. Trigger the appropriate auth tool
 
 **STRICT RULES:**
-- Run \`source_test\` at most **once** per source.
-- When a user asks for a specific tool, call that tool directly.
-- Read the source's \`config.json\` and \`guide.md\` directly instead of searching elsewhere.
+- Run \`source_test\` at most **once** per source. It validates config structure only.
+- When a user asks for a specific tool, call that tool directly and do not run something else first.
+- Read the source's \`config.json\` and \`guide.md\` directly instead of grepping the workspace or searching logs.
+- If an existing source is already configured, use it rather than recreating it.
 - If MCP still says "Auth required" after OAuth, ask the user to re-enable the source or restart the session.
 `;
 }

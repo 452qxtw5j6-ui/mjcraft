@@ -21,10 +21,10 @@ import { resolveAutomationsConfigPath, generateShortId } from './resolve-config-
 import { AUTOMATIONS_HISTORY_FILE } from './constants.ts';
 import { createLogger } from '../utils/debug.ts';
 import { WorkspaceEventBus, type EventPayloadMap } from './event-bus.ts';
-import { PromptHandler, EventLogHandler, type AutomationsConfigProvider } from './handlers/index.ts';
-import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
+import { PromptHandler, EventLogHandler, WebhookHandler, type AutomationsConfigProvider } from './handlers/index.ts';
+import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type WebhookActionResult, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
 import { validateAutomationsConfig } from './validation.ts';
-import { testMatcherAgainst, getMatchValueForSdkInput } from './utils.ts';
+import { matcherMatchesSdk } from './utils.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
 
 const log = createLogger('automation-system');
@@ -50,6 +50,8 @@ export interface AutomationSystemOptions {
   enableScheduler?: boolean;
   /** Called when prompts are ready to be executed */
   onPromptsReady?: (prompts: PendingPrompt[]) => void;
+  /** Called when webhook results are available */
+  onWebhookResults?: (results: WebhookActionResult[]) => void;
   /** Called when an error occurs during automation execution */
   onError?: (event: AutomationEvent, error: Error) => void;
   /** Called when events are lost after retries */
@@ -66,6 +68,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
   private readonly options: AutomationSystemOptions;
   private config: AutomationsConfig | null = null;
   private promptHandler: PromptHandler | null = null;
+  private webhookHandler: WebhookHandler | null = null;
   private eventLogHandler: EventLogHandler | null = null;
   private scheduler: SchedulerService | null = null;
   private disposed = false;
@@ -259,6 +262,18 @@ export class AutomationSystem implements AutomationsConfigProvider {
     );
     this.promptHandler.subscribe(this.eventBus);
 
+    // Webhook handler
+    this.webhookHandler = new WebhookHandler(
+      {
+        workspaceId: this.options.workspaceId,
+        workspaceRootPath: this.options.workspaceRootPath,
+        onWebhookResults: this.options.onWebhookResults,
+        onError: this.options.onError,
+      },
+      this
+    );
+    this.webhookHandler.subscribe(this.eventBus);
+
     // Event log handler
     this.eventLogHandler = new EventLogHandler({
       workspaceRootPath: this.options.workspaceRootPath,
@@ -326,8 +341,9 @@ export class AutomationSystem implements AutomationsConfigProvider {
     const emittedEvents: AppEvent[] = [];
     const timestamp = Date.now();
 
-    // Session name for all events
+    // Common fields for all events
     const sessionName = next.sessionName;
+    const labels = next.labels ?? [];
 
     // Permission mode change
     if (prev.permissionMode !== next.permissionMode) {
@@ -336,6 +352,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
         sessionName,
         workspaceId: this.options.workspaceId,
         timestamp,
+        labels,
         oldMode: prev.permissionMode ?? '',
         newMode: next.permissionMode ?? '',
       });
@@ -353,6 +370,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
           sessionName,
           workspaceId: this.options.workspaceId,
           timestamp,
+          labels: [...nextLabels],
           label,
         });
         emittedEvents.push('LabelAdd');
@@ -366,6 +384,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
           sessionName,
           workspaceId: this.options.workspaceId,
           timestamp,
+          labels: [...nextLabels],
           label,
         });
         emittedEvents.push('LabelRemove');
@@ -381,6 +400,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
         sessionName,
         workspaceId: this.options.workspaceId,
         timestamp,
+        labels,
         isFlagged,
       });
       emittedEvents.push('FlagChange');
@@ -393,6 +413,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
         sessionName,
         workspaceId: this.options.workspaceId,
         timestamp,
+        labels,
         oldState: prev.sessionStatus ?? '',
         newState: next.sessionStatus ?? '',
       });
@@ -470,23 +491,28 @@ export class AutomationSystem implements AutomationsConfigProvider {
    * Catches all errors — automations must never break the agent flow.
    *
    * @param signal - Optional AbortSignal for cancelling automation execution on abort
+   * @returns Number of matched matchers (for diagnostics/testing)
    */
-  async executeAgentEvent(event: AgentEvent, input: SdkAutomationInput, signal?: AbortSignal): Promise<void> {
-    if (!this.config) return;
+  async executeAgentEvent(event: AgentEvent, input: SdkAutomationInput, signal?: AbortSignal): Promise<number> {
+    if (!this.config) return 0;
 
     const matchers = this.config.automations[event];
-    if (!matchers?.length) return;
+    if (!matchers?.length) return 0;
 
-    const matchValue = getMatchValueForSdkInput(event, input);
+    let matchedCount = 0;
 
     for (const matcher of matchers) {
-      if (!testMatcherAgainst(matcher, event, matchValue)) continue;
+      if (!matcherMatchesSdk(matcher, event, input)) continue;
+
+      matchedCount++;
 
       // Note: Command execution has been removed. Prompt-based execution for
       // non-Claude backends is not yet implemented. This method currently only
-      // validates matching — actual execution is a no-op.
+      // validates matching (including condition gating) — actual execution is a no-op.
       log.debug(`[AutomationSystem] Matched ${event} automation (prompt-based execution pending)`);
     }
+
+    return matchedCount;
   }
 
   // ============================================================================
@@ -528,6 +554,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
 
     // Dispose handlers
     this.promptHandler?.dispose();
+    this.webhookHandler?.dispose();
     await this.eventLogHandler?.dispose();
 
     // Dispose event bus

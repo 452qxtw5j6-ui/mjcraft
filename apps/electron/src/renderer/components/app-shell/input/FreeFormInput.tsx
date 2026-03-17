@@ -10,10 +10,13 @@ import {
   DatabaseZap,
   ChevronDown,
   AlertCircle,
+  X,
 } from 'lucide-react'
 import { Icon_Home, Icon_Folder, Spinner } from '@craft-agent/ui'
 
 import * as storage from '@/lib/local-storage'
+import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
+import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
 
 import { Button } from '@/components/ui/button'
@@ -71,6 +74,11 @@ import { ToolbarStatusSlot } from './ToolbarStatusSlot'
 import { buildPlanApprovalMessage } from '../plan-approval-message'
 import { shouldHandleScopedInputEvent } from './input-event-guards'
 import { clearPendingFocusForSession, consumePendingFocusForSession } from './focus-input-events'
+import {
+  getRecentWorkingDirs,
+  addRecentWorkingDir,
+  removeRecentWorkingDir,
+} from './working-directory-history'
 
 /**
  * Format token count for display (e.g., 1500 -> "1.5k", 200000 -> "200k")
@@ -249,7 +257,7 @@ export function FreeFormInput({
   inputRef: externalInputRef,
   currentModel,
   onModelChange,
-  thinkingLevel = 'think',
+  thinkingLevel = 'medium',
   onThinkingLevelChange,
   permissionMode = 'ask',
   onPermissionModeChange,
@@ -521,6 +529,7 @@ export function FreeFormInput({
   const dragCounterRef = React.useRef(0)
   const containerRef = React.useRef<HTMLDivElement>(null)
   const sourceButtonRef = React.useRef<HTMLButtonElement>(null)
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   // Merge refs for RichTextInput
   const internalInputRef = React.useRef<RichTextInputHandle>(null)
@@ -827,22 +836,21 @@ export function FreeFormInput({
   // Handle folder selection from slash command menu
   const handleSlashFolderSelect = React.useCallback((path: string) => {
     if (onWorkingDirectoryChange) {
-      addRecentDir(path)
-      setRecentFolders(getRecentDirs())
+      setRecentFolders(addRecentWorkingDir(path, workspaceId))
       onWorkingDirectoryChange(path)
     }
-  }, [onWorkingDirectoryChange])
+  }, [onWorkingDirectoryChange, workspaceId])
 
   // Get recent folders and home directory for slash menu and mention menu
   const [recentFolders, setRecentFolders] = React.useState<string[]>([])
   const [homeDir, setHomeDir] = React.useState<string>('')
 
   React.useEffect(() => {
-    setRecentFolders(getRecentDirs())
+    setRecentFolders(getRecentWorkingDirs(workspaceId))
     window.electronAPI?.getHomeDir?.().then((dir: string) => {
       if (dir) setHomeDir(dir)
     })
-  }, [])
+  }, [workspaceId])
 
   // Inline slash command hook (modes, features, and folders)
   const inlineSlash = useInlineSlashCommand({
@@ -950,20 +958,38 @@ export function FreeFormInput({
   // Check if running in Electron environment (has electronAPI)
   const hasElectronAPI = typeof window !== 'undefined' && !!window.electronAPI
 
-  // File attachment handlers
-  const handleAttachClick = async () => {
-    if (disabled || !hasElectronAPI) return
+  // Shared helper: read a File, add as attachment, decrement loading count
+  const processFileAttachment = async (file: File, overrideName?: string) => {
     try {
-      const paths = await window.electronAPI.openFileDialog()
-      for (const path of paths) {
-        const attachment = await window.electronAPI.readFileAttachment(path)
-        if (attachment) {
-          setAttachments(prev => [...prev, attachment])
-        }
+      const attachment = await readFileAsAttachment(file, overrideName)
+      if (attachment) {
+        setAttachments(prev => [...prev, attachment])
       }
     } catch (error) {
-      console.error('[FreeFormInput] Failed to attach files:', error)
+      console.error('[FreeFormInput] Failed to read file:', error)
     }
+    setLoadingCount(prev => prev - 1)
+  }
+
+  // File attachment handlers
+  const handleAttachClick = () => {
+    if (disabled) return
+    fileInputRef.current?.click()
+  }
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    const fileList = Array.from(files)
+    setLoadingCount(prev => prev + fileList.length)
+
+    for (const file of fileList) {
+      await processFileAttachment(file)
+    }
+
+    // Reset input so re-selecting the same file triggers onChange again
+    e.target.value = ''
   }
 
   const handleRemoveAttachment = (index: number) => {
@@ -1069,15 +1095,7 @@ export function FreeFormInput({
     })
 
     for (let i = 0; i < files.length; i++) {
-      try {
-        const attachment = await readFileAsAttachment(files[i], fileNames[i])
-        if (attachment) {
-          setAttachments(prev => [...prev, attachment])
-        }
-      } catch (error) {
-        console.error('[FreeFormInput] Failed to read pasted file:', error)
-      }
-      setLoadingCount(prev => prev - 1)
+      await processFileAttachment(files[i], fileNames[i])
     }
   }
 
@@ -1109,29 +1127,7 @@ export function FreeFormInput({
     setLoadingCount(files.length)
 
     for (const file of files) {
-      const filePath = (file as File & { path?: string }).path
-      if (filePath && hasElectronAPI) {
-        try {
-          const attachment = await window.electronAPI.readFileAttachment(filePath)
-          if (attachment) {
-            setAttachments(prev => [...prev, attachment])
-            setLoadingCount(prev => prev - 1)
-            continue
-          }
-        } catch (error) {
-          console.error('[FreeFormInput] Failed to read via IPC:', error)
-        }
-      }
-
-      try {
-        const attachment = await readFileAsAttachment(file)
-        if (attachment) {
-          setAttachments(prev => [...prev, attachment])
-        }
-      } catch (error) {
-        console.error('[FreeFormInput] Failed to read dropped file:', error)
-      }
-      setLoadingCount(prev => prev - 1)
+      await processFileAttachment(file)
     }
   }
 
@@ -1629,6 +1625,14 @@ export function FreeFormInput({
           {/* Hidden in compact mode (EditPopover embedding) */}
           {!compactMode && (
           <div className="flex items-center gap-1 min-w-32 shrink overflow-hidden">
+          {/* Hidden file input for attach button */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileInputChange}
+          />
           {/* 1. Attach Files Badge */}
           <FreeFormInputContextBadge
             icon={<Paperclip className="h-4 w-4" />}
@@ -1731,6 +1735,7 @@ export function FreeFormInput({
               onWorkingDirectoryChange={onWorkingDirectoryChange}
               sessionFolderPath={sessionFolderPath}
               isEmptySession={isEmptySession}
+              workspaceId={workspaceId}
             />
           )}
           </div>
@@ -2042,19 +2047,6 @@ Model
 }
 
 /**
- * Helper functions for recent directories storage
- */
-function getRecentDirs(): string[] {
-  return storage.get<string[]>(storage.KEYS.recentWorkingDirs, [])
-}
-
-function addRecentDir(path: string): void {
-  const recent = getRecentDirs().filter(p => p !== path)
-  const updated = [path, ...recent].slice(0, 25)
-  storage.set(storage.KEYS.recentWorkingDirs, updated)
-}
-
-/**
  * Format path for display, with home directory shortened
  */
 function formatPathForDisplay(path: string, homeDir: string): string {
@@ -2078,11 +2070,13 @@ function WorkingDirectoryBadge({
   onWorkingDirectoryChange,
   sessionFolderPath,
   isEmptySession = false,
+  workspaceId,
 }: {
   workingDirectory?: string
   onWorkingDirectoryChange: (path: string) => void
   sessionFolderPath?: string
   isEmptySession?: boolean
+  workspaceId?: string
 }) {
   const [recentDirs, setRecentDirs] = React.useState<string[]>([])
   const [popoverOpen, setPopoverOpen] = React.useState(false)
@@ -2093,11 +2087,11 @@ function WorkingDirectoryBadge({
 
   // Load home directory and recent directories on mount
   React.useEffect(() => {
-    setRecentDirs(getRecentDirs())
+    setRecentDirs(getRecentWorkingDirs(workspaceId))
     window.electronAPI?.getHomeDir?.().then((dir: string) => {
       if (dir) setHomeDir(dir)
     })
-  }, [])
+  }, [workspaceId])
 
   // Fetch git branch when working directory changes
   React.useEffect(() => {
@@ -2110,32 +2104,39 @@ function WorkingDirectoryBadge({
     }
   }, [workingDirectory])
 
-  // Reset filter and focus input when popover opens
+  // Reset filter, refresh history, and focus input when popover opens
   React.useEffect(() => {
     if (popoverOpen) {
       setFilter('')
+      setRecentDirs(getRecentWorkingDirs(workspaceId))
       // Focus input after popover animation completes (only if filter is shown)
       const timer = setTimeout(() => {
         inputRef.current?.focus()
       }, 0)
       return () => clearTimeout(timer)
     }
-  }, [popoverOpen])
+  }, [popoverOpen, workspaceId])
 
-  const handleChooseFolder = async () => {
-    if (!window.electronAPI) return
+  const handleFolderSelected = React.useCallback((selectedPath: string) => {
+    setRecentDirs(addRecentWorkingDir(selectedPath, workspaceId))
+    onWorkingDirectoryChange(selectedPath)
+  }, [onWorkingDirectoryChange, workspaceId])
+
+  const {
+    pickDirectory,
+    showServerBrowser,
+    serverBrowserMode,
+    cancelServerBrowser,
+    confirmServerBrowser,
+  } = useDirectoryPicker(handleFolderSelected)
+
+  const handleChooseFolder = () => {
     setPopoverOpen(false)
-    const selectedPath = await window.electronAPI.openFolderDialog()
-    if (selectedPath) {
-      addRecentDir(selectedPath)
-      setRecentDirs(getRecentDirs())
-      onWorkingDirectoryChange(selectedPath)
-    }
+    pickDirectory()
   }
 
   const handleSelectRecent = (path: string) => {
-    addRecentDir(path) // Move to top of recent list
-    setRecentDirs(getRecentDirs())
+    setRecentDirs(addRecentWorkingDir(path, workspaceId)) // Move to top of recent list
     onWorkingDirectoryChange(path)
     setPopoverOpen(false)
   }
@@ -2145,6 +2146,11 @@ function WorkingDirectoryBadge({
       onWorkingDirectoryChange(sessionFolderPath)
       setPopoverOpen(false)
     }
+  }
+
+  const handleRemoveRecent = (e: React.MouseEvent, path: string) => {
+    e.stopPropagation() // Don't trigger the item's onSelect
+    setRecentDirs(removeRecentWorkingDir(path, workspaceId))
   }
 
   // Filter out current directory from recent list and sort alphabetically by folder name
@@ -2171,6 +2177,7 @@ function WorkingDirectoryBadge({
   const MENU_ITEM_STYLE = 'flex cursor-pointer select-none items-center gap-2 rounded-[6px] px-3 py-1.5 text-[13px] outline-none'
 
   return (
+    <>
     <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
       <PopoverTrigger asChild>
         <span className="shrink min-w-0 overflow-hidden">
@@ -2238,13 +2245,20 @@ function WorkingDirectoryBadge({
                   key={path}
                   value={`${recentFolderName} ${path}`}
                   onSelect={() => handleSelectRecent(path)}
-                  className={cn(MENU_ITEM_STYLE, 'data-[selected=true]:bg-foreground/5')}
+                  className={cn(MENU_ITEM_STYLE, 'group/item data-[selected=true]:bg-foreground/5')}
                 >
                   <Icon_Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <span className="flex-1 min-w-0 truncate">
                     <span>{recentFolderName}</span>
                     <span className="text-muted-foreground ml-1.5">{formatPathForDisplay(path, homeDir)}</span>
                   </span>
+                  <button
+                    type="button"
+                    onClick={(e) => handleRemoveRecent(e, path)}
+                    className="shrink-0 h-3 w-3 rounded-[3px] flex items-center justify-center opacity-0 group-hover/item:opacity-100 text-muted-foreground hover:text-foreground hover:bg-foreground/10 transition-all"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
                 </CommandPrimitive.Item>
               )
             })}
@@ -2279,5 +2293,13 @@ function WorkingDirectoryBadge({
         </CommandPrimitive>
       </PopoverContent>
     </Popover>
+    <ServerDirectoryBrowser
+      open={showServerBrowser}
+      mode={serverBrowserMode}
+      onSelect={confirmServerBrowser}
+      onCancel={cancelServerBrowser}
+      initialPath={workingDirectory}
+    />
+    </>
   )
 }

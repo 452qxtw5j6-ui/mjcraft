@@ -20,6 +20,7 @@ import {
 } from '@craft-agent/shared/agent/backend'
 import { getLlmConnection, getDefaultLlmConnection, getDefaultThinkingLevel } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
+import { isValidWorkingDirectory } from '../utils/path-validation'
 import { InitGate } from '@craft-agent/server-core/domain'
 import {
   getWorkspaces,
@@ -75,12 +76,12 @@ import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlA
 import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/shared/skills'
 import { getToolIconsDir, getMiniModel, getSubtaskModel } from '@craft-agent/shared/config'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
-import { type ThinkingLevel, DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
+import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
 import { listLabels } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
-import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, createPromptHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 import { resolveRequestedSource } from './source-intent-resolver'
 
 // Import from server-core domain utilities
@@ -913,19 +914,31 @@ interface ManagedSession {
  * Spreads all matching fields from the source so new persistent fields automatically propagate.
  * Runtime-only fields get sensible defaults.
  */
-function createManagedSession(
+export function createManagedSession(
   source: { id: string } & Partial<ManagedSession>,
   workspace: Workspace,
   overrides?: Partial<ManagedSession>,
 ): ManagedSession {
   const s = source as Record<string, unknown>
+  const sourceFields = Object.fromEntries(
+    Object.entries(s).filter(([, v]) => v !== undefined)
+  ) as Partial<ManagedSession>
+
+  if ('thinkingLevel' in sourceFields) {
+    // TODO: Remove legacy 'think' normalization after old persisted session
+    // headers have realistically aged out across upgrades.
+    const normalizedThinkingLevel = normalizeThinkingLevel(sourceFields.thinkingLevel)
+    if (normalizedThinkingLevel) {
+      sourceFields.thinkingLevel = normalizedThinkingLevel
+    } else {
+      delete sourceFields.thinkingLevel
+    }
+  }
 
   const managed = {
     // Spread all session-like fields from source (id, name, permissionMode, labels, model, etc.)
     // This ensures new persistent fields automatically flow through without manual copying.
-    ...Object.fromEntries(
-      Object.entries(s).filter(([, v]) => v !== undefined)
-    ) as Partial<ManagedSession>,
+    ...sourceFields,
     // Runtime-only defaults (not persisted)
     workspace,
     agent: null,
@@ -1454,14 +1467,13 @@ export class SessionManager implements ISessionManager {
             const pending = prompts[idx]
             if (!pending.matcherId) continue
 
-            const entry = {
-              id: pending.matcherId,
-              ts: Date.now(),
+            const entry = createPromptHistoryEntry({
+              matcherId: pending.matcherId,
               ok: result.status === 'fulfilled',
               sessionId: result.status === 'fulfilled' ? result.value.sessionId : undefined,
-              prompt: pending.prompt.slice(0, 200),
-              error: result.status === 'rejected' ? String(result.reason).slice(0, 200) : undefined,
-            }
+              prompt: pending.prompt,
+              error: result.status === 'rejected' ? String(result.reason) : undefined,
+            })
 
             appendFile(historyPath, JSON.stringify(entry) + '\n', 'utf-8').catch(e => sessionLog.warn('[Automations] Failed to write history:', e))
 
@@ -2180,7 +2192,7 @@ export class SessionManager implements ISessionManager {
 
     const userDefaultWorkingDir = wsConfig?.defaults?.workingDirectory || undefined
     // Get default thinking level from workspace config, fallback to app-level default
-    const defaultThinkingLevel = wsConfig?.defaults?.thinkingLevel ?? getDefaultThinkingLevel()
+    const defaultThinkingLevel = normalizeThinkingLevel(wsConfig?.defaults?.thinkingLevel) ?? getDefaultThinkingLevel()
     // Get default model from workspace config (used when no session-specific model is set)
     const defaultModel = wsConfig?.defaults?.model
     // Get default enabled sources from workspace config
@@ -2674,8 +2686,13 @@ export class SessionManager implements ISessionManager {
       }
 
       // Per-session env overrides
+      const miniModel = connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined
+      const subtaskModel = connection ? (getSubtaskModel(connection) ?? connection.defaultModel) : undefined
       const envOverrides: Record<string, string> = {
         CRAFT_WORKSPACE_PATH: managed.workspace.rootPath,
+        // Pass mini model to SDK subprocess so built-in tools like WebFetch
+        // use the correct model for summarization (instead of hardcoded Haiku)
+        ...(miniModel ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: miniModel } : {}),
       }
       managed.envOverrides = envOverrides
 
@@ -2767,52 +2784,52 @@ export class SessionManager implements ISessionManager {
         context: backendContext,
         hostRuntime: buildBackendHostRuntimeContext(),
         coreConfig: {
-        workspace: managed.workspace,
-        miniModel: connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined,
-        subtaskModel: connection ? (getSubtaskModel(connection) ?? connection.defaultModel) : undefined,
-        thinkingLevel: managed.thinkingLevel,
-        session: sessionConfig,
-        onSdkSessionIdUpdate,
-        onSdkSessionIdCleared,
-        getRecoveryMessages,
-        getBranchSeedMessages,
-        markBranchSeedApplied,
-        mcpPool: managed.mcpPool,
-        poolServerUrl,
-        envOverrides,
-        // Claude-specific
-        isHeadless: !AGENT_FLAGS.defaultModesEnabled,
-        automationSystem: this.automationSystems.get(managed.workspace.rootPath),
-        systemPromptPreset: managed.systemPromptPreset,
-        debugMode: _platform?.isDebugMode ? { enabled: true, logFilePath: _platform.getLogFilePath?.() } : undefined,
-        // Image resize callback — prevents oversized images from entering conversation history
-        onImageResize: async (filePath: string, maxSizeBytes: number): Promise<string | null> => {
-          try {
-            const buffer = await readFile(filePath)
-            const result = await resizeImageForAPI(buffer, { maxSizeBytes })
-            if (!result) return null
+          workspace: managed.workspace,
+          miniModel,
+          subtaskModel,
+          thinkingLevel: managed.thinkingLevel,
+          session: sessionConfig,
+          onSdkSessionIdUpdate,
+          onSdkSessionIdCleared,
+          getRecoveryMessages,
+          getBranchSeedMessages,
+          markBranchSeedApplied,
+          mcpPool: managed.mcpPool,
+          poolServerUrl,
+          envOverrides,
+          // Claude-specific
+          isHeadless: !AGENT_FLAGS.defaultModesEnabled,
+          automationSystem: this.automationSystems.get(managed.workspace.rootPath),
+          systemPromptPreset: managed.systemPromptPreset,
+          debugMode: _platform?.isDebugMode ? { enabled: true, logFilePath: _platform.getLogFilePath?.() } : undefined,
+          // Image resize callback — prevents oversized images from entering conversation history
+          onImageResize: async (filePath: string, maxSizeBytes: number): Promise<string | null> => {
+            try {
+              const buffer = await readFile(filePath)
+              const result = await resizeImageForAPI(buffer, { maxSizeBytes })
+              if (!result) return null
 
-            // Write to session tmp directory (cleaned up with session)
-            const sessionTmpDir = join(sessionPath, 'tmp')
-            await mkdir(sessionTmpDir, { recursive: true })
-            const ext = result.format === 'jpeg' ? 'jpg' : 'png'
-            const outPath = join(sessionTmpDir, `resized-${randomUUID()}.${ext}`)
-            await writeFile(outPath, result.buffer)
+              // Write to session tmp directory (cleaned up with session)
+              const sessionTmpDir = join(sessionPath, 'tmp')
+              await mkdir(sessionTmpDir, { recursive: true })
+              const ext = result.format === 'jpeg' ? 'jpg' : 'png'
+              const outPath = join(sessionTmpDir, `resized-${randomUUID()}.${ext}`)
+              await writeFile(outPath, result.buffer)
 
-            sessionLog.info(`Image resized for Read: ${(buffer.length / 1024 / 1024).toFixed(1)}MB → ${(result.buffer.length / 1024 / 1024).toFixed(1)}MB (→ ${result.width}×${result.height})`)
-            return outPath
-          } catch (err) {
-            sessionLog.error('Image resize failed:', err)
-            return null
-          }
-        },
-        // Source configs for postInit() — backends set up their own bridge/config
-        initialSources: {
-          enabledSources,
-          mcpServers,
-          apiServers,
-          enabledSlugs,
-        },
+              sessionLog.info(`Image resized for Read: ${(buffer.length / 1024 / 1024).toFixed(1)}MB → ${(result.buffer.length / 1024 / 1024).toFixed(1)}MB (→ ${result.width}×${result.height})`)
+              return outPath
+            } catch (err) {
+              sessionLog.error('Image resize failed:', err)
+              return null
+            }
+          },
+          // Source configs for postInit() — backends set up their own bridge/config
+          initialSources: {
+            enabledSources,
+            mcpServers,
+            apiServers,
+            enabledSlugs,
+          },
         },
       }) as AgentInstance
 
@@ -3321,11 +3338,11 @@ export class SessionManager implements ISessionManager {
             message: planMessage,
           }, managed.workspace.id)
 
-          // Force-abort execution - plan presentation is a stopping point
+          // Interrupt execution - plan presentation is a stopping point
           // The user needs to review and respond before continuing
           if (managed.isProcessing && managed.agent) {
-            sessionLog.info(`Force-aborting after plan submission for session ${managed.id}`)
-            managed.agent.forceAbort(AbortReason.PlanSubmitted)
+            sessionLog.info(`Interrupting for plan submission in session ${managed.id}`)
+            managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
             managed.isProcessing = false
 
             // Release browser overlay + session binding because the agent is no longer running.
@@ -3378,10 +3395,10 @@ export class SessionManager implements ISessionManager {
         managed.pendingAuthRequestId = request.requestId
         managed.pendingAuthRequest = request
 
-        // Force-abort execution (like SubmitPlan)
+        // Interrupt execution (like SubmitPlan)
         if (managed.isProcessing && managed.agent) {
-          sessionLog.info(`Force-aborting after auth request for session ${managed.id}`)
-          managed.agent.forceAbort(AbortReason.AuthRequest)
+          sessionLog.info(`Interrupting for auth request in session ${managed.id}`)
+          managed.agent.interruptForHandoff(AbortReason.AuthRequest)
           managed.isProcessing = false
 
           // Release browser overlay + session binding because the agent is paused awaiting user auth.
@@ -4264,6 +4281,17 @@ export class SessionManager implements ISessionManager {
   updateWorkingDirectory(sessionId: string, path: string): void {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      const validation = isValidWorkingDirectory(path)
+      if (!validation.valid) {
+        sessionLog.warn(`Session ${sessionId}: rejected working directory "${path}" — ${validation.reason}`)
+        this.sendEvent({
+          type: 'working_directory_error',
+          sessionId,
+          error: validation.reason!,
+        }, managed.workspace.id)
+        return
+      }
+
       managed.workingDirectory = path
 
       // Check if we can also update sdkCwd (safe if no SDK interaction yet)
@@ -5034,6 +5062,16 @@ export class SessionManager implements ISessionManager {
             return  // Exit function - retry will handle completion
           }
 
+          // Auth/plan handoff paths already stopped processing and emitted a complete
+          // event to the renderer. Ignore the backend's trailing complete to avoid
+          // double cleanup and duplicate UI completion events.
+          if (!managed.isProcessing) {
+            sessionLog.info('Chat completed after explicit handoff/stop; skipping normal completion handling')
+            sendSpan.mark('chat.complete.already_stopped')
+            sendSpan.end()
+            return
+          }
+
           sessionLog.info('Chat completed via complete event')
 
           // Check if we got an assistant response in this turn
@@ -5102,7 +5140,11 @@ export class SessionManager implements ISessionManager {
       }
 
       // Loop exited - either via complete event (normal) or generator ended after soft interrupt
-      if (managed.stopRequested) {
+      if (!managed.isProcessing) {
+        sessionLog.info('Chat loop exited after explicit handoff/stop')
+        sendSpan.mark('chat.exit.already_stopped')
+        sendSpan.end()
+      } else if (managed.stopRequested) {
         sessionLog.info('Chat loop completed after stop request - events drained successfully')
         this.onProcessingStopped(sessionId, 'interrupted')
       } else {
@@ -5125,8 +5167,9 @@ export class SessionManager implements ISessionManager {
         sendSpan.setMetadata('abort_reason', reason || 'unknown')
         sendSpan.end()
 
-        // Plan submissions handle their own cleanup (they set isProcessing = false directly).
-        // All other abort reasons route through onProcessingStopped for queue draining.
+        // UI handoff paths (plan submission, auth request) handle their own cleanup
+        // by setting isProcessing = false directly. All other abort reasons route
+        // through onProcessingStopped for queue draining.
         if (reason === AbortReason.UserStop || reason === AbortReason.Redirect || reason === undefined) {
           this.onProcessingStopped(sessionId, 'interrupted')
         }
@@ -5810,7 +5853,7 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Set the thinking level for a session ('off', 'think', 'max')
+   * Set the thinking level for a session ('off', 'low', 'medium', 'high', 'max')
    * This is sticky and persisted across messages.
    */
   setSessionThinkingLevel(sessionId: string, level: ThinkingLevel): void {

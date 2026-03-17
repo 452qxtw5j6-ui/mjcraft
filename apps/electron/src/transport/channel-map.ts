@@ -115,6 +115,7 @@ export const CHANNEL_MAP = {
   exchangeClaudeCode: invoke(RPC_CHANNELS.onboarding.EXCHANGE_CLAUDE_CODE),
   hasClaudeOAuthState: invoke(RPC_CHANNELS.onboarding.HAS_CLAUDE_OAUTH_STATE),
   clearClaudeOAuthState: invoke(RPC_CHANNELS.onboarding.CLEAR_CLAUDE_OAUTH_STATE),
+  deferSetup: invoke(RPC_CHANNELS.onboarding.DEFER_SETUP),
 
   // ChatGPT OAuth
   startChatGptOAuth: invoke(RPC_CHANNELS.chatgpt.START_OAUTH),
@@ -134,6 +135,8 @@ export const CHANNEL_MAP = {
   testLlmConnectionSetup: invoke(RPC_CHANNELS.settings.TEST_LLM_CONNECTION_SETUP),
   getDefaultThinkingLevel: invoke(RPC_CHANNELS.settings.GET_DEFAULT_THINKING_LEVEL),
   setDefaultThinkingLevel: invoke(RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL),
+  getNetworkProxySettings: invoke(RPC_CHANNELS.settings.GET_NETWORK_PROXY),
+  setNetworkProxySettings: invoke(RPC_CHANNELS.settings.SET_NETWORK_PROXY),
 
   // Pi provider discovery
   getPiApiKeyProviders: invoke(RPC_CHANNELS.pi.GET_API_KEY_PROVIDERS),
@@ -153,6 +156,9 @@ export const CHANNEL_MAP = {
 
   // Filesystem search
   searchFiles: invoke(RPC_CHANNELS.fs.SEARCH),
+
+  // Server filesystem browsing (remote mode)
+  listServerDirectory: invoke(RPC_CHANNELS.fs.LIST_DIRECTORY),
 
   // Debug logging
   debugLog: invoke(RPC_CHANNELS.debug.LOG),
@@ -332,5 +338,6 @@ export const CHANNEL_MAP = {
   deleteAutomation: invoke(RPC_CHANNELS.automations.DELETE),
   getAutomationHistory: invoke(RPC_CHANNELS.automations.GET_HISTORY),
   getAutomationLastExecuted: invoke(RPC_CHANNELS.automations.GET_LAST_EXECUTED),
+  replayAutomation: invoke(RPC_CHANNELS.automations.REPLAY),
   onAutomationsChanged: listener(RPC_CHANNELS.automations.CHANGED),
 } satisfies ChannelMap

@@ -76,6 +76,9 @@ interface UseOnboardingReturn {
   handleRecheckGitBash: () => void
   handleClearError: () => void
 
+  // Skip setup ("Setup later")
+  handleSkipSetup: () => void
+
   // Completion
   handleFinish: () => void
   handleCancel: () => void
@@ -738,6 +741,16 @@ export function useOnboarding({
     setState(s => ({ ...s, errorMessage: undefined }))
   }, [])
 
+  // Skip setup — user chose "Setup later"
+  const handleSkipSetup = useCallback(async () => {
+    try {
+      await window.electronAPI.deferSetup()
+    } catch (error) {
+      console.error('[Onboarding] Failed to defer setup:', error)
+    }
+    onComplete()
+  }, [onComplete])
+
   // Finish onboarding
   const handleFinish = useCallback(() => {
     onComplete()
@@ -797,6 +810,7 @@ export function useOnboarding({
     handleUseGitBashPath,
     handleRecheckGitBash,
     handleClearError,
+    handleSkipSetup,
     handleFinish,
     handleCancel,
     jumpToCredentials,

@@ -64,6 +64,7 @@ export const RPC_CHANNELS = {
   },
   fs: {
     SEARCH: 'fs:search',
+    LIST_DIRECTORY: 'fs:listDirectory',
   },
   debug: {
     LOG: 'debug:log',
@@ -144,6 +145,7 @@ export const RPC_CHANNELS = {
     EXCHANGE_CLAUDE_CODE: 'onboarding:exchangeClaudeCode',
     HAS_CLAUDE_OAUTH_STATE: 'onboarding:hasClaudeOAuthState',
     CLEAR_CLAUDE_OAUTH_STATE: 'onboarding:clearClaudeOAuthState',
+    DEFER_SETUP: 'onboarding:deferSetup',
   },
   llmConnections: {
     LIST: 'LLM_Connection:list',
@@ -177,6 +179,8 @@ export const RPC_CHANNELS = {
     TEST_LLM_CONNECTION_SETUP: 'settings:testLlmConnectionSetup',
     GET_DEFAULT_THINKING_LEVEL: 'settings:getDefaultThinkingLevel',
     SET_DEFAULT_THINKING_LEVEL: 'settings:setDefaultThinkingLevel',
+    GET_NETWORK_PROXY: 'settings:getNetworkProxy',
+    SET_NETWORK_PROXY: 'settings:setNetworkProxy',
   },
   pi: {
     GET_API_KEY_PROVIDERS: 'pi:getApiKeyProviders',
@@ -321,6 +325,7 @@ export const RPC_CHANNELS = {
     DELETE: 'automations:delete',
     GET_HISTORY: 'automations:getHistory',
     GET_LAST_EXECUTED: 'automations:getLastExecuted',
+    REPLAY: 'automations:replay',
     CHANGED: 'automations:changed',
   },
 } as const

@@ -273,6 +273,43 @@ const mockAutomations: AutomationListItem[] = [
     permissionMode: 'allow-all',
     lastExecutedAt: now - 86400_000, // 1 day ago
   },
+  {
+    id: 'automation-9',
+    event: 'SessionStatusChange',
+    matcherIndex: 0,
+    name: 'Done after 9 AM (priority)',
+    summary: 'When status → done, if after 9 AM and has priority label',
+    enabled: true,
+    matcher: '^done$',
+    conditions: [
+      { condition: 'time', after: '09:00', timezone: 'Europe/Budapest' },
+      {
+        condition: 'or',
+        conditions: [
+          { condition: 'state', field: 'labels', contains: 'priority' },
+          { condition: 'state', field: 'labels', contains: 'invoices' },
+        ],
+      },
+    ],
+    actions: [{ type: 'prompt', prompt: 'Session $CRAFT_SESSION_NAME was marked as done. Summarise what was accomplished.' }],
+    lastExecutedAt: now - 600_000,
+  },
+  {
+    id: 'automation-10',
+    event: 'SchedulerTick',
+    matcherIndex: 2,
+    name: 'Morning AI News (Weekdays)',
+    summary: 'Daily at 9:00 AM, weekdays only',
+    enabled: true,
+    cron: '0 9 * * *',
+    timezone: 'Europe/Budapest',
+    conditions: [
+      { condition: 'time', weekday: ['mon', 'tue', 'wed', 'thu', 'fri'], timezone: 'Europe/Budapest' },
+    ],
+    labels: ['Scheduled', 'ai-news'],
+    actions: [{ type: 'prompt', prompt: 'Run the @ai-news skill and summarize today\'s AI developments' }],
+    lastExecutedAt: now - 86400_000,
+  },
 ]
 
 const mockExecutions: ExecutionEntry[] = [
@@ -282,7 +319,25 @@ const mockExecutions: ExecutionEntry[] = [
   { id: 'ex-4', automationId: 'automation-3', event: 'PreToolUse', status: 'blocked', duration: 0, timestamp: now - 3600_000, actionSummary: 'git diff --cached --check' },
   { id: 'ex-5', automationId: 'automation-1', event: 'SchedulerTick', status: 'success', duration: 38, timestamp: now - 86400_000, actionSummary: 'prompt → @weather forecast' },
   { id: 'ex-6', automationId: 'automation-6', event: 'PostToolUse', status: 'success', duration: 5, timestamp: now - 172800_000, actionSummary: 'echo "[...] Tool completed: Bash"' },
+  // Webhook entries with expandable details
+  {
+    id: 'ex-7', automationId: 'automation-1', event: 'SessionStatusChange', status: 'success', duration: 45, timestamp: now - 60_000,
+    actionSummary: 'Webhook POST http://localhost:8888/status-change',
+    webhookDetails: { method: 'POST', url: 'http://localhost:8888/status-change', statusCode: 200, durationMs: 45, responseBody: '{"ok":true,"received":"status-change"}' },
+  },
+  {
+    id: 'ex-8', automationId: 'automation-1', event: 'SessionStatusChange', status: 'error', duration: 3200, timestamp: now - 600_000,
+    actionSummary: 'Webhook POST https://api.example.com/notify (2 attempts)',
+    webhookDetails: { method: 'POST', url: 'https://api.example.com/notify', statusCode: 502, durationMs: 3200, attempts: 2, error: 'Bad Gateway' },
+  },
+  {
+    id: 'ex-9', automationId: 'automation-1', event: 'LabelAdd', status: 'success', duration: 120, timestamp: now - 1800_000,
+    actionSummary: 'Webhook PUT https://hooks.slack.com/services/T.../B.../xxx',
+    webhookDetails: { method: 'PUT', url: 'https://hooks.slack.com/services/T.../B.../xxx', statusCode: 200, durationMs: 120, responseBody: 'ok' },
+  },
 ]
+
+const mockWebhookExecutions: ExecutionEntry[] = mockExecutions.filter(e => !!e.webhookDetails)
 
 const testResultSuccess: TestResult = {
   state: 'success',
@@ -398,6 +453,16 @@ export const automationComponents: ComponentEntry[] = [
         name: 'Error Handler',
         description: 'Runs when a tool fails',
         props: { automation: mockAutomations[7], executions: [] },
+      },
+      {
+        name: 'With Conditions (Status + State)',
+        description: 'SessionStatusChange with time and state conditions (If section visible)',
+        props: { automation: mockAutomations[8], executions: [] },
+      },
+      {
+        name: 'With Conditions (Weekday)',
+        description: 'SchedulerTick with weekday time condition (If section visible)',
+        props: { automation: mockAutomations[9], executions: [] },
       },
       {
         name: 'With Full History',
@@ -579,8 +644,21 @@ export const automationComponents: ComponentEntry[] = [
     variants: [
       {
         name: 'Mixed Results',
-        description: 'Success, error, and blocked entries',
+        description: 'Success, error, and blocked entries (prompt + webhook)',
         props: { entries: mockExecutions },
+      },
+      {
+        name: 'Webhook Only',
+        description: 'Webhook entries with expandable details (click to expand)',
+        props: { entries: mockWebhookExecutions },
+      },
+      {
+        name: 'Webhook Error with Retry',
+        description: 'Failed webhook with retry button and expandable details',
+        props: {
+          entries: mockWebhookExecutions.filter(e => e.status === 'error'),
+          onReplay: (automationId: string, event: string) => console.log('[Playground] Replay:', automationId, event),
+        },
       },
       {
         name: 'All Success',

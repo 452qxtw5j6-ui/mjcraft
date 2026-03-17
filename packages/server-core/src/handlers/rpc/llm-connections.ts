@@ -1,6 +1,7 @@
 import { RPC_CHANNELS, type LlmConnectionSetup } from '@craft-agent/shared/protocol'
 import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus } from '@craft-agent/shared/config'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
+import { setSetupDeferred } from '@craft-agent/shared/config/storage'
 import {
   resolveSetupTestConnectionHint,
   testBackendConnection,
@@ -236,6 +237,9 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       await sessionManager.reinitializeAuth(setup.slug)
       deps.platform.logger?.info('Reinitialized auth after LLM connection setup')
 
+      // Clear "Setup later" flag now that user has configured a provider
+      setSetupDeferred(false)
+
       return { success: true }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
@@ -260,7 +264,8 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       return { success: false, error: setupValidation.error }
     }
 
-    deps.platform.logger?.info(`[testLlmConnectionSetup] Testing: provider=${provider}${piAuthProvider ? ` piAuth=${piAuthProvider}` : ''}${baseUrl ? ` baseUrl=${baseUrl}` : ''}`)
+    const hint = resolveSetupTestConnectionHint({ provider, baseUrl, piAuthProvider, customEndpoint })
+    deps.platform.logger?.info(`[testLlmConnectionSetup] Testing: provider=${provider}${piAuthProvider ? ` piAuth=${piAuthProvider}` : ''}${baseUrl ? ` baseUrl=${baseUrl}` : ''} hasCustomEndpoint=${!!customEndpoint} hintProvider=${hint.providerType}`)
 
     try {
       const testModel = model || getDefaultModelForConnection(provider, piAuthProvider)
@@ -272,7 +277,7 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
         baseUrl,
         timeoutMs: 20000,
         hostRuntime: buildBackendHostRuntimeContext(deps.platform),
-        connection: resolveSetupTestConnectionHint({ provider, baseUrl, piAuthProvider, customEndpoint }),
+        connection: hint,
       })
 
       if (!result.success) {

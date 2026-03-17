@@ -62,8 +62,8 @@ import type { LoadedSkill, SkillMetadata } from '@craft-agent/shared/skills/type
 export type { LoadedSkill, SkillMetadata };
 
 // LLM connection types
-import type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType } from '@craft-agent/shared/config';
-export type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType };
+import type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxySettings } from '@craft-agent/shared/config';
+export type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxySettings };
 
 // =============================================================================
 // GUI-only types (not used by server/handler code)
@@ -202,6 +202,7 @@ import type {
   TestAutomationPayload,
   TestAutomationResult,
   WindowCloseRequest,
+  DirectoryListingResult,
 } from '@craft-agent/shared/protocol'
 
 export interface ElectronAPI {
@@ -264,6 +265,9 @@ export interface ElectronAPI {
 
   // Filesystem search (for @ mention file selection)
   searchFiles(basePath: string, query: string): Promise<FileSearchResult[]>
+
+  // Server filesystem browsing (remote mode)
+  listServerDirectory(dirPath: string): Promise<DirectoryListingResult>
   // Debug: send renderer logs to main process log file
   debugLog(...args: unknown[]): void
 
@@ -329,6 +333,8 @@ export interface ElectronAPI {
   exchangeClaudeCode(code: string, connectionSlug: string): Promise<ClaudeOAuthResult>
   hasClaudeOAuthState(): Promise<boolean>
   clearClaudeOAuthState(): Promise<{ success: boolean }>
+  /** Defer onboarding setup — user chose "Setup later" */
+  deferSetup(): Promise<{ success: boolean }>
 
   // ChatGPT OAuth (for Codex chatgptAuthTokens mode)
   startChatGptOAuth(connectionSlug: string): Promise<{ success: boolean; error?: string }>
@@ -477,6 +483,10 @@ export interface ElectronAPI {
   getRichToolDescriptions(): Promise<boolean>
   setRichToolDescriptions(enabled: boolean): Promise<void>
 
+  // Network proxy settings
+  getNetworkProxySettings(): Promise<NetworkProxySettings | undefined>
+  setNetworkProxySettings(settings: NetworkProxySettings): Promise<void>
+
   refreshBadge(): Promise<void>
   setDockIconWithBadge(dataUrl: string): Promise<void>
   onBadgeDraw(callback: (data: { count: number; iconDataUrl: string }) => void): () => void
@@ -554,8 +564,9 @@ export interface ElectronAPI {
   setAutomationEnabled(workspaceId: string, eventName: string, matcherIndex: number, enabled: boolean): Promise<void>
   duplicateAutomation(workspaceId: string, eventName: string, matcherIndex: number): Promise<void>
   deleteAutomation(workspaceId: string, eventName: string, matcherIndex: number): Promise<void>
-  getAutomationHistory(workspaceId: string, automationId: string, limit?: number): Promise<Array<{ id: string; ts: number; ok: boolean; sessionId?: string; prompt?: string; error?: string }>>
+  getAutomationHistory(workspaceId: string, automationId: string, limit?: number): Promise<Array<{ id: string; ts: number; ok: boolean; sessionId?: string; prompt?: string; error?: string; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }>>
   getAutomationLastExecuted(workspaceId: string): Promise<Record<string, number>>
+  replayAutomation(workspaceId: string, automationId: string, eventName: string): Promise<{ results: Array<{ type: string; url: string; statusCode: number; success: boolean; error?: string; duration: number }> }>
 
   // Automations change listener
   onAutomationsChanged(callback: (workspaceId: string) => void): () => void

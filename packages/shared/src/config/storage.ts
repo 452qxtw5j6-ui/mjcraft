@@ -19,7 +19,7 @@ import type { StoredAttachment, StoredMessage } from '@craft-agent/core/types';
 import type { Plan } from '../agent/plan-types.ts';
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
-import { isValidThinkingLevel } from '../agent/thinking-levels.ts';
+import { isValidThinkingLevel, normalizeThinkingLevel } from '../agent/thinking-levels.ts';
 import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.ts';
 import { type ConfigDefaults } from './config-defaults-schema.ts';
 import { isValidThemeFile } from './validators.ts';
@@ -69,8 +69,12 @@ export interface StoredConfig {
   keepAwakeWhileRunning?: boolean;  // Prevent screen sleep while sessions are running (default: false)
   // Tool metadata
   richToolDescriptions?: boolean;  // Add intent/action metadata to all tool calls (default: true)
+  // Network proxy
+  networkProxy?: import('./types.ts').NetworkProxySettings;
   // Windows: path to Git Bash (bash.exe) for the SDK subprocess
   gitBashPath?: string;
+  // User chose "Setup later" during onboarding — skip showing onboarding on next launch
+  setupDeferred?: boolean;
 }
 
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -2151,6 +2155,8 @@ export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConne
     gcpRegion: updates.gcpRegion !== undefined ? updates.gcpRegion : existing.gcpRegion,
     // Pi auth provider
     piAuthProvider: updates.piAuthProvider !== undefined ? updates.piAuthProvider : existing.piAuthProvider,
+    // Custom endpoint protocol (Anthropic/OpenAI compatible)
+    customEndpoint: updates.customEndpoint !== undefined ? updates.customEndpoint : existing.customEndpoint,
     // Timestamps
     lastUsedAt: updates.lastUsedAt !== undefined ? updates.lastUsedAt : existing.lastUsedAt,
   };
@@ -2295,11 +2301,12 @@ export function setDefaultLlmConnection(slug: string): boolean {
  */
 export function getDefaultThinkingLevel(): ThinkingLevel {
   const config = loadStoredConfig();
-  if (config?.defaultThinkingLevel && isValidThinkingLevel(config.defaultThinkingLevel)) {
-    return config.defaultThinkingLevel;
+  if (config?.defaultThinkingLevel) {
+    const normalized = normalizeThinkingLevel(config.defaultThinkingLevel);
+    if (normalized) return normalized;
   }
   const defaults = loadConfigDefaults();
-  return defaults.workspaceDefaults.thinkingLevel;
+  return normalizeThinkingLevel(defaults.workspaceDefaults.thinkingLevel) ?? 'medium';
 }
 
 /**
@@ -2331,6 +2338,76 @@ export function touchLlmConnection(slug: string): void {
     connection.lastUsedAt = Date.now();
     saveConfig(config);
   }
+}
+
+// ============================================
+// Network Proxy Settings
+// ============================================
+
+import type { NetworkProxySettings } from './types.ts';
+
+function normalizeProxyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function normalizeNetworkProxySettings(
+  settings: NetworkProxySettings,
+): NetworkProxySettings {
+  return {
+    enabled: Boolean(settings.enabled),
+    httpProxy: normalizeProxyString(settings.httpProxy),
+    httpsProxy: normalizeProxyString(settings.httpsProxy),
+    noProxy: normalizeProxyString(settings.noProxy),
+  };
+}
+
+/**
+ * Get the current network proxy settings.
+ * Returns undefined if not configured.
+ */
+export function getNetworkProxySettings(): NetworkProxySettings | undefined {
+  const config = loadStoredConfig();
+  return config?.networkProxy;
+}
+
+/**
+ * Persist network proxy settings.
+ * Deletes the key when disabled and all proxy fields are empty.
+ */
+export function setNetworkProxySettings(settings: NetworkProxySettings): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+
+  const normalized = normalizeNetworkProxySettings(settings);
+
+  // Remove the key entirely when proxy is disabled and all fields are blank
+  if (!normalized.enabled && !normalized.httpProxy && !normalized.httpsProxy && !normalized.noProxy) {
+    delete config.networkProxy;
+  } else {
+    config.networkProxy = normalized;
+  }
+
+  saveConfig(config);
+}
+
+// ============================================
+// Setup Deferred (user skipped onboarding)
+// ============================================
+
+export function isSetupDeferred(): boolean {
+  return loadStoredConfig()?.setupDeferred === true;
+}
+
+export function setSetupDeferred(deferred: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  if (deferred) {
+    config.setupDeferred = true;
+  } else {
+    delete config.setupDeferred;
+  }
+  saveConfig(config);
 }
 
 // ============================================

@@ -12,6 +12,7 @@ import { BaseAgent, type MiniAgentConfig, MINI_AGENT_TOOLS, MINI_AGENT_MCP_KEYS 
 import type { BackendConfig, PostInitResult, PermissionRequestType, SdkMcpServerConfig } from './backend/types.ts';
 // Plan types are used by UI components; not needed in craft-agent.ts since Safe Mode is user-controlled
 import { parseError, type AgentError } from './errors.ts';
+import { mapClaudeSdkAssistantError, type ClaudeSdkApiError } from './claude-sdk-error-mapper.ts';
 import { runErrorDiagnostics } from './diagnostics.ts';
 import { loadStoredConfig, loadConfigDefaults, type Workspace, type AuthType, getDefaultLlmConnection, getLlmConnection } from '../config/storage.ts';
 import { getValidClaudeOAuthToken } from '../auth/state.ts';
@@ -49,6 +50,7 @@ import {
   SAFE_MODE_CONFIG,
 } from './mode-manager.ts';
 import { getSessionDataPath, getSessionPlansPath, getSessionPath } from '../sessions/storage.ts';
+import { getLastApiError } from '../interceptor-common.ts';
 import { extractWorkspaceSlug } from '../utils/workspace.ts';
 import {
   ConfigWatcher,
@@ -61,7 +63,7 @@ import {
   type PreToolUseCheckResult,
   BUILT_IN_TOOLS,
 } from './core/pre-tool-use.ts';
-import { type ThinkingLevel, getThinkingTokens, DEFAULT_THINKING_LEVEL } from './thinking-levels.ts';
+import { type ThinkingLevel, THINKING_TO_EFFORT, getThinkingTokens, DEFAULT_THINKING_LEVEL } from './thinking-levels.ts';
 import type { LoadedSource } from '../sources/types.ts';
 import { sourceNeedsAuthentication } from '../sources/credential-manager.ts';
 import type {
@@ -119,12 +121,42 @@ const CONVERTIBLE_FILE_HINTS: Record<string, string> = {
   ics: 'ical-tool read',
 };
 
+export function resolveClaudeThinkingOptions(args: {
+  thinkingLevel: ThinkingLevel;
+  model: string;
+  providerType?: BackendConfig['providerType'];
+  minimizeThinking: boolean;
+}): Partial<Options> {
+  const { thinkingLevel, model, providerType, minimizeThinking } = args;
+  const isClaude = isClaudeModel(model);
+  const effort = THINKING_TO_EFFORT[thinkingLevel];
+  const isHaiku = model.toLowerCase().includes('haiku');
+  const supportsAdaptiveThinking = isClaude && !isHaiku && providerType !== 'anthropic_compat';
+
+  if (minimizeThinking || !isClaude || !effort) {
+    return supportsAdaptiveThinking
+      ? { thinking: { type: 'disabled' as const } }
+      : { maxThinkingTokens: 0 };
+  }
+
+  if (supportsAdaptiveThinking) {
+    return {
+      thinking: { type: 'adaptive' as const },
+      effort,
+    };
+  }
+
+  return {
+    maxThinkingTokens: getThinkingTokens(thinkingLevel, model),
+  };
+}
+
 export interface ClaudeAgentConfig {
   workspace: Workspace;
   session?: Session;           // Current session (primary isolation boundary)
   mcpToken?: string;           // Override token (for testing)
   model?: string;
-  thinkingLevel?: ThinkingLevel; // Initial thinking level (defaults to 'think')
+  thinkingLevel?: ThinkingLevel; // Initial thinking level (defaults to 'medium')
   onSdkSessionIdUpdate?: (sdkSessionId: string) => void;  // Callback when SDK session ID is captured
   onSdkSessionIdCleared?: () => void;  // Callback when SDK session ID is cleared (e.g., after failed resume)
   /**
@@ -319,7 +351,13 @@ export function jsonPropToZod(prop: any, depth = 0): z.ZodTypeAny {
       // Nested object with known properties → build z.object({...})
       if (prop.properties && typeof prop.properties === 'object') {
         const shape = jsonSchemaToZodShape(prop, depth + 1);
-        return withDesc(z.object(shape));
+        const obj = z.object(shape);
+        // JSON Schema defaults additionalProperties to true when omitted.
+        // Only use strict (strip) mode when explicitly set to false.
+        if (prop.additionalProperties === false) {
+          return withDesc(obj);
+        }
+        return withDesc(obj.passthrough());
       }
       // Generic object (no properties defined)
       return withDesc(z.record(z.string(), z.unknown()));
@@ -600,6 +638,14 @@ export class ClaudeAgent extends BaseAgent {
       process.env[key] = value;
     }
 
+    // Pass mini model to SDK subprocess so built-in tools like WebFetch
+    // use the correct summarization model (instead of hardcoded Haiku).
+    // This is critical for custom providers where the default Haiku model ID
+    // doesn't exist on the provider's endpoint.
+    if (this.config.miniModel) {
+      process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = this.config.miniModel;
+    }
+
     return { authInjected: true };
   }
 
@@ -798,18 +844,25 @@ export class ClaudeAgent extends BaseAgent {
         debug(`[chat] Custom provider: baseUrl=${activeBaseUrl}, model=${model}, hasApiKey=${!!process.env.ANTHROPIC_API_KEY}`);
       }
 
-      const thinkingTokens = getThinkingTokens(this._thinkingLevel, model);
-      debug(`[chat] Thinking: level=${this._thinkingLevel}, tokens=${thinkingTokens}`);
+      const thinkingOptions = resolveClaudeThinkingOptions({
+        thinkingLevel: this._thinkingLevel,
+        model,
+        providerType: this.config.providerType,
+        minimizeThinking: miniConfig.minimizeThinking,
+      });
+      if ('effort' in thinkingOptions && thinkingOptions.effort) {
+        debug(`[chat] Thinking: level=${this._thinkingLevel}, effort=${thinkingOptions.effort}`);
+      } else if ('maxThinkingTokens' in thinkingOptions) {
+        debug(`[chat] Thinking: level=${this._thinkingLevel}, tokens=${thinkingOptions.maxThinkingTokens}`);
+      } else {
+        debug(`[chat] Thinking: level=${this._thinkingLevel}, disabled`);
+      }
 
       // NOTE: Parent-child tracking for subagents is documented below (search for
       // "PARENT-CHILD TOOL TRACKING"). The SDK's parent_tool_use_id is authoritative.
 
       // Clear stderr buffer at start of each query
       this.lastStderrOutput = [];
-
-      // Detect if resolved model is Claude — non-Claude models (via OpenRouter/Ollama) don't
-      // support Anthropic-specific betas or extended thinking parameters
-      const isClaude = isClaudeModel(model);
 
       // Log mini agent mode details (using centralized config)
       if (miniConfig.enabled) {
@@ -838,10 +891,11 @@ export class ClaudeAgent extends BaseAgent {
             this.lastStderrOutput.shift();
           }
         },
-        // Extended thinking: tokens based on session thinking level
-        // Non-Claude models don't support extended thinking, so pass 0 to disable
-        // Mini agents also disable thinking for efficiency (quick config edits don't need deep reasoning)
-        maxThinkingTokens: miniConfig.minimizeThinking ? 0 : (isClaude ? thinkingTokens : 0),
+        // Thinking config is provider-aware:
+        // - true Anthropic backends use adaptive thinking + effort
+        // - anthropic_compat/custom endpoints fall back to token budgets
+        // - non-Claude models disable thinking entirely
+        ...thinkingOptions,
         // System prompt configuration:
         // - Mini agents: Use custom (lean) system prompt without Claude Code preset
         // - Normal agents: Append to Claude Code's system prompt (recommended by docs)
@@ -2025,7 +2079,7 @@ This is a branched conversation. All prior messages in this conversation are par
    * Uses async retries with non-blocking delays to handle race condition where
    * SDK may still be writing to the debug file when the error event is received.
    */
-  private async parseApiErrorFromDebugLog(): Promise<{ errorType: string; message: string; requestId?: string } | null> {
+  private async parseApiErrorFromDebugLog(): Promise<ClaudeSdkApiError | null> {
     if (!this.sessionId) return null;
 
     const fs = require('fs');
@@ -2089,115 +2143,34 @@ This is a branched conversation. All prior messages in this conversation are par
   }
 
   /**
+   * Pop a recent captured API error, preferring the session-scoped file.
+   * Falls back to the legacy global file for backward compatibility.
+   */
+  private getCapturedApiErrorForSession() {
+    const sessionId = this.config.session?.id;
+    if (!sessionId) {
+      return getLastApiError();
+    }
+
+    const sessionDir = getSessionPath(this.workspaceRootPath, sessionId);
+    return getLastApiError(sessionDir) ?? getLastApiError();
+  }
+
+  /**
    * Map SDK assistant message error codes to typed error events with user-friendly messages.
-   * Reads from SDK debug log file to extract actual API error details.
+   * Merges SDK code with parsed debug errors and interceptor-captured API statuses.
    */
   private async mapSDKErrorToTypedError(
     errorCode: SDKAssistantMessageError
   ): Promise<{ type: 'typed_error'; error: AgentError }> {
-    // Try to extract actual error message from SDK debug log file
     const actualError = await this.parseApiErrorFromDebugLog();
-    const errorMap: Record<SDKAssistantMessageError, AgentError> = {
-      'authentication_failed': {
-        code: 'invalid_api_key',
-        title: 'Authentication Failed',
-        message: 'Unable to authenticate with Anthropic. Your API key may be invalid or expired.',
-        details: ['Check your API key in settings', 'Ensure your API key has not been revoked'],
-        actions: [
-          { key: 's', label: 'Settings', action: 'settings' },
-          { key: 'r', label: 'Retry', action: 'retry' },
-        ],
-        canRetry: true,
-        retryDelayMs: 1000,
-      },
-      'billing_error': {
-        code: 'billing_error',
-        title: 'Billing Error',
-        message: 'Your account has a billing issue.',
-        details: ['Check your Anthropic account billing status'],
-        actions: [
-          { key: 's', label: 'Update credentials', action: 'settings' },
-        ],
-        canRetry: false,
-      },
-      'rate_limit': {
-        code: 'rate_limited',
-        title: 'Rate Limit Exceeded',
-        message: 'Too many requests. Please wait a moment before trying again.',
-        details: ['Rate limits reset after a short period', 'Consider upgrading your plan for higher limits'],
-        actions: [
-          { key: 'r', label: 'Retry', action: 'retry' },
-        ],
-        canRetry: true,
-        retryDelayMs: 5000,
-      },
-      'invalid_request': {
-        code: 'invalid_request',
-        title: 'Invalid Request',
-        message: 'The API rejected this request.',
-        details: [
-          ...(actualError ? [
-            `Error: ${actualError.message}`,
-            `Type: ${actualError.errorType}`,
-            ...(actualError.requestId ? [`Request ID: ${actualError.requestId}`] : []),
-          ] : []),
-          'Try removing any attachments and resending',
-          'Check if images are in a supported format (PNG, JPEG, GIF, WebP)',
-        ],
-        actions: [
-          { key: 'r', label: 'Retry', action: 'retry' },
-        ],
-        canRetry: true,
-        retryDelayMs: 1000,
-      },
-      'server_error': {
-        code: 'network_error',
-        title: 'Connection Error',
-        message: 'Unable to connect to the API server. Check your internet connection.',
-        details: [
-          'Verify your network connection is active',
-          'Check if the API endpoint is accessible',
-          'Firewall or VPN may be blocking the connection',
-        ],
-        actions: [
-          { key: 'r', label: 'Retry', action: 'retry' },
-        ],
-        canRetry: true,
-        retryDelayMs: 2000,
-      },
-      'max_output_tokens': {
-        code: 'invalid_request',
-        title: 'Output Too Large',
-        message: 'The response exceeded the maximum output token limit.',
-        details: ['Try breaking the task into smaller parts', 'Reduce the scope of the request'],
-        actions: [
-          { key: 'r', label: 'Retry', action: 'retry' },
-        ],
-        canRetry: true,
-        retryDelayMs: 1000,
-      },
-      'unknown': {
-        code: 'unknown_error',
-        title: 'Unknown Error',
-        message: 'An unexpected error occurred.',
-        details: [
-          ...(actualError ? [
-            `Error: ${actualError.message}`,
-            `Type: ${actualError.errorType}`,
-            ...(actualError.requestId ? [`Request ID: ${actualError.requestId}`] : []),
-          ] : []),
-          'This may be a temporary issue',
-          'Check your network connection',
-        ],
-        actions: [
-          { key: 'r', label: 'Retry', action: 'retry' },
-        ],
-        canRetry: true,
-        retryDelayMs: 2000,
-      },
-    };
+    const capturedApiError = this.getCapturedApiErrorForSession();
 
-    const error = errorMap[errorCode];
+    const error = mapClaudeSdkAssistantError(errorCode, {
+      actualError,
+      capturedApiError,
+    });
+
     return {
       type: 'typed_error',
       error,
@@ -2294,6 +2267,26 @@ This is a branched conversation. All prior messages in this conversation are par
     this.debug(`Steering mid-stream: "${message.slice(0, 100)}"`);
     this.pendingSteerMessage = message;
     return true;
+  }
+
+  /**
+   * Interrupt the current query because control is being handed to the UI.
+   *
+   * For Claude, handoff boundaries (auth requests, plan submission) should use
+   * the SDK's cooperative interrupt path instead of aborting the underlying
+   * AbortController mid-control-write.
+   */
+  override interruptForHandoff(reason: AbortReason): void {
+    this.lastAbortReason = reason;
+    this.pendingSteerMessage = null; // Clear any undelivered steer
+
+    if (!this.currentQuery) {
+      return;
+    }
+
+    void this.currentQuery.interrupt().catch((error) => {
+      this.debug(`Claude handoff interrupt failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   /**
@@ -2522,6 +2515,7 @@ This is a branched conversation. All prior messages in this conversation are par
       model,
       maxTurns: 1,
       systemPrompt: 'Reply with ONLY the requested text. No explanation.', // Minimal - no Claude Code preset
+      thinking: { type: 'disabled' as const },
     };
 
     let result = '';
