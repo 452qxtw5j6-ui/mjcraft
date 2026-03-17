@@ -76,6 +76,7 @@ export type EditContextKey =
   | 'add-source'
   | 'add-source-api'   // Filter-specific: user is viewing APIs
   | 'add-source-mcp'   // Filter-specific: user is viewing MCPs
+  | 'add-source-cli'   // Filter-specific: user is viewing CLI sources
   | 'add-source-local' // Filter-specific: user is viewing Local Folders
   | 'add-skill'
   | 'edit-statuses'
@@ -206,7 +207,7 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
       filePath: `${location}/config.json`,
       context:
         'The user is editing source configuration (config.json). ' +
-        'Be careful with JSON syntax. Fields include: type, slug, name, tagline, iconUrl, and transport-specific settings (mcp, api, local). ' +
+        'Be careful with JSON syntax. Fields include: type, slug, name, tagline, iconUrl, and type-specific settings (mcp, api, local, cli). ' +
         'Do NOT modify the slug unless explicitly requested. ' +
         'After editing, call source_test with the source slug to verify the configuration. ' +
         'Confirm clearly when done.',
@@ -278,8 +279,11 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
       filePath: `${location}/sources/`, // location is the workspace root path
       context:
         'The user wants to add a new source to their workspace. ' +
-        'Sources can be MCP servers (HTTP/SSE or stdio), REST APIs, or local filesystems. ' +
-        'Ask clarifying questions if needed: What service? MCP or API? Auth type? ' +
+        'Sources can be MCP servers, CLI commands, REST APIs, or local filesystems. ' +
+        'If the request sounds like a local CLI tool, prefer creating a CLI source (type: "cli"), not an MCP source. ' +
+        'For CLI sources, first verify whether the command is already installed. If not, install it or choose a safe execution wrapper such as npx when appropriate. ' +
+        'For CLI sources, require a narrow allowlist of safe commands, prefer structured JSON output, define useful presets/aliases, and summarize the CLI help tree in guide.md. ' +
+        'Ask clarifying questions if needed: What service? CLI, MCP, or API? What auth/runtime is needed? ' +
         'Create the source folder and config.json in the workspace sources directory. ' +
         'Follow the patterns in ~/.craft-agent/docs/sources.md. ' +
         'After creating the source, call source_test with the source slug to verify the configuration.',
@@ -321,6 +325,30 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
     },
     example: 'Connect to Linear',
     overridePlaceholder: 'What MCP server would you like to connect?',
+  }),
+
+  'add-source-cli': (location) => ({
+    context: {
+      label: 'Add CLI Source',
+      filePath: `${location}/sources/`,
+      context:
+        'The user is viewing CLI sources and wants to add a new CLI-backed source. ' +
+        'Default to creating a CLI source (type: "cli") unless they specify otherwise. ' +
+        'CLI sources wrap a local command and expose it as a source tool. ' +
+        'Before writing the source, check whether the CLI is already installed. If it is missing, install it using the safest practical method for that CLI, or use npx only when that is the intended install/run model. ' +
+        'The resulting CLI source should be constrained and self-describing. Require these rules when generating the source: ' +
+        '(1) add a clear allowlist of safe subcommands or patterns and exclude destructive/admin/mutation commands by default; ' +
+        '(2) force structured JSON output whenever the CLI supports it; ' +
+        '(3) define useful presets or aliases for common read operations; ' +
+        '(4) inspect --help output for the root command and important subcommands, then summarize the allowed command tree in guide.md with concrete argv examples. ' +
+        'Ask about the base command, default args, installation method, auth bootstrap, and whether a working directory or env vars are needed. ' +
+        'Create the source folder and config.json in the workspace sources directory. ' +
+        'Follow the patterns in ~/.craft-agent/docs/sources.md. ' +
+        'After creating the source, call source_test with the source slug to verify the configuration. ' +
+        'Do not leave the CLI source as an unrestricted generic shell wrapper.',
+    },
+    example: 'Connect to my Google Workspace CLI',
+    overridePlaceholder: 'What CLI tool would you like to connect?',
   }),
 
   'add-source-local': (location) => ({

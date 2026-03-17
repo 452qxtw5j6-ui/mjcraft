@@ -217,7 +217,7 @@ export interface ValidationResult {
 /**
  * Source type discriminator
  */
-export type SourceType = 'mcp' | 'api' | 'local';
+export type SourceType = 'mcp' | 'api' | 'local' | 'cli';
 
 /**
  * MCP transport type
@@ -283,6 +283,14 @@ export interface LocalSourceConfig {
   format?: string;
 }
 
+export interface CliSourceConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  timeoutMs?: number;
+}
+
 /**
  * Connection status for sources
  */
@@ -301,6 +309,7 @@ export interface SourceConfig {
   mcp?: McpSourceConfig;
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
+  cli?: CliSourceConfig;
   isAuthenticated?: boolean;
   lastTestedAt?: string; // ISO date string
   createdAt?: number;

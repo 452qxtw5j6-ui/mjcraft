@@ -1,6 +1,6 @@
 # Sources Configuration Guide
 
-This guide explains how to configure sources (MCP servers, APIs, local filesystems) in Craft Agent.
+This guide explains how to configure sources (MCP servers, CLI tools, APIs, local filesystems) in Craft Agent.
 
 > **CLI-first workflow (recommended):** Use `craft-agent source ...` commands instead of editing source config files directly.
 > - `craft-agent source --help`
@@ -86,6 +86,43 @@ Based on research and user intent, create `config.json` with **ALL required fiel
 - `tagline` - **RECOMMENDED**: Short description for agent context (e.g., "Issue tracking, sprint planning, and project management")
 - Type-specific config (`mcp`, `api`, or `local`)
 - Authentication method appropriate for the service
+
+### CLI Source Playbook
+
+When the source is backed by a local CLI command, do **not** create a generic unrestricted wrapper. Treat it as a constrained source integration.
+
+**Required setup sequence for CLI sources:**
+1. **Verify install state first**
+   - Check whether the command already exists and can run
+   - If missing, install it using the safest appropriate method for that CLI
+   - If the ecosystem is intentionally `npx`-first, using `npx -y <package>` as the base command is acceptable
+2. **Inspect the help surface**
+   - Run the root help and relevant nested help commands
+   - At minimum, inspect:
+     - `<cmd> --help`
+     - `<cmd> <group> --help`
+     - `<cmd> <group> <resource> <verb> --help`
+3. **Constrain what the agent may call**
+   - Define a narrow allowlist of safe commands or command patterns
+   - Default to read-only/list/get/search/info operations
+   - Exclude delete/update/admin/destructive operations unless the user explicitly asks for them
+4. **Prefer structured output**
+   - Force JSON output whenever the CLI supports it
+   - Avoid plain text output unless there is no machine-readable alternative
+5. **Add presets for common tasks**
+   - Create a few named read-only presets/aliases for high-frequency tasks
+   - Presets reduce argv assembly mistakes and improve model reliability
+6. **Write a strong guide.md**
+   - Summarize the command tree you inspected
+   - State exactly which commands are allowed
+   - Include argv examples and JSON-output conventions
+
+**Design rules for CLI sources:**
+- Allow only explicitly approved subcommands
+- Prefer JSON output by default
+- Prefer presets over free-form argv for common operations
+- Document the help tree and examples in `guide.md`
+- Do not expose the CLI as a general-purpose shell tool
 
 ### 4. Configure Explore Mode Permissions (REQUIRED)
 
@@ -258,7 +295,7 @@ Each source folder contains:
   "slug": "url-safe-identifier",
   "enabled": true,
   "provider": "provider-name",
-  "type": "mcp" | "api" | "local",
+  "type": "mcp" | "cli" | "api" | "local",
 
   // RECOMMENDED: Icon and tagline for better UI and agent context
   "icon": "https://example.com/favicon.ico",  // URL (auto-downloaded) or emoji
@@ -283,6 +320,15 @@ Each source folder contains:
   // For local sources:
   "local": {
     "path": "/path/to/folder"
+  },
+
+  // For CLI sources:
+  "cli": {
+    "command": "gws",
+    "args": ["drive"],
+    "env": { "FOO_TOKEN": "..." },
+    "cwd": "/optional/working/directory",
+    "timeoutMs": 30000
   },
 
   // Status (updated by source_test):
@@ -399,6 +445,30 @@ With environment variables:
 ### API Sources
 
 REST APIs become flexible tools that Claude can call.
+
+### CLI Sources
+
+CLI sources wrap a local command but still expose a source-tool surface to the agent.
+
+**Example:**
+```json
+{
+  "type": "cli",
+  "name": "Google Workspace CLI",
+  "provider": "googleworkspace-cli",
+  "cli": {
+    "command": "npx",
+    "args": ["-y", "@googleworkspace/cli"]
+  }
+}
+```
+
+**Recommended guide.md contents for CLI sources:**
+- Which root/subcommands are allowed
+- Which operations are intentionally blocked
+- How JSON output is requested or enforced
+- Which presets are available
+- Minimal `--help` summary for the root and major subcommand groups
 
 **IMPORTANT:** Authenticated API sources require a `testEndpoint` to validate credentials during `source_test`. Without it, we cannot verify your credentials work.
 

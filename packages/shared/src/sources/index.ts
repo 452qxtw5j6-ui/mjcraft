@@ -14,6 +14,7 @@ export type {
   McpSourceConfig,
   ApiSourceConfig,
   LocalSourceConfig,
+  CliSourceConfig,
   SourceConnectionStatus,
   FolderSourceConfig,
   SourceGuide,
@@ -94,6 +95,11 @@ export {
 
 // API Tools (types)
 export type { SummarizeCallback } from './api-tools.ts';
+
+// CLI Tool wrapper (CLI sources exposed as MCP-like tools)
+export {
+  createCliServer,
+} from './cli-tools.ts';
 
 // Token Refresh Manager (handles OAuth token refresh with rate limiting)
 export {

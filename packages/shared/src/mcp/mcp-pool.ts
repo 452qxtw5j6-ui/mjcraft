@@ -19,6 +19,7 @@ import type { SdkMcpServerConfig } from '../agent/backend/types.ts';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { isLocalMcpEnabled } from '../workspaces/storage.ts';
+import { createCliServer } from '../sources/cli-tools.ts';
 import { guardLargeResult } from '../utils/large-response.ts';
 import {
   saveBinaryResponse,
@@ -91,6 +92,14 @@ function mcpConfigChanged(oldConfig: SdkMcpServerConfig, newConfig: SdkMcpServer
     const oldAuth = oldConfig.headers?.['Authorization'];
     const newAuth = newConfig.headers?.['Authorization'];
     if (oldAuth !== newAuth) return true;
+  }
+
+  if (oldConfig.type === 'cli' && newConfig.type === 'cli') {
+    return oldConfig.command !== newConfig.command
+      || JSON.stringify(oldConfig.args ?? []) !== JSON.stringify(newConfig.args ?? [])
+      || JSON.stringify(oldConfig.env ?? {}) !== JSON.stringify(newConfig.env ?? {})
+      || oldConfig.cwd !== newConfig.cwd
+      || oldConfig.timeoutMs !== newConfig.timeoutMs;
   }
 
   return false;
@@ -170,6 +179,34 @@ export class McpClientPool {
    */
   async connect(slug: string, config: SdkMcpServerConfig): Promise<void> {
     if (this.clients.has(slug)) return;
+    if (config.type === 'cli') {
+      const source = {
+        config: {
+          id: slug,
+          slug,
+          name: slug,
+          enabled: true,
+          provider: slug,
+          type: 'cli' as const,
+          cli: {
+            command: config.command,
+            args: config.args,
+            env: config.env,
+            cwd: config.cwd,
+            timeoutMs: config.timeoutMs,
+          },
+        },
+        guide: null,
+        folderPath: this.workspaceRootPath ?? process.cwd(),
+        workspaceRootPath: this.workspaceRootPath ?? process.cwd(),
+        workspaceId: 'runtime',
+      };
+      const cliServer = createCliServer(source, this.sessionPath, this.summarizeCallback);
+      await this.registerClient(slug, new ApiSourcePoolClient(cliServer.instance as McpServer));
+      this.activeConfigs.set(slug, config);
+      return;
+    }
+
     const clientConfig = sdkConfigToClientConfig(config);
     if (!clientConfig) {
       this.debug(`Unknown MCP server type for ${slug}: ${(config as { type: string }).type}`);
@@ -239,8 +276,8 @@ export class McpClientPool {
     const localEnabled = !this.workspaceRootPath || isLocalMcpEnabled(this.workspaceRootPath);
     const filteredMcp: Record<string, SdkMcpServerConfig> = {};
     for (const [slug, config] of Object.entries(mcpServers)) {
-      if (config.type === 'stdio' && !localEnabled) {
-        this.debug(`Filtering out stdio source "${slug}" (local MCP disabled)`);
+      if ((config.type === 'stdio' || config.type === 'cli') && !localEnabled) {
+        this.debug(`Filtering out local source "${slug}" (local MCP disabled)`);
         continue;
       }
       filteredMcp[slug] = config;

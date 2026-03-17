@@ -44,6 +44,7 @@ export function registerSourcesHandlers(server: RpcServer, deps: HandlerDeps): v
       mcp: config.mcp,
       api: config.api,
       local: config.local,
+      cli: config.cli,
     })
   })
 
@@ -157,8 +158,9 @@ export function registerSourcesHandlers(server: RpcServer, deps: HandlerDeps): v
       const sources = await loadWorkspaceSources(workspace.rootPath)
       const source = sources.find(s => s.config.slug === sourceSlug)
       if (!source) return { success: false, error: 'Source not found' }
-      if (source.config.type !== 'mcp') return { success: false, error: 'Source is not an MCP server' }
-      if (!source.config.mcp) return { success: false, error: 'MCP config not found' }
+      if (source.config.type !== 'mcp' && source.config.type !== 'cli') return { success: false, error: 'Source does not expose source tools' }
+      if (source.config.type === 'mcp' && !source.config.mcp) return { success: false, error: 'MCP config not found' }
+      if (source.config.type === 'cli' && !source.config.cli) return { success: false, error: 'CLI config not found' }
 
       if (source.config.connectionStatus === 'needs_auth') {
         return { success: false, error: 'Source requires authentication' }
@@ -170,41 +172,55 @@ export function registerSourcesHandlers(server: RpcServer, deps: HandlerDeps): v
         return { success: false, error: 'Source has not been tested yet' }
       }
 
-      const { CraftMcpClient } = await import('@craft-agent/shared/mcp')
-      let client: InstanceType<typeof CraftMcpClient>
+      const { CraftMcpClient, ApiSourcePoolClient } = await import('@craft-agent/shared/mcp')
+      const { createCliServer } = await import('@craft-agent/shared/sources')
+      let client: { listTools(): Promise<Array<{ name: string; description?: string }>>; close(): Promise<void> }
 
-      if (source.config.mcp.transport === 'stdio') {
-        if (!source.config.mcp.command) {
-          return { success: false, error: 'Stdio MCP source is missing required "command" field' }
+      if (source.config.type === 'cli') {
+        if (!source.config.cli?.command) {
+          return { success: false, error: 'CLI source is missing required "command" field' }
         }
-        log.info(`Fetching MCP tools via stdio: ${source.config.mcp.command}`)
-        client = new CraftMcpClient({
-          transport: 'stdio',
-          command: source.config.mcp.command,
-          args: source.config.mcp.args,
-          env: source.config.mcp.env,
-        })
+        log.info(`Fetching CLI tools via wrapper: ${source.config.cli.command}`)
+        client = new ApiSourcePoolClient(createCliServer(source).instance as unknown as any)
       } else {
-        if (!source.config.mcp.url) {
-          return { success: false, error: 'MCP source URL is required for HTTP/SSE transport' }
+        const mcp = source.config.mcp
+        if (!mcp) {
+          return { success: false, error: 'MCP config not found' }
         }
 
-        let accessToken: string | undefined
-        if (source.config.mcp.authType === 'oauth' || source.config.mcp.authType === 'bearer') {
-          const credentialManager = getCredentialManager()
-          const credentialId = source.config.mcp.authType === 'oauth'
-            ? { type: 'source_oauth' as const, workspaceId: source.workspaceId, sourceId: sourceSlug }
-            : { type: 'source_bearer' as const, workspaceId: source.workspaceId, sourceId: sourceSlug }
-          const credential = await credentialManager.get(credentialId)
-          accessToken = credential?.value
-        }
+        if (mcp.transport === 'stdio') {
+          if (!mcp.command) {
+            return { success: false, error: 'Stdio MCP source is missing required "command" field' }
+          }
+          log.info(`Fetching MCP tools via stdio: ${mcp.command}`)
+          client = new CraftMcpClient({
+            transport: 'stdio',
+            command: mcp.command,
+            args: mcp.args,
+            env: mcp.env,
+          })
+        } else {
+          if (!mcp.url) {
+            return { success: false, error: 'MCP source URL is required for HTTP/SSE transport' }
+          }
 
-        log.info(`Fetching MCP tools from ${source.config.mcp.url}`)
-        client = new CraftMcpClient({
-          transport: 'http',
-          url: source.config.mcp.url,
-          headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
-        })
+          let accessToken: string | undefined
+          if (mcp.authType === 'oauth' || mcp.authType === 'bearer') {
+            const credentialManager = getCredentialManager()
+            const credentialId = mcp.authType === 'oauth'
+              ? { type: 'source_oauth' as const, workspaceId: source.workspaceId, sourceId: sourceSlug }
+              : { type: 'source_bearer' as const, workspaceId: source.workspaceId, sourceId: sourceSlug }
+            const credential = await credentialManager.get(credentialId)
+            accessToken = credential?.value
+          }
+
+          log.info(`Fetching MCP tools from ${mcp.url}`)
+          client = new CraftMcpClient({
+            transport: 'http',
+            url: mcp.url,
+            headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+          })
+        }
       }
 
       const tools = await client.listTools()

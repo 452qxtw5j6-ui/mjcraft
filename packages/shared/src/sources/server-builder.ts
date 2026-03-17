@@ -15,6 +15,7 @@ import type { LoadedSource, ApiConfig } from './types.ts';
 import type { ApiCredential } from './credential-manager.ts';
 import { isSourceUsable } from './storage.ts';
 import { createApiServer, type SummarizeCallback } from './api-tools.ts';
+import { createCliServer } from './cli-tools.ts';
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { debug } from '../utils/debug.ts';
 
@@ -29,11 +30,12 @@ export const SERVER_BUILD_ERRORS = {
 
 /**
  * MCP server configuration compatible with Claude Agent SDK
- * Supports HTTP/SSE (remote) and stdio (local subprocess) transports.
+ * Supports HTTP/SSE (remote), stdio (local subprocess), and wrapped CLI runtime transports.
  */
 export type McpServerConfig =
   | { type: 'http' | 'sse'; url: string; headers?: Record<string, string> }
-  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> };
+  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
+  | { type: 'cli'; command: string; args?: string[]; env?: Record<string, string>; cwd?: string; timeoutMs?: number };
 
 /**
  * Source with its credential pre-loaded
@@ -88,7 +90,7 @@ export class SourceServerBuilder {
 
     const mcp = source.config.mcp;
 
-    // Handle stdio transport (local subprocess servers)
+    // Handle stdio transport (local MCP subprocess servers)
     if (mcp.transport === 'stdio') {
       if (!mcp.command) {
         debug(`[SourceServerBuilder] Stdio source ${source.config.slug} missing command`);
@@ -202,6 +204,24 @@ export class SourceServerBuilder {
   }
 
   /**
+   * Build an in-process CLI server for a CLI source.
+   */
+  buildCliServer(
+    source: LoadedSource,
+    sessionPath?: string,
+    summarize?: SummarizeCallback
+  ): ReturnType<typeof createSdkMcpServer> | null {
+    if (source.config.type !== 'cli' || !source.config.cli) {
+      return null;
+    }
+    if (!source.config.cli.command) {
+      debug(`[SourceServerBuilder] CLI source ${source.config.slug} missing command`);
+      return null;
+    }
+    return createCliServer(source, sessionPath, summarize);
+  }
+
+  /**
    * Build ApiConfig from a LoadedSource
    */
   buildApiConfig(source: LoadedSource): ApiConfig {
@@ -270,6 +290,12 @@ export class SourceServerBuilder {
               sourceSlug: source.config.slug,
               error: SERVER_BUILD_ERRORS.AUTH_REQUIRED,
             });
+          }
+        } else if (source.config.type === 'cli') {
+          const server = this.buildCliServer(source, sessionPath, summarize);
+          if (server) {
+            debug(`[SourceServerBuilder] Built CLI server for ${source.config.slug}`);
+            apiServers[source.config.slug] = server;
           }
         } else if (source.config.type === 'api') {
           const getToken = getTokenForSource?.(source);
