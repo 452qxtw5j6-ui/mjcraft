@@ -8,6 +8,7 @@ import {
   LinearAgentBridgeService,
   buildLinearInstallUrl,
   normalizeLinearAgentEvent,
+  resolveLinearSessionLabels,
 } from '../linear-agent-bridge'
 
 const tempDirs: string[] = []
@@ -197,6 +198,25 @@ describe('linear-agent bridge helpers', () => {
     })).toBe(
       'https://linear.app/oauth/authorize?client_id=client-1&redirect_uri=https%3A%2F%2Fbridge.example.com%2Flinear%2Fcallback&response_type=code&scope=read%2Cwrite%2Capp%3Amentionable&actor=app&prompt=consent&state=state-1',
     )
+  })
+
+  it('adds an existing dedicated linear label for Linear-created sessions', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-labels-'))
+    tempDirs.push(workspaceRoot)
+
+    await mkdir(join(workspaceRoot, 'labels'), { recursive: true })
+    await writeFile(join(workspaceRoot, 'labels', 'config.json'), JSON.stringify({
+      version: 1,
+      labels: [
+        { id: 'linear', name: 'Linear', color: 'accent' },
+        { id: 'bug', name: 'Bug', color: 'destructive' },
+        { id: 'project', name: 'Project', color: 'foreground/50', valueType: 'string' },
+      ],
+    }, null, 2), 'utf-8')
+
+    const labels = resolveLinearSessionLabels(workspaceRoot, ['project::ENG', 'linear', 'bug'])
+
+    expect(labels).toEqual(['linear', 'project::ENG', 'bug'])
   })
 
   it('overwrites stale bridge config with a minimal Codex config', async () => {

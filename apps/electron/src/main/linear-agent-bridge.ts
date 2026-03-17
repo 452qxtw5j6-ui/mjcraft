@@ -8,6 +8,7 @@ import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import type { StoredCredential } from '@craft-agent/shared/credentials/types'
+import { isValidLabelId } from '@craft-agent/shared/labels/storage'
 import log from './logger'
 
 const linearBridgeLog = log.scope('linear-agent')
@@ -375,6 +376,11 @@ function buildCraftSessionName(
   if (issuePart) return `${prefix}: ${issuePart}`.slice(0, 120)
   if (titlePart) return `${prefix}: ${titlePart}`.slice(0, 120)
   return `${prefix}: ${event.prompt.slice(0, 80)}`.slice(0, 120)
+}
+
+export function resolveLinearSessionLabels(workspaceRootPath: string, labels?: string[]): string[] {
+  if (!isValidLabelId(workspaceRootPath, 'linear')) return labels ?? []
+  return Array.from(new Set(['linear', ...(labels ?? [])]))
 }
 
 function maybeNormalizeTimestamp(value: unknown): number | undefined {
@@ -1683,7 +1689,7 @@ export class LinearAgentBridgeService {
         permissionMode: agentConfig.target.permissionMode,
         llmConnection: agentConfig.target.llmConnection,
         model: agentConfig.target.model,
-        labels: agentConfig.target.labels,
+        labels: resolveLinearSessionLabels(this.workspaceRootPath, agentConfig.target.labels),
         workingDirectory: agentConfig.target.workingDirectory,
       })
       this.sessionManager.notifySessionCreated?.(session.id)
