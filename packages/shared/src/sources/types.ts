@@ -13,7 +13,7 @@
 /**
  * Source types - how we connect to the source
  */
-export type SourceType = 'mcp' | 'api' | 'local';
+export type SourceType = 'mcp' | 'api' | 'local' | 'cli';
 
 /**
  * MCP source authentication types (for individual source connections)
@@ -207,8 +207,7 @@ export function isOAuthSource(source: LoadedSource): boolean {
 export type McpTransport = 'http' | 'sse' | 'stdio';
 
 /**
- * MCP-specific configuration
- * Supports both HTTP-based and local stdio-based MCP servers.
+ * MCP-specific configuration.
  */
 export interface McpSourceConfig {
   /**
@@ -249,6 +248,19 @@ export interface McpSourceConfig {
    * Environment variables for the spawned process.
    */
   env?: Record<string, string>;
+}
+
+/**
+ * CLI-specific configuration.
+ * A CLI source wraps a local command but is exposed to the agent through the
+ * source tool proxy surface as `mcp__{slug}__run`.
+ */
+export interface CliSourceConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  timeoutMs?: number;
 }
 
 /**
@@ -347,6 +359,7 @@ export interface FolderSourceConfig {
   mcp?: McpSourceConfig;
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
+  cli?: CliSourceConfig;
 
   // Icon: emoji or URL
   // Config is the source of truth. Local icon files are auto-discovered only when icon is undefined.
@@ -430,6 +443,7 @@ export interface CreateSourceInput {
   mcp?: McpSourceConfig;
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
+  cli?: CliSourceConfig;
   icon?: string; // Emoji or URL (auto-downloaded)
   enabled?: boolean;
 }

@@ -22,6 +22,7 @@ import {
   Inbox,
   Globe,
   FolderOpen,
+  Terminal,
   Cake,
   Calendar,
   Layers,
@@ -1393,10 +1394,10 @@ function AppShellContent({
 
   // Count sources by type for the Sources dropdown subcategories
   const sourceTypeCounts = useMemo(() => {
-    const counts = { api: 0, mcp: 0, local: 0 }
+    const counts = { api: 0, mcp: 0, cli: 0, local: 0 }
     for (const source of sources) {
       const t = source.config.type
-      if (t === 'api' || t === 'mcp' || t === 'local') {
+      if (t === 'api' || t === 'mcp' || t === 'local' || t === 'cli') {
         counts[t]++
       }
     }
@@ -1671,6 +1672,10 @@ function AppShellContent({
     navigate(routes.view.sourcesLocal())
   }, [])
 
+  const handleSourcesCliClick = useCallback(() => {
+    navigate(routes.view.sourcesCli())
+  }, [])
+
   // Handler for skills view
   const handleSkillsClick = useCallback(() => {
     navigate(routes.view.skills())
@@ -1717,8 +1722,8 @@ function AppShellContent({
   // State to control which EditPopover is open (triggered from context menus).
   // We use controlled popovers instead of deep links so the user can type
   // their request in the popover UI before opening a new chat window.
-  // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-local
-  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'labels' | 'views' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-skill' | 'add-label' | 'automation-config' | null>(null)
+  // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-cli, add-source-local
+  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'labels' | 'views' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-cli' | 'add-source-local' | 'add-skill' | 'add-label' | 'automation-config' | null>(null)
 
   // Stores the Y position of the last right-clicked sidebar item so the EditPopover
   // appears near it rather than at a fixed location. Updated synchronously before
@@ -1817,7 +1822,7 @@ function AppShellContent({
   // Handler for "Add Source" context menu action
   // Opens the EditPopover for adding a new source
   // Optional sourceType param allows filter-aware context (from subcategory menus or filtered views)
-  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local') => {
+  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local' | 'cli') => {
     captureContextMenuPosition()
     const key = sourceType ? `add-source-${sourceType}` as const : 'add-source' as const
     setTimeout(() => setEditPopoverOpen(key), 50)
@@ -2381,6 +2386,19 @@ function AppShellContent({
                             type: 'sources' as const,
                             onAddSource: () => openAddSource('local'),
                             sourceType: 'local',
+                          },
+                        },
+                        {
+                          id: "nav:sources:cli",
+                          title: "CLI",
+                          label: String(sourceTypeCounts.cli),
+                          icon: Terminal,
+                          variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'cli') ? "default" : "ghost",
+                          onClick: handleSourcesCliClick,
+                          contextMenu: {
+                            type: 'sources' as const,
+                            onAddSource: () => openAddSource('cli'),
+                            sourceType: 'cli',
                           },
                         },
                       ],
@@ -3370,9 +3388,9 @@ function AppShellContent({
             {...getEditConfig('edit-views', activeWorkspace.rootPath)}
           />
           {/* Add Source EditPopovers - one for each variant (generic + filter-specific)
-           * editPopoverOpen can be: 'add-source', 'add-source-api', 'add-source-mcp', 'add-source-local'
+           * editPopoverOpen can be: 'add-source', 'add-source-api', 'add-source-mcp', 'add-source-cli', 'add-source-local'
            * Each variant uses its corresponding EditContextKey for filter-aware agent context */}
-          {(['add-source', 'add-source-api', 'add-source-mcp', 'add-source-local'] as const).map((variant) => (
+          {(['add-source', 'add-source-api', 'add-source-mcp', 'add-source-cli', 'add-source-local'] as const).map((variant) => (
             <EditPopover
               key={variant}
               open={editPopoverOpen === variant}

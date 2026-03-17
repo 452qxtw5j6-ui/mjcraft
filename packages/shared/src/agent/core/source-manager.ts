@@ -258,8 +258,8 @@ export class SourceManager {
       if (authTool) {
         output += `\n\nThis source requires re-authentication. The user may have revoked access or the token expired.`;
         output += `\nTo fix: Re-authenticate using ${authTool}.`;
-      } else if (s.config.mcp?.transport === 'stdio') {
-        output += `\n\nThis is a local MCP server that is not responding. The server process may need to be restarted.`;
+      } else if (s.config.mcp?.transport === 'stdio' || s.config.type === 'cli') {
+        output += `\n\nThis is a local MCP/CLI source that is not responding. The server process may need to be restarted.`;
         output += `\nTo fix: Check if the server command/path is correct and the process can start.`;
       } else {
         output += `\n\nThis source's server is unreachable. It may be down or the URL may have changed.`;

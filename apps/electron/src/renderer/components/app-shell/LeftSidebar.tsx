@@ -38,7 +38,7 @@ export interface SidebarContextMenuConfig {
   /** Handler for "Add Automation" action - for automations type */
   onAddAutomation?: () => void
   /** Source type filter for "Learn More" link - determines which docs page to open */
-  sourceType?: 'api' | 'mcp' | 'local'
+  sourceType?: 'api' | 'mcp' | 'local' | 'cli'
   /** Handler for "Edit Views" action - for views type */
   onConfigureViews?: () => void
   /** View ID — when set, this is an individual view (enables Delete) */

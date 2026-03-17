@@ -1179,6 +1179,9 @@ export function NavigationProvider({
         case 'local':
           navigate(routes.view.sourcesLocal(sourceSlug))
           return
+        case 'cli':
+          navigate(routes.view.sourcesCli(sourceSlug))
+          return
       }
     }
     navigate(routes.view.sources(sourceSlug ? { sourceSlug } : undefined))

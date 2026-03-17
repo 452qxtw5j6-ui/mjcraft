@@ -140,10 +140,18 @@ export class SourceCredentialManager {
   async load(source: LoadedSource): Promise<StoredCredential | null> {
     const manager = getCredentialManager();
 
-    // For MCP sources, try both OAuth and bearer credentials
-    // (stdio transport doesn't need credentials)
-    if (source.config.type === 'mcp' && source.config.mcp?.transport !== 'stdio' && source.config.mcp?.authType !== 'none') {
+    // For MCP sources, try both OAuth and bearer credentials.
+    // Local stdio sources don't need credentials.
+    if (
+      source.config.type === 'mcp'
+      && source.config.mcp?.transport !== 'stdio'
+      && source.config.mcp?.authType !== 'none'
+    ) {
       return this.loadMcpCredential(source);
+    }
+
+    if (source.config.type === 'cli' || source.config.type === 'local') {
+      return null;
     }
 
     // For other sources, use the credential ID based on authType
@@ -264,7 +272,7 @@ export class SourceCredentialManager {
    * Get the credential ID for a source
    *
    * Determines the correct credential type based on:
-   * - Source type (mcp, api, local)
+   * - Source type (mcp, api, local, cli)
    * - Auth type (oauth, bearer, header, etc.)
    */
   getCredentialId(source: LoadedSource): CredentialId {
@@ -288,6 +296,8 @@ export class SourceCredentialManager {
         // header, query, or other → stored as apikey
         type = 'source_apikey';
       }
+    } else if (source.config.type === 'cli') {
+      type = 'source_apikey';
     } else {
       type = 'source_oauth';
     }
@@ -965,10 +975,10 @@ export class SourceCredentialManager {
     }
 
     try {
-      // Only HTTP/SSE transport can refresh tokens - stdio doesn't use OAuth
+      // Only HTTP/SSE transport can refresh tokens - local process transports don't use OAuth
       if (!source.config.mcp?.url) {
-        // This is expected for stdio transport - not an error
-        debug(`[SourceCredentialManager] No URL for MCP token refresh (stdio transport)`);
+        // This is expected for stdio/cli transport - not an error
+        debug(`[SourceCredentialManager] No URL for MCP token refresh (local process transport)`);
         return null;
       }
 
@@ -1019,6 +1029,7 @@ export class SourceCredentialManager {
  * This correctly handles:
  * - MCP sources with authType: "none" → never needs auth
  * - MCP sources with stdio transport → never needs auth (runs locally)
+ * - CLI sources → never needs auth (runs locally)
  * - MCP sources with oauth/bearer → needs auth if not authenticated
  * - API sources with authType: "none" → never needs auth
  * - API sources with bearer/basic/header/query auth → needs auth if not authenticated
@@ -1030,7 +1041,7 @@ export function sourceNeedsAuthentication(source: LoadedSource): boolean {
   // MCP sources with oauth/bearer auth (stdio transport never needs auth)
   if (source.config.type === 'mcp' && mcp) {
     if (mcp.transport === 'stdio') {
-      // Stdio sources run locally and don't need authentication
+      // Local process sources run locally and don't need authentication
       return false;
     }
     // Only require auth if authType is explicitly set to 'oauth' or 'bearer'
@@ -1045,6 +1056,10 @@ export function sourceNeedsAuthentication(source: LoadedSource): boolean {
     if (api.authType !== 'none' && api.authType !== undefined && !source.config.isAuthenticated) {
       return true;
     }
+  }
+
+  if (source.config.type === 'cli') {
+    return false;
   }
 
   return false;

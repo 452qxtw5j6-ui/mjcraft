@@ -74,6 +74,10 @@ export function loadSourceConfig(
       config.local.path = expandPath(config.local.path);
     }
 
+    if (config.type === 'cli' && config.cli?.cwd) {
+      config.cli.cwd = expandPath(config.cli.cwd);
+    }
+
     return config;
   } catch {
     return null;
@@ -132,6 +136,12 @@ export function saveSourceConfig(
     storageConfig.local = {
       ...storageConfig.local,
       path: toPortablePath(storageConfig.local.path),
+    };
+  }
+  if (storageConfig.type === 'cli' && storageConfig.cli?.cwd) {
+    storageConfig.cli = {
+      ...storageConfig.cli,
+      cwd: toPortablePath(storageConfig.cli.cwd),
     };
   }
 
@@ -497,6 +507,11 @@ export async function createSource(
         config.local = input.local;
       }
       break;
+    case 'cli':
+      if (input.cli) {
+        config.cli = input.cli;
+      }
+      break;
   }
 
   // Validate and store icon (emoji or URL)
@@ -583,4 +598,3 @@ export function sourceExists(workspaceRootPath: string, sourceSlug: string): boo
 // ============================================================
 
 export { parseGuideMarkdown };
-

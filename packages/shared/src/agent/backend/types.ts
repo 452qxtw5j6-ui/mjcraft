@@ -259,7 +259,7 @@ export interface ChatOptions {
 
 /**
  * SDK-compatible MCP server configuration.
- * Supports HTTP/SSE (remote) and stdio (local subprocess) transports.
+ * Supports HTTP/SSE (remote), stdio MCP, and wrapped CLI runtime transports.
  */
 export type SdkMcpServerConfig =
   | {
@@ -279,6 +279,14 @@ export type SdkMcpServerConfig =
       envVars?: string[];
       /** Working directory for the server process (Codex-specific) */
       cwd?: string;
+    }
+  | {
+      type: 'cli';
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      cwd?: string;
+      timeoutMs?: number;
     };
 
 /**

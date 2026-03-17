@@ -50,6 +50,7 @@ export type {
   McpSourceConfig,
   ApiSourceConfig,
   LocalSourceConfig,
+  CliSourceConfig,
   SourceConfig,
   ConnectionStatus,
 } from './types.ts';

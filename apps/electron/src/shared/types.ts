@@ -605,7 +605,7 @@ export interface SessionsNavigationState {
  */
 export interface SourceFilter {
   kind: 'type'
-  sourceType: 'api' | 'mcp' | 'local'
+  sourceType: 'api' | 'mcp' | 'local' | 'cli'
 }
 
 /**
