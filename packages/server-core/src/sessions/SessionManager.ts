@@ -18,7 +18,7 @@ import {
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
-import { getLlmConnection, getDefaultLlmConnection, getDefaultThinkingLevel } from '@craft-agent/shared/config'
+import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
 import { InitGate } from '@craft-agent/server-core/domain'
@@ -84,7 +84,7 @@ import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
 import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, createPromptHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 
 // Import from server-core domain utilities
-import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
+import { sanitizeForTitle, deriveFallbackTitleFromMessages, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
 import { resizeImageForAPI, resizeIconBuffer } from '@craft-agent/server-core/services'
 export { sanitizeForTitle }
 
@@ -4159,6 +4159,7 @@ export class SessionManager implements ISessionManager {
       .filter((m) => m.role === 'user')
       .map((m) => m.content)
     const userMessages = selectSpreadMessages(allUserContents)
+    const fallbackTitle = deriveFallbackTitleFromMessages(allUserContents)
 
     sessionLog.info(`refreshTitle: Selected ${userMessages.length} spread messages from ${allUserContents.length} total`)
 
@@ -4178,42 +4179,14 @@ export class SessionManager implements ISessionManager {
     const preferences = loadPreferences()
     const titleOptions = { language: preferences.language }
 
-    // Use existing agent or create temporary one
-    let agent: AgentInstance | null = managed.agent
-    let isTemporary = false
-
-    if (!agent && managed.llmConnection) {
-      try {
-        const connection = getLlmConnection(managed.llmConnection)
-        const resolvedMiniModel = connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined
-
-        agent = createBackendFromConnection(managed.llmConnection, {
-          workspace: managed.workspace,
-          miniModel: resolvedMiniModel,
-          session: {
-            id: `title-${managed.id}`,
-            workspaceRootPath: managed.workspace.rootPath,
-            llmConnection: managed.llmConnection,
-            createdAt: Date.now(),
-            lastUsedAt: Date.now(),
-          },
-          isHeadless: true,
-        }, buildBackendHostRuntimeContext()) as AgentInstance
-        await agent.postInit()
-        isTemporary = true
-        sessionLog.info(`refreshTitle: Created temporary agent for session ${sessionId}`)
-      } catch (error) {
-        sessionLog.error(`refreshTitle: Failed to create temporary agent:`, error)
-        return { success: false, error: 'Failed to create agent for title generation' }
-      }
-    }
+    const { agent, isTemporary, connectionSlug: titleConnectionSlug } = await this.getTitleGenerationAgent(managed)
 
     if (!agent) {
       sessionLog.warn(`refreshTitle: No agent and no connection for session ${sessionId}`)
       return { success: false, error: 'No agent available' }
     }
 
-    sessionLog.info(`refreshTitle: Calling agent.regenerateTitle...`)
+    sessionLog.info(`refreshTitle: Calling agent.regenerateTitle via ${titleConnectionSlug ?? managed.llmConnection ?? 'unknown'}...`)
 
 
     // Notify renderer that title regeneration has started (for shimmer effect)
@@ -4228,15 +4201,32 @@ export class SessionManager implements ISessionManager {
       if (title) {
         managed.name = title
         this.persistSession(managed)
+        await this.flushSession(managed.id)
         // title_generated will also clear isRegeneratingTitle via the event handler
         this.sendEvent({ type: 'title_generated', sessionId, title }, managed.workspace.id)
         sessionLog.info(`Refreshed title for session ${sessionId}: "${title}"`)
         return { success: true, title }
       }
+      if (fallbackTitle) {
+        managed.name = fallbackTitle
+        this.persistSession(managed)
+        await this.flushSession(managed.id)
+        this.sendEvent({ type: 'title_generated', sessionId, title: fallbackTitle }, managed.workspace.id)
+        sessionLog.warn(`refreshTitle: AI regeneration returned null, used fallback title for session ${sessionId}: "${fallbackTitle}"`)
+        return { success: true, title: fallbackTitle }
+      }
       // Failed to generate - clear regenerating state
       this.sendEvent({ type: 'title_regenerating', sessionId, isRegenerating: false }, managed.workspace.id)
       return { success: false, error: 'Failed to generate title' }
     } catch (error) {
+      if (fallbackTitle) {
+        managed.name = fallbackTitle
+        this.persistSession(managed)
+        await this.flushSession(managed.id)
+        this.sendEvent({ type: 'title_generated', sessionId, title: fallbackTitle }, managed.workspace.id)
+        sessionLog.warn(`refreshTitle: AI regeneration failed, used fallback title for session ${sessionId}: "${fallbackTitle}"`)
+        return { success: true, title: fallbackTitle }
+      }
       // Error occurred - clear regenerating state
       this.sendEvent({ type: 'title_regenerating', sessionId, isRegenerating: false }, managed.workspace.id)
       const message = error instanceof Error ? error.message : 'Unknown error'
@@ -5824,45 +5814,7 @@ export class SessionManager implements ISessionManager {
   private async generateTitle(managed: ManagedSession, userMessage: string): Promise<void> {
     sessionLog.info(`[generateTitle] Starting for session ${managed.id}`)
 
-    // Use existing agent or create temporary one
-    let agent: AgentInstance | null = managed.agent
-    let isTemporary = false
-
-    // Wait briefly for agent to be created (it's created concurrently)
-    if (!agent) {
-      let attempts = 0
-      while (!managed.agent && attempts < 10) {
-        await new Promise(resolve => setTimeout(resolve, 100))
-        attempts++
-      }
-      agent = managed.agent
-    }
-
-    // If still no agent, create a temporary one using the session's connection
-    if (!agent && managed.llmConnection) {
-      try {
-        const connection = getLlmConnection(managed.llmConnection)
-
-        agent = createBackendFromConnection(managed.llmConnection, {
-          workspace: managed.workspace,
-          miniModel: connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined,
-          session: {
-            id: `title-${managed.id}`,
-            workspaceRootPath: managed.workspace.rootPath,
-            llmConnection: managed.llmConnection,
-            createdAt: Date.now(),
-            lastUsedAt: Date.now(),
-          },
-          isHeadless: true,
-        }, buildBackendHostRuntimeContext()) as AgentInstance
-        await agent.postInit()
-        isTemporary = true
-        sessionLog.info(`[generateTitle] Created temporary agent for session ${managed.id}`)
-      } catch (error) {
-        sessionLog.error(`[generateTitle] Failed to create temporary agent:`, error)
-        return
-      }
-    }
+    const { agent, isTemporary, connectionSlug: titleConnectionSlug } = await this.getTitleGenerationAgent(managed, { waitForExisting: true })
 
     if (!agent) {
       sessionLog.warn(`[generateTitle] No agent and no connection for session ${managed.id}`)
@@ -5881,7 +5833,7 @@ export class SessionManager implements ISessionManager {
         await this.flushSession(managed.id)
         // Now safe to notify renderer - disk is authoritative
         this.sendEvent({ type: 'title_generated', sessionId: managed.id, title }, managed.workspace.id)
-        sessionLog.info(`Generated title for session ${managed.id}: "${title}"`)
+        sessionLog.info(`Generated title for session ${managed.id} via ${titleConnectionSlug ?? managed.llmConnection ?? 'unknown'}: "${title}"`)
       } else {
         sessionLog.warn(`Title generation returned null for session ${managed.id}`)
       }
@@ -5908,6 +5860,62 @@ export class SessionManager implements ISessionManager {
       if (isTemporary && agent) {
         agent.destroy()
       }
+    }
+  }
+
+  private resolveTitleGenerationConnectionSlug(sessionConnectionSlug?: string): string | null {
+    const connections = getLlmConnections()
+
+    const preferredConnection = connections.find(connection => connection.slug === 'chatgpt-plus')
+      ?? connections.find(connection => connection.providerType === 'pi')
+
+    return preferredConnection?.slug ?? sessionConnectionSlug ?? getDefaultLlmConnection()
+  }
+
+  private async getTitleGenerationAgent(
+    managed: ManagedSession,
+    options?: { waitForExisting?: boolean }
+  ): Promise<{ agent: AgentInstance | null; isTemporary: boolean; connectionSlug: string | null }> {
+    const connectionSlug = this.resolveTitleGenerationConnectionSlug(managed.llmConnection)
+    if (!connectionSlug) {
+      return { agent: null, isTemporary: false, connectionSlug: null }
+    }
+
+    if (options?.waitForExisting && connectionSlug === managed.llmConnection && !managed.agent) {
+      let attempts = 0
+      while (!managed.agent && attempts < 10) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        attempts++
+      }
+    }
+
+    if (managed.agent && connectionSlug === managed.llmConnection) {
+      return { agent: managed.agent, isTemporary: false, connectionSlug }
+    }
+
+    try {
+      const connection = getLlmConnection(connectionSlug)
+      const resolvedMiniModel = connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined
+
+      const agent = createBackendFromConnection(connectionSlug, {
+        workspace: managed.workspace,
+        miniModel: resolvedMiniModel,
+        session: {
+          id: `title-${managed.id}`,
+          workspaceRootPath: managed.workspace.rootPath,
+          llmConnection: connectionSlug,
+          createdAt: Date.now(),
+          lastUsedAt: Date.now(),
+        },
+        isHeadless: true,
+      }, buildBackendHostRuntimeContext()) as AgentInstance
+
+      await agent.postInit()
+      sessionLog.info(`[title-generation] Created temporary agent for session ${managed.id} using ${connectionSlug}`)
+      return { agent, isTemporary: true, connectionSlug }
+    } catch (error) {
+      sessionLog.error(`[title-generation] Failed to create temporary agent for session ${managed.id}:`, error)
+      return { agent: null, isTemporary: false, connectionSlug }
     }
   }
 

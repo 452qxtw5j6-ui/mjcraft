@@ -4,6 +4,7 @@
  * Electron main process modules.
  */
 import { WS_ID_CHARS } from '@craft-agent/shared/mentions'
+import { isLowSignal, sliceAtWord } from '@craft-agent/shared/utils'
 
 /**
  * Sanitize message content for use as session title.
@@ -19,4 +20,27 @@ export function sanitizeForTitle(content: string): string {
     .replace(/\[folder:[^\]]+\]/g, '')                // Strip [folder:...] mentions
     .replace(/\s+/g, ' ')        // Collapse whitespace
     .trim()
+}
+
+/**
+ * Build a deterministic fallback title when model-based regeneration fails.
+ * Prefers the most recent substantive user message after sanitization.
+ */
+export function deriveFallbackTitleFromMessages(messages: string[]): string | null {
+  const sanitizedMessages = messages
+    .map(message => sanitizeForTitle(message))
+    .map(message => message.replace(/\s+/g, ' ').trim())
+    .filter(message => message.length > 0)
+
+  if (sanitizedMessages.length === 0) return null
+
+  const substantiveMessages = sanitizedMessages.filter(message => !isLowSignal(message))
+  const candidate = (substantiveMessages.length > 0
+    ? substantiveMessages[substantiveMessages.length - 1]
+    : sanitizedMessages[sanitizedMessages.length - 1])!
+
+  const shortened = sliceAtWord(candidate, 50).trim()
+  if (shortened.length === 0) return null
+
+  return shortened.length < candidate.length ? `${shortened}…` : shortened
 }

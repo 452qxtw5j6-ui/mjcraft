@@ -5,7 +5,7 @@
  * XML, and normalizes whitespace for session title generation.
  */
 import { describe, it, expect } from 'bun:test'
-import { sanitizeForTitle } from '@craft-agent/server-core/domain'
+import { sanitizeForTitle, deriveFallbackTitleFromMessages } from '@craft-agent/server-core/domain'
 
 // ============================================================================
 // sanitizeForTitle — bracket mention stripping
@@ -229,5 +229,34 @@ describe('sanitizeForTitle', () => {
       const result = sanitizeForTitle(title)
       expect(result).toBe('hello')
     })
+  })
+})
+
+describe('deriveFallbackTitleFromMessages', () => {
+  it('prefers the most recent substantive message', () => {
+    expect(deriveFallbackTitleFromMessages([
+      '안녕하세요',
+      '[source:redash-cli] 리데시 CLI로 쿼리 스케줄링 세팅도 가능한가요?',
+      '좋아요',
+    ])).toBe('리데시 CLI로 쿼리 스케줄링 세팅도 가능한가요?')
+  })
+
+  it('strips mentions before selecting the fallback title', () => {
+    expect(deriveFallbackTitleFromMessages([
+      '[skill:commit] [file:/tmp/test.ts] fix this test failure',
+    ])).toBe('fix this test failure')
+  })
+
+  it('truncates long fallback titles cleanly', () => {
+    expect(deriveFallbackTitleFromMessages([
+      'This is a very long request about refactoring the session title regeneration fallback behavior safely',
+    ])).toBe('This is a very long request about refactoring the…')
+  })
+
+  it('returns null when nothing remains after sanitization', () => {
+    expect(deriveFallbackTitleFromMessages([
+      '[skill:commit]',
+      '   ',
+    ])).toBeNull()
   })
 })

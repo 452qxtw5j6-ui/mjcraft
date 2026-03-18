@@ -2497,31 +2497,8 @@ This is a branched conversation. All prior messages in this conversation are par
    * Uses the same auth infrastructure as the main agent.
    */
   async runMiniCompletion(prompt: string): Promise<string | null> {
-    if (!this.config.miniModel) {
-      throw new Error('ClaudeAgent.runMiniCompletion: config.miniModel is required');
-    }
-    const model = this.config.miniModel;
-
-    const options = {
-      ...getDefaultOptions(this.config.envOverrides),
-      model,
-      maxTurns: 1,
-      systemPrompt: 'Reply with ONLY the requested text. No explanation.', // Minimal - no Claude Code preset
-      maxThinkingTokens: 0,
-    };
-
-    let result = '';
-    for await (const msg of query({ prompt, options })) {
-      if (msg.type === 'assistant') {
-        for (const block of msg.message.content) {
-          if (block.type === 'text') {
-            result += block.text;
-          }
-        }
-      }
-    }
-
-    return result.trim() || null;
+    const result = await this.queryLlm({ prompt });
+    return result.text.trim() || null;
   }
 
   // ============================================================
