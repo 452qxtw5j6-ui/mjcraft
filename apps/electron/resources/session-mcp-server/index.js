@@ -111047,38 +111047,18 @@ function loadSourceConfig(workspaceRootPath, sourceSlug) {
     return null;
   }
 }
-function resolveSessionWorkingDirectory(workspacePath, sessionId) {
-  try {
-    const sessionFile = import_node_path.join(workspacePath, "sessions", sessionId, "session.jsonl");
-    if (!import_node_fs.existsSync(sessionFile))
-      return;
-    const fd = import_node_fs.openSync(sessionFile, "r");
-    try {
-      const buffer = Buffer.alloc(8192);
-      const bytesRead = import_node_fs.readSync(fd, buffer, 0, 8192, 0);
-      const firstLine = buffer.toString("utf-8", 0, bytesRead).split(`
-`)[0] ?? "";
-      const header = JSON.parse(firstLine);
-      return header.workingDirectory || undefined;
-    } finally {
-      import_node_fs.closeSync(fd);
-    }
-  } catch {
-    return;
-  }
-}
 function generateRequestId(prefix = "req") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 function detectCredentialMode(source, requestedMode, requestedHeaderNames) {
-  const effectiveHeaderNames = requestedHeaderNames || source?.api?.headerNames;
+  const effectiveHeaderNames = requestedHeaderNames || source?.api?.headerNames || source?.mcp?.headerNames;
   if (effectiveHeaderNames && effectiveHeaderNames.length > 0) {
     return "multi-header";
   }
   return requestedMode;
 }
 function getEffectiveHeaderNames(source, requestedHeaderNames) {
-  return requestedHeaderNames || source?.api?.headerNames;
+  return requestedHeaderNames || source?.api?.headerNames || source?.mcp?.headerNames;
 }
 // ../../node_modules/.bun/zod@3.25.76/node_modules/zod/v3/external.js
 var exports_external = {};
@@ -115360,22 +115340,11 @@ async function handleConfigValidate(ctx, args) {
   }
 }
 // ../session-tools-core/src/handlers/skill-validate.ts
-var import_node_os2 = require("node:os");
 var import_node_path3 = require("node:path");
-function resolveSkillMdPath(ctx, slug, workingDirectory) {
-  if (workingDirectory) {
-    const projectPath = import_node_path3.join(workingDirectory, ".agents", "skills", slug, "SKILL.md");
-    if (ctx.fs.exists(projectPath)) {
-      return { path: projectPath, tier: "project" };
-    }
-  }
+function resolveSkillMdPath(ctx, slug) {
   const workspacePath = import_node_path3.join(ctx.workspacePath, "skills", slug, "SKILL.md");
   if (ctx.fs.exists(workspacePath)) {
     return { path: workspacePath, tier: "workspace" };
-  }
-  const globalPath = import_node_path3.join(import_node_os2.homedir(), ".agents", "skills", slug, "SKILL.md");
-  if (ctx.fs.exists(globalPath)) {
-    return { path: globalPath, tier: "global" };
   }
   return null;
 }
@@ -115388,20 +115357,10 @@ async function handleSkillValidate(ctx, args) {
       isError: true
     };
   }
-  const workingDirectory = ctx.workingDirectory ?? resolveSessionWorkingDirectory(ctx.workspacePath, ctx.sessionId);
-  const resolved = resolveSkillMdPath(ctx, skillSlug, workingDirectory);
+  const resolved = resolveSkillMdPath(ctx, skillSlug);
   if (!resolved) {
-    const searchedPaths = [
-      workingDirectory ? `  - ${import_node_path3.join(workingDirectory, ".agents", "skills", skillSlug, "SKILL.md")} (project)` : null,
-      `  - ${import_node_path3.join(ctx.workspacePath, "skills", skillSlug, "SKILL.md")} (workspace)`,
-      `  - ${import_node_path3.join(import_node_os2.homedir(), ".agents", "skills", skillSlug, "SKILL.md")} (global)`
-    ].filter(Boolean).join(`
-`);
-    const warning = !workingDirectory ? `
-
-Note: Project-level skills (.agents/skills/) were not checked — working directory could not be resolved.` : "";
     return errorResponse(`SKILL.md not found for skill "${skillSlug}". Searched:
-${searchedPaths}${warning}
+  - ${import_node_path3.join(ctx.workspacePath, "skills", skillSlug, "SKILL.md")} (workspace)
 
 Create it with YAML frontmatter.`);
   }
@@ -115414,18 +115373,10 @@ Create it with YAML frontmatter.`);
   const result = validateSkillContent(content, skillSlug);
   const tierInfo = `Validated from ${resolved.tier} tier: ${resolved.path}`;
   const formatted = formatValidationResult(result);
-  const warnings = [];
-  if (!workingDirectory) {
-    warnings.push("Note: Project-level skills (.agents/skills/) were not checked — working directory could not be resolved.");
-  }
-  const warningText = warnings.length > 0 ? `
-
-` + warnings.join(`
-`) : "";
   return {
     content: [{ type: "text", text: `${tierInfo}
 
-${formatted}${warningText}` }],
+${formatted}` }],
     isError: !result.valid
   };
 }
@@ -116333,7 +116284,7 @@ async function testApiConnectionBasic(source, testUrl) {
   }
   return { lines, success, hasError, error: error2 };
 }
-async function testMcpConnection(ctx, source, _sourceSlug) {
+async function testMcpConnection(ctx, source, sourceSlug) {
   const lines = [];
   let success = false;
   let hasError = false;
@@ -116390,9 +116341,27 @@ async function testMcpConnection(ctx, source, _sourceSlug) {
     if (ctx.validateMcpConnection) {
       lines.push(`ℹ Testing MCP server: ${source.mcp.url}`);
       try {
+        let headers = source.mcp.headers ? { ...source.mcp.headers } : undefined;
+        if (source.mcp.headerNames?.length && ctx.credentialManager) {
+          const workspaceId = import_node_path4.basename(ctx.workspacePath) || "";
+          const loadedSource = {
+            config: source,
+            folderPath: getSourcePath(ctx.workspacePath, sourceSlug),
+            workspaceRootPath: ctx.workspacePath,
+            workspaceId
+          };
+          try {
+            const rawCred = await ctx.credentialManager.getToken(loadedSource);
+            if (rawCred) {
+              const parsed = JSON.parse(rawCred);
+              headers = { ...headers, ...parsed };
+            }
+          } catch {}
+        }
         const result = await ctx.validateMcpConnection({
           url: source.mcp.url,
-          authType: source.mcp.authType
+          authType: source.mcp.authType,
+          headers
         });
         if (result.success) {
           success = true;
@@ -116534,7 +116503,7 @@ async function handleSourceOAuthTrigger(ctx, args) {
   if (source.mcp?.authType !== "oauth") {
     return successResponse(`Source '${sourceSlug}' does not use OAuth authentication.`);
   }
-  if (ctx.credentialManager) {
+  if (source.isAuthenticated && ctx.credentialManager) {
     const workspaceId = import_node_path5.basename(ctx.workspacePath) || "";
     const loadedSource = {
       config: source,
@@ -116798,7 +116767,7 @@ async function handleUpdatePreferences(ctx, args) {
 var import_node_child_process2 = require("node:child_process");
 var import_node_path9 = require("node:path");
 var import_node_fs6 = require("node:fs");
-var import_node_os3 = require("node:os");
+var import_node_os2 = require("node:os");
 
 // ../session-tools-core/src/runtime/sandbox-env.ts
 var import_node_fs3 = require("node:fs");
@@ -117078,7 +117047,7 @@ async function handleTransformData(ctx, args) {
     import_node_fs6.mkdirSync(dataDir, { recursive: true });
   }
   const ext = args.language === "python3" ? ".py" : ".js";
-  const tempScript = import_node_path9.join(import_node_os3.tmpdir(), `craft-transform-${ctx.sessionId}-${Date.now()}${ext}`);
+  const tempScript = import_node_path9.join(import_node_os2.tmpdir(), `craft-transform-${ctx.sessionId}-${Date.now()}${ext}`);
   import_node_fs6.writeFileSync(tempScript, args.script, "utf-8");
   try {
     const runtime = resolveScriptRuntime(args.language);
@@ -119155,7 +119124,7 @@ This tool initiates the OAuth 2.0 + PKCE flow for sources that require authentic
 
 Opens a browser window for the user to sign in with their Google account.
 
-**Supported services:** Gmail, Calendar, Drive
+**Supported services:** Gmail, Calendar, Drive, Docs, Sheets, YouTube, Search Console
 
 **IMPORTANT:** After calling this tool, execution will be paused while OAuth completes.`,
   source_slack_oauth_trigger: `Trigger Slack OAuth authentication for a Slack API source.
@@ -119296,9 +119265,9 @@ Use this to share anything that would help improve the product — issues you hi
 };
 var SESSION_TOOL_DEFS = [
   { name: "SubmitPlan", description: TOOL_DESCRIPTIONS.SubmitPlan, inputSchema: SubmitPlanSchema, executionMode: "registry", safeMode: "allow", handler: handleSubmitPlan },
-  { name: "config_validate", description: TOOL_DESCRIPTIONS.config_validate, inputSchema: ConfigValidateSchema, executionMode: "registry", safeMode: "allow", handler: handleConfigValidate },
-  { name: "skill_validate", description: TOOL_DESCRIPTIONS.skill_validate, inputSchema: SkillValidateSchema, executionMode: "registry", safeMode: "allow", handler: handleSkillValidate },
-  { name: "mermaid_validate", description: TOOL_DESCRIPTIONS.mermaid_validate, inputSchema: MermaidValidateSchema, executionMode: "registry", safeMode: "allow", handler: handleMermaidValidate },
+  { name: "config_validate", description: TOOL_DESCRIPTIONS.config_validate, inputSchema: ConfigValidateSchema, executionMode: "registry", safeMode: "allow", readOnly: true, handler: handleConfigValidate },
+  { name: "skill_validate", description: TOOL_DESCRIPTIONS.skill_validate, inputSchema: SkillValidateSchema, executionMode: "registry", safeMode: "allow", readOnly: true, handler: handleSkillValidate },
+  { name: "mermaid_validate", description: TOOL_DESCRIPTIONS.mermaid_validate, inputSchema: MermaidValidateSchema, executionMode: "registry", safeMode: "allow", readOnly: true, handler: handleMermaidValidate },
   { name: "source_test", description: TOOL_DESCRIPTIONS.source_test, inputSchema: SourceTestSchema, executionMode: "registry", safeMode: "allow", handler: handleSourceTest },
   { name: "source_oauth_trigger", description: TOOL_DESCRIPTIONS.source_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, executionMode: "registry", safeMode: "block", handler: handleSourceOAuthTrigger },
   { name: "source_google_oauth_trigger", description: TOOL_DESCRIPTIONS.source_google_oauth_trigger, inputSchema: SourceOAuthTriggerSchema, executionMode: "registry", safeMode: "block", handler: handleGoogleOAuthTrigger },
@@ -119310,7 +119279,7 @@ var SESSION_TOOL_DEFS = [
   { name: "script_sandbox", description: TOOL_DESCRIPTIONS.script_sandbox, inputSchema: ScriptSandboxSchema, executionMode: "registry", safeMode: "allow", handler: handleScriptSandbox },
   { name: "render_template", description: TOOL_DESCRIPTIONS.render_template, inputSchema: RenderTemplateSchema, executionMode: "registry", safeMode: "allow", handler: handleRenderTemplate },
   { name: "send_developer_feedback", description: TOOL_DESCRIPTIONS.send_developer_feedback, inputSchema: SendDeveloperFeedbackSchema, executionMode: "registry", safeMode: "allow", handler: handleSendDeveloperFeedback },
-  { name: "call_llm", description: TOOL_DESCRIPTIONS.call_llm, inputSchema: CallLlmSchema, executionMode: "backend", safeMode: "allow", handler: null },
+  { name: "call_llm", description: TOOL_DESCRIPTIONS.call_llm, inputSchema: CallLlmSchema, executionMode: "backend", safeMode: "allow", readOnly: true, handler: null },
   { name: "spawn_session", description: TOOL_DESCRIPTIONS.spawn_session, inputSchema: SpawnSessionSchema, executionMode: "backend", safeMode: "block", handler: null },
   { name: "browser_tool", description: TOOL_DESCRIPTIONS.browser_tool, inputSchema: BrowserToolSchema, executionMode: "backend", safeMode: "allow", handler: null }
 ];

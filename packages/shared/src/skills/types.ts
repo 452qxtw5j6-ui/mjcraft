@@ -29,16 +29,7 @@ export interface SkillMetadata {
 }
 
 /** Source of a loaded skill */
-export type SkillSource = 'global' | 'workspace' | 'project';
-
-/**
- * Plugin name for project-level and global skills.
- *
- * The SDK derives plugin names from `path.basename()` of the registered plugin
- * directory. Both `{project}/.agents/` and `~/.agents/` share the basename
- * `.agents`, so skills from either tier resolve to `.agents:skillSlug`.
- */
-export const AGENTS_PLUGIN_NAME = '.agents';
+export type SkillSource = 'workspace';
 
 /**
  * A loaded skill with parsed content

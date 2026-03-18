@@ -4,7 +4,6 @@ import { FadingText } from '@/components/ui/fading-text'
 import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import type { LoadedSkill, LoadedSource, FileSearchResult } from '../../../shared/types'
-import { AGENTS_PLUGIN_NAME } from '@craft-agent/shared/skills/types'
 
 // ============================================================================
 // Types
@@ -690,9 +689,7 @@ export function useInlineMention({
       // Skill tool requires this format to resolve workspace-scoped skills.
       let mentionText: string
       if (item.type === 'skill') {
-        // Plugin name depends on which tier the skill came from:
-        //   workspace → workspaceId, project/global → ".agents"
-        const pluginName = item.skill?.source === 'workspace' ? workspaceId : AGENTS_PLUGIN_NAME
+        const pluginName = workspaceId
         const qualifiedName = pluginName ? `${pluginName}:${item.id}` : item.id
         mentionText = buildMentionText('skill', qualifiedName)
       } else if (item.type === 'source') {

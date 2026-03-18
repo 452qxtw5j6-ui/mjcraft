@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { qualifySkillName, AGENTS_PLUGIN_NAME } from '../core/index.ts'
+import { qualifySkillName } from '../core/index.ts'
 import { extractWorkspaceSlug, readPluginName } from '../../utils/workspace.ts'
 
 // ============================================================================
@@ -223,13 +223,13 @@ describe('qualifySkillName with filesystem resolution', () => {
     mkdirSync(join(workspaceRoot, 'skills', 'shared-skill'), { recursive: true })
     writeFileSync(join(workspaceRoot, 'skills', 'shared-skill', 'SKILL.md'), '---\nname: WS Shared\ndescription: test\n---\n')
 
-    // Create project skill: my-project/.agents/skills/proj-only/SKILL.md
-    mkdirSync(join(projectDir, '.agents', 'skills', 'proj-only'), { recursive: true })
-    writeFileSync(join(projectDir, '.agents', 'skills', 'proj-only', 'SKILL.md'), '---\nname: Proj Only\ndescription: test\n---\n')
+    // Create external skill outside the official workspace skills path
+    mkdirSync(join(projectDir, 'external-skills', 'proj-only'), { recursive: true })
+    writeFileSync(join(projectDir, 'external-skills', 'proj-only', 'SKILL.md'), '---\nname: Proj Only\ndescription: test\n---\n')
 
-    // Create project skill that also exists in workspace (for priority test)
-    mkdirSync(join(projectDir, '.agents', 'skills', 'shared-skill'), { recursive: true })
-    writeFileSync(join(projectDir, '.agents', 'skills', 'shared-skill', 'SKILL.md'), '---\nname: Proj Shared\ndescription: test\n---\n')
+    // Create external skill that also exists in workspace (workspace should still win)
+    mkdirSync(join(projectDir, 'external-skills', 'shared-skill'), { recursive: true })
+    writeFileSync(join(projectDir, 'external-skills', 'shared-skill', 'SKILL.md'), '---\nname: Proj Shared\ndescription: test\n---\n')
   })
 
   afterAll(() => {
@@ -242,24 +242,22 @@ describe('qualifySkillName with filesystem resolution', () => {
     expect(result.input).toEqual({ skill: 'my-workspace:ws-only' })
   })
 
-  it('resolves project-only skill to .agents plugin', () => {
+  it('falls back to workspace qualification for project-only skill', () => {
     const result = qualifySkillName({ skill: 'proj-only' }, workspaceSlug, workspaceRoot, projectDir)
     expect(result.modified).toBe(true)
-    expect(result.input).toEqual({ skill: `${AGENTS_PLUGIN_NAME}:proj-only` })
+    expect(result.input).toEqual({ skill: 'my-workspace:proj-only' })
   })
 
-  it('project skill takes priority over workspace skill (same slug)', () => {
+  it('keeps workspace qualification when the same slug also exists outside the workspace', () => {
     const result = qualifySkillName({ skill: 'shared-skill' }, workspaceSlug, workspaceRoot, projectDir)
     expect(result.modified).toBe(true)
-    // Project has higher priority than workspace — should resolve to .agents:
-    expect(result.input).toEqual({ skill: `${AGENTS_PLUGIN_NAME}:shared-skill` })
+    expect(result.input).toEqual({ skill: 'my-workspace:shared-skill' })
   })
 
-  it('re-qualifies incorrectly qualified skill (workspace prefix for project skill)', () => {
-    // UI might send "my-workspace:proj-only" but proj-only only exists in project tier
-    const result = qualifySkillName({ skill: 'my-workspace:proj-only' }, workspaceSlug, workspaceRoot, projectDir)
+  it('re-qualifies incorrectly qualified workspace skill', () => {
+    const result = qualifySkillName({ skill: 'other-workspace:ws-only' }, workspaceSlug, workspaceRoot, projectDir)
     expect(result.modified).toBe(true)
-    expect(result.input).toEqual({ skill: `${AGENTS_PLUGIN_NAME}:proj-only` })
+    expect(result.input).toEqual({ skill: 'my-workspace:ws-only' })
   })
 
   it('does not modify correctly qualified workspace skill', () => {

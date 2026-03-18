@@ -11,7 +11,6 @@
 import type { ContentBadge } from '@craft-agent/core'
 import type { MentionItemType } from '@/components/ui/mention-menu'
 import type { LoadedSkill, LoadedSource } from '../../shared/types'
-import { AGENTS_PLUGIN_NAME } from '@craft-agent/shared/skills/types'
 import { getSourceIconSync, getSkillIconSync } from './icon-cache'
 
 // Import and re-export parsing functions from shared (pure string operations, no renderer deps)
@@ -242,13 +241,13 @@ export function extractBadges(
     }
 
     // For skills, create fully-qualified rawText (pluginName:slug) so the agent
-    // receives the correct format for the SDK's Skill tool. Plugin name depends
-    // on which tier the skill came from: workspace → workspaceId, project/global → AGENTS_PLUGIN_NAME
+    // receives the correct format for the SDK's Skill tool.
     let rawText = match.fullMatch
     if (match.type === 'skill') {
       const skill = skillsBySlug.get(match.id)
-      const pluginName = skill?.source === 'workspace' ? workspaceId : AGENTS_PLUGIN_NAME
-      rawText = `[skill:${pluginName}:${match.id}]`
+      if (skill?.source === 'workspace') {
+        rawText = `[skill:${workspaceId}:${match.id}]`
+      }
     }
 
     return {
