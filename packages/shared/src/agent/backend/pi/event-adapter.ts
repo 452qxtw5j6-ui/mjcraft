@@ -59,9 +59,6 @@ export class PiEventAdapter extends BaseEventAdapter {
   // Model context window for usage_update events
   private contextWindow: number | undefined;
 
-  // Actual secondary model ID used for call_llm display override.
-  private subtaskModel: string | undefined;
-
   // Track last usage for emitting with complete event
   private lastUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { total: number } } | undefined;
 
@@ -74,15 +71,6 @@ export class PiEventAdapter extends BaseEventAdapter {
    */
   setContextWindow(cw: number): void {
     this.contextWindow = cw;
-  }
-
-  /**
-   * Set the secondary model ID for call_llm display override.
-   * Pi ignores the call_llm model param unless the runtime injects one.
-   * This ensures the UI shows the actual model used.
-   */
-  setSubtaskModel(model: string | undefined): void {
-    this.subtaskModel = model;
   }
 
   /**
@@ -247,12 +235,6 @@ export class PiEventAdapter extends BaseEventAdapter {
         // Normalize Pi field names to Claude Code format for UI compatibility
         // (diff stats, diff overlay, document routing all expect Claude Code format)
         const args = this.normalizeToolInput(toolName, (event.args ?? {}) as Record<string, unknown>);
-
-        // For call_llm, Pi may override the requested model with the configured subtask model.
-        // Override the displayed model so the UI shows the actual model used.
-        if (toolName.includes('call_llm') && this.subtaskModel) {
-          args.model = this.subtaskModel;
-        }
 
         // Canonical metadata from subprocess event payload (interceptor/bridge-authoritative path).
         const eventMeta = this.extractToolMetadataFromEvent(event);

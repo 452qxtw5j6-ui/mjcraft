@@ -74,7 +74,7 @@ import { type Session, type SessionEvent, type FileAttachment, type SendMessageO
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/shared/skills'
-import { getToolIconsDir, getMiniModel, getSubtaskModel } from '@craft-agent/shared/config'
+import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
@@ -82,7 +82,6 @@ import { listLabels } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
 import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, createPromptHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
-import { resolveRequestedSource } from './source-intent-resolver'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -404,20 +403,6 @@ async function buildServersFromSources(
 
   span.end()
   return result
-}
-
-function hasExplicitSourceMention(message: string): boolean {
-  return /\[source:[\w-]+\]/i.test(message)
-}
-
-function buildSourceRoutingClarification(source: LoadedSource, guideSummary?: string): string {
-  const summary = guideSummary || source.config.tagline || source.config.provider
-  return [
-    `Selected source for this request: ${source.config.name} (${source.config.slug}).`,
-    summary ? `Guide summary: ${summary}` : null,
-    'Prefer this source\'s structured tools first for this request.',
-    'If the source tools are insufficient, you may still use Bash or browser automation.',
-  ].filter(Boolean).join('\n')
 }
 
 /**
@@ -2687,7 +2672,6 @@ export class SessionManager implements ISessionManager {
 
       // Per-session env overrides
       const miniModel = connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined
-      const subtaskModel = connection ? (getSubtaskModel(connection) ?? connection.defaultModel) : undefined
       const envOverrides: Record<string, string> = {
         CRAFT_WORKSPACE_PATH: managed.workspace.rootPath,
         // Pass mini model to SDK subprocess so built-in tools like WebFetch
@@ -2786,7 +2770,6 @@ export class SessionManager implements ISessionManager {
         coreConfig: {
           workspace: managed.workspace,
           miniModel,
-          subtaskModel,
           thinkingLevel: managed.thinkingLevel,
           session: sessionConfig,
           onSdkSessionIdUpdate,
@@ -4885,51 +4868,11 @@ export class SessionManager implements ISessionManager {
     // Always set all sources for context (even if none are enabled), including built-ins
     const workspaceRootPath = managed.workspace.rootPath
     const allSources = loadAllSources(workspaceRootPath)
-    let turnSourceGuidePath: string | null = null
-    let turnClarification: string | null = null
-
-    if (!hasExplicitSourceMention(message)) {
-      const resolvedIntent = await resolveRequestedSource(
-        message,
-        allSources,
-        agent.getSummarizeCallback(),
-      )
-
-      if (resolvedIntent) {
-        const candidate = allSources.find(source => source.config.slug === resolvedIntent.sourceSlug)
-        if (candidate && isSourceUsable(candidate)) {
-          turnClarification = buildSourceRoutingClarification(candidate, resolvedIntent.guideSummary)
-
-          const currentSlugs = new Set(managed.enabledSourceSlugs || [])
-          if (!currentSlugs.has(candidate.config.slug)) {
-            currentSlugs.add(candidate.config.slug)
-            managed.enabledSourceSlugs = Array.from(currentSlugs)
-            sessionLog.info(`Auto-enabled resolved source for session ${sessionId}: ${candidate.config.slug}`)
-            this.persistSession(managed)
-            this.sendEvent({
-              type: 'sources_changed',
-              sessionId,
-              enabledSourceSlugs: managed.enabledSourceSlugs,
-            }, managed.workspace.id)
-          }
-
-          const guidePath = join(candidate.folderPath, 'guide.md')
-          if (existsSync(guidePath)) {
-            turnSourceGuidePath = guidePath
-          }
-        }
-      }
-    }
     agent.setAllSources(allSources)
     ;(agent as AgentInstance & {
       setTemporaryClarifications?: (text: string | null) => void
       markFileRead?: (filePath: string) => void
-    }).setTemporaryClarifications?.(turnClarification)
-    if (turnSourceGuidePath) {
-      ;(agent as AgentInstance & {
-        markFileRead?: (filePath: string) => void
-      }).markFileRead?.(turnSourceGuidePath)
-    }
+    }).setTemporaryClarifications?.(null)
     sendSpan.mark('sources.loaded')
 
     // Apply source servers if any are enabled
@@ -5903,7 +5846,6 @@ export class SessionManager implements ISessionManager {
         agent = createBackendFromConnection(managed.llmConnection, {
           workspace: managed.workspace,
           miniModel: connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined,
-          subtaskModel: connection ? (getSubtaskModel(connection) ?? connection.defaultModel) : undefined,
           session: {
             id: `title-${managed.id}`,
             workspaceRootPath: managed.workspace.rootPath,

@@ -12,8 +12,7 @@ describe('resolveClaudeThinkingOptions', () => {
     })
 
     expect(result).toEqual({
-      thinking: { type: 'adaptive' },
-      effort: 'medium',
+      maxThinkingTokens: getThinkingTokens('medium', 'claude-opus-4-6'),
     })
   })
 
@@ -78,7 +77,7 @@ describe('resolveClaudeThinkingOptions', () => {
     })
 
     expect(result).toEqual({
-      thinking: { type: 'disabled' },
+      maxThinkingTokens: 0,
     })
   })
 })

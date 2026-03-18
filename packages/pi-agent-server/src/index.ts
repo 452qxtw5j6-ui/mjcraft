@@ -83,7 +83,6 @@ interface InitMessage {
   workingDirectory: string;
   plansFolderPath: string;
   miniModel?: string;
-  subtaskModel?: string;
   agentDir?: string;
   providerType?: string;
   authType?: string;
@@ -814,7 +813,7 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
   // what the user authenticated with (e.g. gemini-2.5-pro when only anthropic
   // credentials exist), fall back to the default summarization model which uses
   // the same provider family.
-  let model = request.model ?? initConfig.subtaskModel ?? initConfig.miniModel ?? getDefaultSummarizationModel();
+  let model = request.model ?? initConfig.miniModel ?? getDefaultSummarizationModel();
 
   // Create authenticated registry upfront — used by both the provider guard and the ephemeral session.
   const { authStorage, modelRegistry } = createAuthenticatedRegistry();
@@ -958,7 +957,6 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
   const fallbackCandidates = [
     'pi/gpt-5.1-codex-mini',
     'pi/gpt-5-mini',
-    initConfig.subtaskModel,
     initConfig.miniModel,
     getDefaultSummarizationModel(),
   ].filter((candidate): candidate is string => !!candidate && !isDeniedMiniModelId(candidate));
@@ -1011,15 +1009,12 @@ async function preExecuteCallLlm(input: Record<string, unknown>): Promise<LLMQue
     ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId)
     : undefined;
   const request = await buildCallLlmRequest(input, { backendName: 'Pi', sessionPath });
-  if (!request.model && initConfig?.subtaskModel) {
-    request.model = initConfig.subtaskModel;
-  }
   return queryLlm(request);
 }
 
 async function runMiniCompletion(prompt: string): Promise<string | null> {
   try {
-    const result = await queryLlm({ prompt, model: initConfig?.subtaskModel ?? initConfig?.miniModel });
+    const result = await queryLlm({ prompt, model: initConfig?.miniModel });
     const text = result.text || null;
     debugLog(`[runMiniCompletion] Result: ${text ? `"${text.slice(0, 200)}"` : 'null'}`);
     return text;

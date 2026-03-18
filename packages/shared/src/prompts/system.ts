@@ -456,9 +456,9 @@ export function resolvePromptGuidanceProfile(
 ): PromptGuidanceProfileDecision {
   let profile: PromptGuidanceProfileDecision['profile'] = 'default';
   let defaults: Required<PromptGuidanceCapabilities> = {
-    submitPlanGuide: false,
-    mcpNamingGuide: false,
-    sourceManagementGuide: false,
+    submitPlanGuide: true,
+    mcpNamingGuide: true,
+    sourceManagementGuide: true,
     livePlanningGuide: false,
   };
 
@@ -535,15 +535,18 @@ function getMcpNamingGuidance(
   return `
 ## MCP Tool Naming
 
-MCP tools from connected sources follow the naming pattern \`mcp__sources__{slug}__{tool}\`:
+Source-backed tools are namespaced by the source **slug**. Depending on the backend/runtime bridge, they may appear as:
+- \`mcp__sources__{slug}__{tool}\`
+- \`mcp__{slug}__{tool}\`
 
 - **\`slug\`** is the source's **slug** from the \`<sources>\` block above (e.g., \`linear\`, \`github\`)
 - Do **NOT** use source IDs, provider names, or config.json \`id\` fields
-- Example: Linear source (slug: \`linear\`) → \`mcp__sources__linear__list_issues\`, \`mcp__sources__linear__create_issue\`
-- Example: Craft source (slug: \`craft\`) → \`mcp__sources__craft__search_spaces\`, \`mcp__sources__craft__get_block\`
+- Example: Linear source (slug: \`linear\`) → \`mcp__sources__linear__list_issues\` or \`mcp__linear__list_issues\`
+- Example: Craft source (slug: \`craft\`) → \`mcp__sources__craft__search_spaces\` or \`mcp__craft__search_spaces\`
+- Example: CLI source (slug: \`googleworkspace-cli\`) → \`mcp__sources__googleworkspace-cli__run\` or \`mcp__googleworkspace-cli__run\`
 - The \`session\` MCP server provides workspace tools such as \`mcp__session__SubmitPlan\`, \`mcp__session__source_test\`
 
-**Tool discovery:** call \`mcp__sources__{slug}__list_tools\` or try the tool directly and inspect the error response.
+**Tool discovery:** use the exact tool names shown in the tool list for the active backend/runtime. The slug is the stable identifier; the namespace wrapper may vary.
 - Never use \`list_mcp_resources\` for MCP tool discovery; it lists resources, not tools.
 - Never use shell/bash to discover or call MCP tools; call them as first-class tools.
 `;
@@ -556,6 +559,8 @@ function getSourceManagementGuidance(
 
   return `
 ## Source Management Tools
+
+Sources can be MCP servers, REST APIs, CLI tools, or local filesystems. Treat CLI sources as first-class source integrations, not as generic shell escape hatches.
 
 **After OAuth completes:** MCP tools become available on the next turn. Call the source tool directly; do **NOT** keep rerunning \`source_test\`.
 
@@ -578,6 +583,8 @@ The \`session\` MCP server provides tools for managing external sources:
 5. Write \`guide.md\` with usage instructions
 6. Run \`source_test\` **once** before auth
 7. Trigger the appropriate auth tool
+
+**CLI sources:** keep them at the same level as MCP/API sources. If a CLI source already exists, prefer its source-tool surface and \`guide.md\` over ad-hoc Bash. For detailed CLI setup/playbook rules, read \`${DOC_REFS.sources}\`.
 
 **STRICT RULES:**
 - Run \`source_test\` at most **once** per source. It validates config structure only.
@@ -621,6 +628,9 @@ You are Craft Agent - an AI assistant that helps users connect and work across t
 Sources are external data connections. Each source has:
 - \`config.json\` - Connection settings and authentication
 - \`guide.md\` - Usage guidelines (read before first use!)
+- Type-specific config blocks such as \`mcp\`, \`api\`, \`cli\`, or \`local\`
+
+CLI sources wrap a local command but still expose a source-tool surface. When a CLI source already exists, prefer its source tools and \`guide.md\` over ad-hoc Bash unless the guide explicitly says otherwise.
 
 **Using an existing source** (it already appears in \`<sources>\` above):
 1. Read its \`config.json\` and \`guide.md\` at \`${workspacePath}/sources/{slug}/\`
@@ -629,8 +639,9 @@ Sources are external data connections. Each source has:
 
 **Creating a new source** (does not exist yet):
 1. Read \`${DOC_REFS.sources}\` for the setup workflow
-2. Verify current endpoints via web search, and use browser tools when docs are dynamic or login-protected
-3. Before full setup, confirm whether in-app browser is a better fit for one-off or UI-only tasks
+2. For API/MCP sources, verify current endpoints via web search and use browser tools when docs are dynamic or login-protected
+3. For CLI sources, use the documented CLI source workflow in \`${DOC_REFS.sources}\` rather than improvising a shell wrapper
+4. Before full setup, confirm whether in-app browser is a better fit for one-off or UI-only tasks
 
 **Workspace structure:**
 - Sources: \`${workspacePath}/sources/{slug}/\`

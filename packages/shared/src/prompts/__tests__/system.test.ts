@@ -84,8 +84,11 @@ describe('system prompt guidance', () => {
     expect(prompt).toContain('**`SubmitPlan`**')
     expect(prompt).toContain('## MCP Tool Naming')
     expect(prompt).toContain('mcp__sources__{slug}__{tool}')
+    expect(prompt).toContain('mcp__{slug}__{tool}')
     expect(prompt).toContain('## Source Management Tools')
-    expect(prompt).toContain('Do **NOT** keep rerunning `source_test`.')
+    expect(prompt).toContain('CLI sources:')
+    expect(prompt).toContain('same level as MCP/API sources')
+    expect(prompt).toContain('do **NOT** keep rerunning `source_test`.')
     expect(prompt).not.toContain('**`update_plan`**')
     expect(prompt).not.toContain('Start multi-step work with `update_plan`.')
   })
@@ -116,10 +119,46 @@ describe('system prompt guidance', () => {
 
     expect(profile.profile).toBe('default')
     expect(profile.capabilities).toEqual({
-      submitPlanGuide: false,
-      mcpNamingGuide: false,
-      sourceManagementGuide: false,
+      submitPlanGuide: true,
+      mcpNamingGuide: true,
+      sourceManagementGuide: true,
       livePlanningGuide: false,
     })
+  })
+
+  it('keeps Claude and Pi/Codex on the same core harness sections', () => {
+    const claudePrompt = getSystemPrompt(
+      undefined,
+      undefined,
+      '/tmp/workspace',
+      '/tmp/workspace',
+      'default',
+      'Claude Code',
+    )
+
+    const piProfile = resolvePromptGuidanceProfile({
+      backendName: 'Craft Agents Backend',
+      providerType: 'pi',
+      model: 'pi/gpt-5.4',
+    })
+    const piPrompt = getSystemPrompt(
+      undefined,
+      undefined,
+      '/tmp/workspace',
+      '/tmp/workspace',
+      'default',
+      'Craft Agents Backend',
+      piProfile.capabilities,
+    )
+
+    for (const prompt of [claudePrompt, piPrompt]) {
+      expect(prompt).toContain('**`SubmitPlan`**')
+      expect(prompt).toContain('## MCP Tool Naming')
+      expect(prompt).toContain('## Source Management Tools')
+      expect(prompt).toContain('CLI sources wrap a local command but still expose a source-tool surface.')
+    }
+
+    expect(claudePrompt).not.toContain('**`update_plan`**')
+    expect(piPrompt).not.toContain('**`update_plan`**')
   })
 })

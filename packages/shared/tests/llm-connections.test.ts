@@ -5,7 +5,7 @@
  * model resolution used for title generation, summarization, and call_llm.
  */
 import { describe, it, expect } from 'bun:test';
-import { getMiniModel, getSummarizationModel, getSubtaskModel } from '../src/config/llm-connections.ts';
+import { getMiniModel, getSummarizationModel } from '../src/config/llm-connections.ts';
 import type { LlmProviderType } from '../src/config/llm-connections.ts';
 
 // ============================================================
@@ -170,43 +170,5 @@ describe('getSummarizationModel()', () => {
       'pi/claude-sonnet-4.6',
     ]);
     expect(getSummarizationModel(conn)).toBe(getMiniModel(conn));
-  });
-});
-
-describe('getSubtaskModel()', () => {
-  it('prefers the default model for pi connections', () => {
-    const conn = {
-      providerType: 'pi' as const,
-      defaultModel: 'pi/gpt-5.4',
-      models: [
-        'pi/gpt-5.1-codex-mini',
-        'pi/gpt-5.4',
-      ],
-    };
-
-    expect(getSubtaskModel(conn)).toBe('pi/gpt-5.4');
-  });
-
-  it('falls back to the small model for non-pi connections', () => {
-    const conn = {
-      providerType: 'anthropic' as const,
-      defaultModel: 'claude-sonnet-4-6',
-      models: [
-        'claude-sonnet-4-6',
-        'claude-haiku-4-5-20251001',
-      ],
-    };
-
-    expect(getSubtaskModel(conn)).toBe('claude-haiku-4-5-20251001');
-  });
-
-  it('returns undefined when no models exist', () => {
-    const conn = {
-      providerType: 'pi' as const,
-      defaultModel: undefined,
-      models: [],
-    };
-
-    expect(getSubtaskModel(conn)).toBeUndefined();
   });
 });

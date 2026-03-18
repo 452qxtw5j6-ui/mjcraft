@@ -331,4 +331,268 @@ describe('linear-agent bridge helpers', () => {
       process.env.CRAFT_APP_ROOT = previousAppRoot
     }
   })
+
+  it('applies explicit Craft bridge model and thinking defaults when creating sessions', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-default-config-'))
+    tempDirs.push(workspaceRoot)
+
+    const createCalls: Array<Record<string, unknown> | undefined> = []
+    const thinkingCalls: Array<{ sessionId: string; level: string }> = []
+    let sentMessage = false
+    const service = new LinearAgentBridgeService({
+      workspaceId: 'ws-test',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        async createSession(_workspaceId, options) {
+          createCalls.push(options as Record<string, unknown> | undefined)
+          return { id: 'session-1' }
+        },
+        async getSession() {
+          if (!sentMessage) return null
+          return {
+            id: 'session-1',
+            messages: [
+              {
+                id: 'assistant-1',
+                role: 'assistant',
+                content: 'Final bridge reply',
+                isIntermediate: false,
+              },
+            ],
+          }
+        },
+        async sendMessage() {
+          sentMessage = true
+        },
+        setSessionThinkingLevel(sessionId, level) {
+          thinkingCalls.push({ sessionId, level })
+        },
+      },
+    })
+
+    ;(service as any).appendEvent = async () => {}
+    ;(service as any).safeUpdateExternalUrl = async () => {}
+    ;(service as any).safeCreateActivity = async () => {}
+    ;(service as any).updateSessionMap = async () => {}
+    ;(service as any).fetchIssueSnapshot = async () => null
+    ;(service as any).readConfig = async () => ({
+      publicBaseUrl: '',
+    })
+
+    await (service as any).handleCraftTarget({
+      slug: 'craft',
+      enabled: true,
+      webhookPath: '/craft',
+      target: {
+        kind: 'craft',
+        namePrefix: 'Linear',
+        permissionMode: 'allow-all',
+        model: 'claude-opus-4-6',
+        thinkingLevel: 'medium',
+        workingDirectory: 'user_default',
+      },
+    }, {
+      action: 'created',
+      eventType: 'AgentSessionEvent',
+      agentSessionId: 'agent-session-1',
+      prompt: 'Investigate the issue',
+      issueIdentifier: 'MJA-100',
+      webhookTimestamp: Date.now(),
+    })
+
+    expect(createCalls).toHaveLength(1)
+    expect(createCalls[0]?.model).toBe('claude-opus-4-6')
+    expect(thinkingCalls).toEqual([{ sessionId: 'session-1', level: 'medium' }])
+  })
+
+  it('posts only an issue comment for successful Craft responses', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-craft-publish-'))
+    tempDirs.push(workspaceRoot)
+
+    let sentMessage = false
+    let activityCalls = 0
+    let issueComments = 0
+    const service = new LinearAgentBridgeService({
+      workspaceId: 'ws-test',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        async createSession() {
+          return { id: 'session-1' }
+        },
+        async getSession() {
+          if (!sentMessage) return null
+          return {
+            id: 'session-1',
+            messages: [
+              {
+                id: 'assistant-1',
+                role: 'assistant',
+                content: 'Final bridge reply',
+                isIntermediate: false,
+              },
+            ],
+          }
+        },
+        async sendMessage() {
+          sentMessage = true
+        },
+      },
+    })
+
+    ;(service as any).appendEvent = async () => {}
+    ;(service as any).safeUpdateExternalUrl = async () => {}
+    ;(service as any).updateSessionMap = async () => {}
+    ;(service as any).fetchIssueSnapshot = async () => ({
+      id: 'issue-1',
+      identifier: 'MJA-101',
+      stateName: 'Todo',
+      comments: [],
+      teamStates: [],
+    })
+    ;(service as any).readConfig = async () => ({
+      publicBaseUrl: '',
+    })
+    ;(service as any).safeCreateActivity = async () => {
+      activityCalls += 1
+    }
+    ;(service as any).createIssueComment = async () => {
+      issueComments += 1
+    }
+
+    await (service as any).handleCraftTarget({
+      slug: 'craft',
+      enabled: true,
+      webhookPath: '/craft',
+      target: {
+        kind: 'craft',
+        namePrefix: 'Linear',
+        permissionMode: 'allow-all',
+        model: 'claude-opus-4-6',
+        thinkingLevel: 'medium',
+        workingDirectory: 'user_default',
+      },
+    }, {
+      action: 'created',
+      eventType: 'AgentSessionEvent',
+      agentSessionId: 'agent-session-2',
+      prompt: 'Investigate the issue',
+      issueId: 'issue-1',
+      issueIdentifier: 'MJA-101',
+      webhookTimestamp: Date.now(),
+    })
+
+    expect(activityCalls).toBe(0)
+    expect(issueComments).toBe(1)
+  })
+
+  it('posts only an issue comment for successful Codex responses', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-codex-publish-'))
+    tempDirs.push(workspaceRoot)
+
+    let activityCalls = 0
+    let issueComments = 0
+    const service = new LinearAgentBridgeService({
+      workspaceId: 'ws-test',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        async createSession() {
+          return { id: 'session-1' }
+        },
+        async getSession() {
+          return null
+        },
+        async sendMessage() {},
+      },
+    })
+
+    ;(service as any).appendEvent = async () => {}
+    ;(service as any).writeRunRecord = async () => {}
+    ;(service as any).updateSessionMap = async () => {}
+    ;(service as any).safeUpdateExternalUrl = async () => {}
+    ;(service as any).materializeIssueWorkspace = async () => {}
+    ;(service as any).buildBridgeCodexEnv = async () => ({ CODEX_HOME: '/tmp/codex-home' })
+    ;(service as any).fetchIssueSnapshot = async () => ({
+      id: 'issue-1',
+      identifier: 'MJA-202',
+      stateName: 'Todo',
+      comments: [],
+      teamStates: [],
+    })
+    ;(service as any).safeCreateActivity = async () => {
+      activityCalls += 1
+    }
+    ;(service as any).createIssueComment = async () => {
+      issueComments += 1
+    }
+    ;(service as any).deps.spawnProcess = (() => {
+      throw new Error('spawnProcess should not be called directly in this test')
+    }) as any
+
+    const originalCreateActivity = (service as any).safeCreateActivity
+    const originalCreateIssueComment = (service as any).createIssueComment
+
+    await (service as any).withIssueLock('issue-1', async (fn: any) => fn)
+
+    const result = {
+      exitCode: 0,
+      stdout: [
+        JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
+        JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'STATUS: completed\n\nFinal Codex reply' } }),
+        JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 2 } }),
+      ].join('\n'),
+      stderr: '',
+    }
+
+    ;(service as any).deps.spawnProcess = undefined
+
+    const module = await import('../linear-agent-bridge')
+    const runCommandSpy = async () => result
+    ;(service as any).safeCreateActivity = originalCreateActivity
+    ;(service as any).createIssueComment = originalCreateIssueComment
+
+    const originalHandleCodexTarget = (service as any).handleCodexTarget.bind(service)
+    ;(service as any).handleCodexTarget = async function (_config: any, agentConfig: any, event: any) {
+      const originalRunCommand = (module as any).runCommand
+      ;(module as any).runCommand = runCommandSpy
+      try {
+        return await originalHandleCodexTarget(_config, agentConfig, event)
+      } finally {
+        ;(module as any).runCommand = originalRunCommand
+      }
+    }
+
+    await (service as any).handleCodexTarget({
+      codexBin: 'codex',
+    }, {
+      slug: 'codex',
+      enabled: true,
+      webhookPath: '/codex',
+      target: {
+        kind: 'codex',
+        workspacePath: '.',
+        model: 'gpt-5.4',
+        codexConfig: { reasoningEffort: 'medium' },
+        results: {
+          addAgentResponse: true,
+          addIssueComment: true,
+          moveToReviewOnCompleted: false,
+          moveToDoneOnCompletedIfNoReview: false,
+          appendArtifactLinksSection: false,
+          addLabels: [],
+          createFollowupIssueOnBlocked: false,
+        },
+      },
+    }, {
+      action: 'created',
+      eventType: 'AgentSessionEvent',
+      agentSessionId: 'agent-session-codex-1',
+      prompt: 'Investigate the issue',
+      issueId: 'issue-1',
+      issueIdentifier: 'MJA-202',
+      webhookTimestamp: Date.now(),
+    })
+
+    expect(activityCalls).toBe(0)
+    expect(issueComments).toBe(1)
+  })
 })

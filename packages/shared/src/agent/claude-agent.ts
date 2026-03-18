@@ -127,23 +127,15 @@ export function resolveClaudeThinkingOptions(args: {
   providerType?: BackendConfig['providerType'];
   minimizeThinking: boolean;
 }): Partial<Options> {
-  const { thinkingLevel, model, providerType, minimizeThinking } = args;
+  const { thinkingLevel, model, minimizeThinking } = args;
   const isClaude = isClaudeModel(model);
   const effort = THINKING_TO_EFFORT[thinkingLevel];
-  const isHaiku = model.toLowerCase().includes('haiku');
-  const supportsAdaptiveThinking = isClaude && !isHaiku && providerType !== 'anthropic_compat';
 
+  // Current bundled Claude SDK/CLI path supports --max-thinking-tokens but rejects
+  // the newer --thinking flag. Stay on token-budget configuration until the local
+  // SDK runtime is upgraded in lockstep.
   if (minimizeThinking || !isClaude || !effort) {
-    return supportsAdaptiveThinking
-      ? { thinking: { type: 'disabled' as const } }
-      : { maxThinkingTokens: 0 };
-  }
-
-  if (supportsAdaptiveThinking) {
-    return {
-      thinking: { type: 'adaptive' as const },
-      effort,
-    };
+    return { maxThinkingTokens: 0 };
   }
 
   return {
@@ -2515,7 +2507,7 @@ This is a branched conversation. All prior messages in this conversation are par
       model,
       maxTurns: 1,
       systemPrompt: 'Reply with ONLY the requested text. No explanation.', // Minimal - no Claude Code preset
-      thinking: { type: 'disabled' as const },
+      maxThinkingTokens: 0,
     };
 
     let result = '';

@@ -6,9 +6,11 @@ import { homedir } from 'os'
 import { basename, join, relative } from 'path'
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
+import { getDefaultLlmConnection, getLlmConnection, getLlmConnections } from '@craft-agent/shared/config'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import type { StoredCredential } from '@craft-agent/shared/credentials/types'
 import { isValidLabelId } from '@craft-agent/shared/labels/storage'
+import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
 import log from './logger'
 
 const linearBridgeLog = log.scope('linear-agent')
@@ -24,6 +26,7 @@ const LINEAR_TOKEN_URL = 'https://api.linear.app/oauth/token'
 const execFileAsync = promisify(execFile)
 
 type PermissionMode = 'safe' | 'ask' | 'allow-all'
+type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max'
 
 interface LinearBridgeSessionLike {
   id: string
@@ -50,6 +53,7 @@ interface LinearBridgeSessionManagerLike {
   ): Promise<LinearBridgeSessionLike>
   getSession(sessionId: string): Promise<LinearBridgeSessionLike | null>
   sendMessage(sessionId: string, message: string): Promise<void>
+  setSessionThinkingLevel?(sessionId: string, level: ThinkingLevel): void
   notifySessionCreated?(sessionId: string): void
 }
 
@@ -59,6 +63,7 @@ type CraftTargetConfig = {
   permissionMode?: PermissionMode
   llmConnection?: string
   model?: string
+  thinkingLevel?: ThinkingLevel
   labels?: string[]
   workingDirectory?: string | 'user_default' | 'none'
   openLabel?: string
@@ -228,6 +233,8 @@ const DEFAULT_CONFIG: LinearBridgeConfig = {
         kind: 'craft',
         namePrefix: 'Linear',
         permissionMode: 'allow-all',
+        model: 'claude-opus-4-6',
+        thinkingLevel: 'medium',
         workingDirectory: 'user_default',
         openLabel: 'Open in Craft',
       },
@@ -247,6 +254,7 @@ const DEFAULT_CONFIG: LinearBridgeConfig = {
         launchDesktopApp: false,
         workspacePath: '.',
         sessionId: '',
+        model: 'gpt-5.4',
         openLabel: 'Open in Codex',
         fullAuto: true,
         codexConfig: {
@@ -376,6 +384,46 @@ function buildCraftSessionName(
   if (issuePart) return `${prefix}: ${issuePart}`.slice(0, 120)
   if (titlePart) return `${prefix}: ${titlePart}`.slice(0, 120)
   return `${prefix}: ${event.prompt.slice(0, 80)}`.slice(0, 120)
+}
+
+function isAnthropicLikeProvider(providerType?: string): boolean {
+  return providerType === 'anthropic'
+    || providerType === 'anthropic_compat'
+    || providerType === 'bedrock'
+    || providerType === 'vertex'
+}
+
+function shouldPreferClaudeConnection(model?: string): boolean {
+  return typeof model === 'string' && /claude/i.test(model)
+}
+
+function resolveCraftBridgeConnectionSlug(workspaceRootPath: string, target: CraftTargetConfig): string | undefined {
+  if (target.llmConnection?.trim()) {
+    return target.llmConnection.trim()
+  }
+
+  if (!shouldPreferClaudeConnection(target.model)) {
+    return undefined
+  }
+
+  const workspaceDefault = loadWorkspaceConfig(workspaceRootPath)?.defaults?.defaultLlmConnection
+  const candidates = [
+    workspaceDefault,
+    getDefaultLlmConnection(),
+    ...getLlmConnections().map(connection => connection.slug),
+  ].filter((slug): slug is string => !!slug)
+
+  const seen = new Set<string>()
+  for (const slug of candidates) {
+    if (seen.has(slug)) continue
+    seen.add(slug)
+    const connection = getLlmConnection(slug)
+    if (connection && isAnthropicLikeProvider(connection.providerType)) {
+      return slug
+    }
+  }
+
+  return undefined
 }
 
 export function resolveLinearSessionLabels(workspaceRootPath: string, labels?: string[]): string[] {
@@ -1684,14 +1732,18 @@ export class LinearAgentBridgeService {
         stage: 'session_create_start',
       })
       const sessionName = buildCraftSessionName(event, agentConfig.target.namePrefix || 'Linear')
+      const connectionSlug = resolveCraftBridgeConnectionSlug(this.workspaceRootPath, agentConfig.target)
       session = await this.sessionManager.createSession(this.workspaceId, {
         name: sessionName,
         permissionMode: agentConfig.target.permissionMode,
-        llmConnection: agentConfig.target.llmConnection,
+        llmConnection: connectionSlug,
         model: agentConfig.target.model,
         labels: resolveLinearSessionLabels(this.workspaceRootPath, agentConfig.target.labels),
         workingDirectory: agentConfig.target.workingDirectory,
       })
+      if (agentConfig.target.thinkingLevel) {
+        this.sessionManager.setSessionThinkingLevel?.(session.id, agentConfig.target.thinkingLevel)
+      }
       this.sessionManager.notifySessionCreated?.(session.id)
       await this.appendEvent({
         type: 'craft-stage',
@@ -1750,6 +1802,7 @@ export class LinearAgentBridgeService {
     const finalSession = await this.sessionManager.getSession(session.id)
     const finalReply = extractLatestAssistantReply(finalSession, previousAssistantId)
     if (!finalReply) {
+      const latestError = extractLatestErrorMessage(finalSession)
       await this.appendEvent({
         type: 'craft-stage',
         slug: agentConfig.slug,
@@ -1757,16 +1810,10 @@ export class LinearAgentBridgeService {
         issueIdentifier: issue?.identifier ?? event.issueIdentifier,
         stage: 'no_final_reply',
         craftSessionId: session.id,
+        errorPreview: latestError ?? null,
       })
-      throw new Error('Craft session completed without a final assistant reply')
+      throw new Error(latestError || 'Craft session completed without a final assistant reply')
     }
-
-    await this.safeCreateActivity(
-      agentConfig,
-      event.agentSessionId,
-      'response',
-      finalReply,
-    )
 
     if (issue?.id) {
       await this.createIssueComment(agentConfig, issue.id, finalReply)
@@ -2000,22 +2047,6 @@ export class LinearAgentBridgeService {
         ? `\n\nArtifacts:\n- Workspace: ${workspacePath}`
         : ''
       const finalResponseBody = `${structured.body}${artifactLinksSection}`.trim()
-
-      if (resultsConfig?.addAgentResponse !== false) {
-        await this.safeCreateActivity(
-          agentConfig,
-          event.agentSessionId,
-          'response',
-          finalResponseBody,
-        )
-        await this.appendEvent({
-          type: 'codex-stage',
-          slug: agentConfig.slug,
-          agentSessionId: event.agentSessionId,
-          issueIdentifier: issue?.identifier ?? event.issueIdentifier,
-          stage: 'agent_response_written',
-        })
-      }
 
       if (issue?.id) {
         if (resultsConfig?.addIssueComment !== false) {
@@ -2290,6 +2321,18 @@ function extractLatestAssistantReply(session: LinearBridgeSessionLike | null, pr
     const message = messages[i]
     if (message?.role !== 'assistant' || message.isIntermediate) continue
     if (previousAssistantId && message.id === previousAssistantId) return null
+    const content = message.content?.trim()
+    if (!content) return null
+    return content
+  }
+  return null
+}
+
+function extractLatestErrorMessage(session: LinearBridgeSessionLike | null): string | null {
+  const messages = session?.messages ?? []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message?.role !== 'error' || message.isIntermediate) continue
     const content = message.content?.trim()
     if (!content) return null
     return content

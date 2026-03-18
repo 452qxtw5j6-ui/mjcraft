@@ -234,9 +234,6 @@ export class PiAgent extends BaseAgent {
     if (modelDef?.contextWindow) {
       this.adapter.setContextWindow(modelDef.contextWindow);
     }
-    if (config.subtaskModel || config.miniModel) {
-      this.adapter.setSubtaskModel(config.subtaskModel ?? config.miniModel);
-    }
 
     // Set session dir on adapter for concurrent-safe toolMetadataStore lookups
     if (config.session?.id && config.workspace.rootPath) {
@@ -401,7 +398,6 @@ export class PiAgent extends BaseAgent {
       workingDirectory,
       plansFolderPath,
       miniModel: this.config.miniModel,
-      subtaskModel: this.config.subtaskModel,
       providerType: this.config.providerType,
       authType: this.config.authType,
       workspaceId: this.config.workspace.id,
@@ -435,10 +431,10 @@ export class PiAgent extends BaseAgent {
     const sessionToolDefs = getSessionToolProxyDefs();
 
     // Patch call_llm description with provider-specific model hint
-    if (this.config.subtaskModel || this.config.miniModel) {
+    if (this.config.miniModel) {
       const callLlmDef = sessionToolDefs.find(d => d.name === 'mcp__session__call_llm');
       if (callLlmDef) {
-        callLlmDef.description += `\n\nDefault secondary model for this session: ${this.config.subtaskModel ?? this.config.miniModel}. Omit the model parameter to use it automatically.`;
+        callLlmDef.description += `\n\nDefault secondary model for this session: ${this.config.miniModel}. Omit the model parameter to use it automatically.`;
       }
     }
 
@@ -2029,7 +2025,7 @@ export class PiAgent extends BaseAgent {
   async queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
     this.debug('[PiAgent.queryLlm] Starting');
 
-    const effectiveModel = request.model || this.config.subtaskModel || this.config.miniModel;
+    const effectiveModel = request.model || this.config.miniModel;
     const text = await this.runSubprocessCompletion(request.prompt, effectiveModel);
     return {
       text: text || '',
