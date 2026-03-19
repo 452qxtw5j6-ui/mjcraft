@@ -44,6 +44,13 @@ import type {
 // Pi AI types
 import type { TextContent as PiTextContent } from '@mariozechner/pi-ai';
 
+// Pre-register the Bedrock provider module so the Pi SDK doesn't attempt a
+// dynamic import of "./amazon-bedrock.js" — which fails in the bundled output
+// because bun collapses everything into a single file.
+import { setBedrockProviderModule } from '@mariozechner/pi-ai';
+import { bedrockProviderModule } from '@mariozechner/pi-ai/bedrock-provider';
+setBedrockProviderModule(bedrockProviderModule);
+
 // Model resolution (extracted for testability + custom-endpoint precedence)
 import { resolvePiModel } from './model-resolution.ts';
 
@@ -65,7 +72,8 @@ import { createSearchTool } from './tools/search/create-search-tool.ts';
 /** Credential union used in init and token_update messages */
 type PiCredential =
   | { type: 'api_key'; key: string }
-  | { type: 'oauth'; access: string; refresh: string; expires: number };
+  | { type: 'oauth'; access: string; refresh: string; expires: number }
+  | { type: 'iam'; accessKeyId: string; secretAccessKey: string; region?: string; sessionToken?: string };
 
 /** Custom endpoint protocol — determines which streaming adapter Pi SDK uses */
 type CustomEndpointApi = 'openai-completions' | 'anthropic-messages';

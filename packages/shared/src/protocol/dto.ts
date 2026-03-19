@@ -345,6 +345,16 @@ export interface LlmConnectionSetup {
   updateOnly?: boolean
   /** Custom endpoint protocol for arbitrary OpenAI/Anthropic-compatible APIs */
   customEndpoint?: CustomEndpointConfig
+  /** Bedrock IAM credentials for direct IAM authentication */
+  iamCredentials?: {
+    accessKeyId: string
+    secretAccessKey: string
+    sessionToken?: string
+  }
+  /** AWS region for Bedrock connections */
+  awsRegion?: string
+  /** Bedrock authentication method — determines how credentials are resolved */
+  bedrockAuthMethod?: 'iam_credentials' | 'environment'
 }
 
 export interface TestLlmConnectionParams {

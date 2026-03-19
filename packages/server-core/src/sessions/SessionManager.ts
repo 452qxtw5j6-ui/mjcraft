@@ -3,7 +3,7 @@ import type { ISessionManager, IBrowserPaneManager } from '@craft-agent/server-c
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
 import { basename, join, normalize, isAbsolute, sep } from 'path'
 import { existsSync } from 'fs'
-import { appendFile, readFile, writeFile, mkdir, realpath } from 'fs/promises'
+import { readFile, writeFile, mkdir, realpath } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
 import { randomUUID } from 'node:crypto'
 import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns } from '@craft-agent/shared/agent'
@@ -82,7 +82,7 @@ import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
 import { listLabels } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
-import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, createPromptHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 import { parseMentions } from '@craft-agent/shared/mentions'
 
 // Import from server-core domain utilities
@@ -1483,7 +1483,6 @@ export class SessionManager implements ISessionManager {
           )
 
           // Write enriched history entries (with session IDs and prompt summaries)
-          const historyPath = join(workspaceRootPath, AUTOMATIONS_HISTORY_FILE)
           for (const [idx, result] of settled.entries()) {
             const pending = prompts[idx]
             if (!pending.matcherId) continue
@@ -1496,7 +1495,7 @@ export class SessionManager implements ISessionManager {
               error: result.status === 'rejected' ? String(result.reason) : undefined,
             })
 
-            appendFile(historyPath, JSON.stringify(entry) + '\n', 'utf-8').catch(e => sessionLog.warn('[Automations] Failed to write history:', e))
+            appendAutomationHistoryEntry(workspaceRootPath, entry).catch(e => sessionLog.warn('[Automations] Failed to write history:', e))
 
             if (result.status === 'rejected') {
               sessionLog.error(`[Automations] Failed to execute prompt action ${idx + 1}:`, result.reason)
@@ -6497,6 +6496,13 @@ export class SessionManager implements ISessionManager {
       }
 
       case 'error': {
+        // Skip errors after handoff (plan submission, auth request) — the SDK may emit
+        // an error from the interrupted query after we've already stopped processing.
+        if (!managed.isProcessing) {
+          sessionLog.info('Skipping error event after handoff/stop:', event.message)
+          break
+        }
+
         // Skip abort errors - these are expected when force-aborting via Query.close()
         if (event.message.includes('aborted') || event.message.includes('AbortError')) {
           sessionLog.info('Skipping abort error event (expected during interrupt)')
@@ -6529,6 +6535,12 @@ export class SessionManager implements ISessionManager {
       }
 
       case 'typed_error':
+        // Skip errors after handoff (plan submission, auth request)
+        if (!managed.isProcessing) {
+          sessionLog.info('Skipping typed_error event after handoff/stop:', event.error.message || event.error.title)
+          break
+        }
+
         // Skip abort errors - these are expected when force-aborting via Query.close()
         const typedErrorMsg = event.error.message || event.error.title || ''
         if (typedErrorMsg.includes('aborted') || typedErrorMsg.includes('AbortError')) {
