@@ -136,6 +136,13 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
         }
       }
 
+      // Bedrock auth method override — set providerType and authType
+      if (setup.bedrockAuthMethod) {
+        updates.authType = setup.bedrockAuthMethod
+        updates.providerType = 'bedrock'
+        if (setup.awsRegion) updates.awsRegion = setup.awsRegion
+      }
+
       const effectiveProviderType = updates.providerType ?? connection.providerType
       if (effectiveProviderType === 'pi') {
         const toPiModelId = (id: string) => id.startsWith('pi/') ? id : `pi/${id}`
@@ -216,6 +223,15 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
           await manager.setLlmApiKey(setup.slug, setup.credential)
           deps.platform.logger?.info('Saved API key to LLM connection')
         }
+      }
+
+      // Bedrock IAM credentials — stored separately from API keys
+      if (setup.iamCredentials) {
+        await manager.setLlmIamCredentials(setup.slug, {
+          ...setup.iamCredentials,
+          region: setup.awsRegion,
+        })
+        deps.platform.logger?.info('Saved IAM credentials to LLM connection')
       }
 
       // Set as default only if no default exists yet (first connection)
