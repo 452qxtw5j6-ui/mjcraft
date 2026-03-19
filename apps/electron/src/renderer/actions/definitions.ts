@@ -226,6 +226,15 @@ export const actions = {
     scope: 'chat',
     when: 'chatFocus',
   },
+  'chat.deleteCurrentSession': {
+    id: 'chat.deleteCurrentSession',
+    label: 'Delete Current Session',
+    description: 'Delete the current chat session',
+    defaultHotkey: 'mod+backspace',
+    category: 'Chat',
+    scope: 'chat',
+    when: 'chatFocus && !inputFocus',
+  },
 
 } as const satisfies Record<string, ActionDefinition>
 

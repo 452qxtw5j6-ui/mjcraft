@@ -1157,6 +1157,13 @@ function AppShellContent({
   }, {
     enabled: () => !!effectiveSessionId
   }, [effectiveSessionId])
+  useAction('chat.deleteCurrentSession', () => {
+    if (effectiveSessionId) {
+      void contextValue.onDeleteSession(effectiveSessionId)
+    }
+  }, {
+    enabled: () => !!effectiveSessionId && !hasOpenOverlay()
+  }, [effectiveSessionId, contextValue.onDeleteSession])
 
   // ESC to stop processing - requires double-press within 1 second
   // First press shows warning overlay, second press interrupts
