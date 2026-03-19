@@ -28,6 +28,7 @@ import type { SessionMeta } from "@/atoms/sessions"
 import type { ViewConfig } from "@craft-agent/shared/views"
 import type { SessionStatusId, SessionStatus } from "@/config/session-status-config"
 import { buildCollapsedGroupsScopeSuffix } from "@/utils/session-list-collapse"
+import { dispatchOpenSessionStatusMenuEvent } from "./open-session-status-menu-events"
 
 export interface SessionListRow {
   item: SessionMeta
@@ -481,6 +482,24 @@ export function SessionList({
       return isFocusWithinZone() && !isMultiSelectActive && !!selectionStore.state.selected && !showEscapeOverlay
     },
   }, [isMultiSelectActive, selectionStore.state.selected, showEscapeOverlay, handleDeleteWithToast])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (showEscapeOverlay || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.code !== 'KeyS') return
+
+      const hoveredElement = document.querySelector<HTMLElement>('.session-item[data-session-id]:hover')
+      const targetSessionId = hoveredElement?.dataset.sessionId
+      if (!targetSessionId) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      dispatchOpenSessionStatusMenuEvent({ sessionId: targetSessionId })
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [showEscapeOverlay])
 
   // --- Click handlers ---
   const handleSelectSession = useCallback((row: SessionListRow, index: number) => {

@@ -166,7 +166,6 @@ export const actions = {
     scope: 'navigator',
     when: 'navigatorFocus && !inputFocus',
   },
-
   // ═══════════════════════════════════════════
   // Panels
   // ═══════════════════════════════════════════

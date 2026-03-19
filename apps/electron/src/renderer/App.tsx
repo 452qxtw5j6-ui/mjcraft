@@ -27,6 +27,8 @@ import { navigate, routes } from './lib/navigate'
 import { stripMarkdown } from './utils/text'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
 import { DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
+import { getKeybindingContext } from '@/actions/keybinding-context'
+import { isMac } from '@/lib/platform'
 import { initRendererPerf } from './lib/perf'
 import {
   initializeSessionsAtom,
@@ -62,6 +64,12 @@ import { ActionRegistryProvider } from '@/actions'
 import { toast } from 'sonner'
 
 type AppState = 'loading' | 'onboarding' | 'reauth' | 'ready'
+
+interface SessionStatusUndoEntry {
+  sessionId: string
+  previousState: SessionStatus
+  nextState: SessionStatus
+}
 
 /** Type for the Jotai store returned by useStore() */
 type JotaiStore = ReturnType<typeof getDefaultStore>
@@ -218,6 +226,7 @@ export default function App() {
   // Credential requests per session (queue to handle multiple concurrent requests)
   const [pendingCredentials, setPendingCredentials] = useState<Map<string, CredentialRequest[]>>(new Map())
   // Draft input text per session (preserved across mode switches and conversation changes)
+  const sessionStatusUndoStackRef = useRef<SessionStatusUndoEntry[]>([])
   // Using ref instead of state to avoid re-renders during typing - drafts are only
   // needed for initial value restoration and disk persistence, not reactive updates
   const sessionDraftsRef = useRef<Map<string, string>>(new Map())
@@ -909,9 +918,48 @@ export default function App() {
   }, [updateSessionById])
 
   const handleSessionStatusChange = useCallback((sessionId: string, state: SessionStatus) => {
+    const previousState = store.get(sessionMetaMapAtom).get(sessionId)?.sessionStatus || 'todo'
+    if (previousState === state) return
+
+    sessionStatusUndoStackRef.current.push({
+      sessionId,
+      previousState,
+      nextState: state,
+    })
+    if (sessionStatusUndoStackRef.current.length > 50) {
+      sessionStatusUndoStackRef.current.splice(0, sessionStatusUndoStackRef.current.length - 50)
+    }
+
     updateSessionById(sessionId, { sessionStatus: state })
     window.electronAPI.sessionCommand(sessionId, { type: 'setSessionStatus', state })
+  }, [store, updateSessionById])
+
+  const handleUndoSessionStatusChange = useCallback(() => {
+    const entry = sessionStatusUndoStackRef.current.pop()
+    if (!entry) return
+
+    updateSessionById(entry.sessionId, { sessionStatus: entry.previousState })
+    window.electronAPI.sessionCommand(entry.sessionId, { type: 'setSessionStatus', state: entry.previousState })
   }, [updateSessionById])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const modPressed = isMac ? event.metaKey : event.ctrlKey
+      if (!modPressed || event.shiftKey || event.altKey || event.code !== 'KeyZ') return
+
+      const context = getKeybindingContext(event)
+      if (context.inputFocus) return
+      if (!context.navigatorFocus && !context.chatFocus) return
+      if (sessionStatusUndoStackRef.current.length === 0) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      handleUndoSessionStatusChange()
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [handleUndoSessionStatusChange])
 
   const handleRenameSession = useCallback((sessionId: string, name: string) => {
     updateSessionById(sessionId, { name })
