@@ -167,6 +167,7 @@ interface LinearBridgeDependencies {
     error: (...args: unknown[]) => void
   }
   spawnProcess: typeof spawn
+  runCommand: typeof runCommand
 }
 
 interface LinearIssueSnapshot {
@@ -814,6 +815,7 @@ export class LinearAgentBridgeService {
       now: options.deps?.now ?? (() => Date.now()),
       logger: options.deps?.logger ?? linearBridgeLog,
       spawnProcess: options.deps?.spawnProcess ?? spawn,
+      runCommand: options.deps?.runCommand ?? runCommand,
     }
     this.serviceDir = resolveLinearAgentHome()
     this.configPath = join(this.serviceDir, CONFIG_FILENAME)
@@ -1758,7 +1760,7 @@ export class LinearAgentBridgeService {
         workspaceId: this.workspaceId,
         sessionId: session.id,
       })
-      : buildCraftRedirectUrl(config.publicBaseUrl || 'https://macbookair.tail6a946f.ts.net', this.workspaceId, session.id)
+      : buildCraftRedirectUrl(config.publicBaseUrl || 'https://macbookpro.tail6a946f.ts.net', this.workspaceId, session.id)
     await this.safeUpdateExternalUrl(
       agentConfig,
       event.agentSessionId,
@@ -1813,8 +1815,22 @@ export class LinearAgentBridgeService {
       throw new Error(latestError || 'Craft session completed without a final assistant reply')
     }
 
+    await this.safeCreateActivity(
+      agentConfig,
+      event.agentSessionId,
+      'response',
+      finalReply,
+    )
+    await this.appendEvent({
+      type: 'craft-stage',
+      slug: agentConfig.slug,
+      agentSessionId: event.agentSessionId,
+      issueIdentifier: issue?.identifier ?? event.issueIdentifier,
+      stage: 'agent_response_written',
+      craftSessionId: session.id,
+    })
+
     if (issue?.id) {
-      await this.createIssueComment(agentConfig, issue.id, finalReply)
       const reviewStateId = this.resolveReviewStateId(issue)
       if (reviewStateId) {
         await this.moveIssueToState(agentConfig, issue.id, reviewStateId)
@@ -1970,7 +1986,7 @@ export class LinearAgentBridgeService {
         hasLinearApiKey: Boolean(bridgeEnv.LINEAR_API_KEY),
       })
 
-      const result = await runCommand(
+      const result = await this.deps.runCommand(
         this.deps.spawnProcess,
         config.codexBin,
         [...args, prompt],
@@ -2145,7 +2161,7 @@ export class LinearAgentBridgeService {
           },
           ...(ephemeral ? { ephemeral: true } : {}),
         },
-      })
+      }, { authMode: 'oauth' })
     } catch (error) {
       this.deps.logger.warn('[linear-agent] failed to create activity', {
         slug: agentConfig.slug,
@@ -2174,7 +2190,7 @@ export class LinearAgentBridgeService {
         input: {
           externalUrls: [{ label, url }],
         },
-      })
+      }, { authMode: 'oauth' })
     } catch (error) {
       this.deps.logger.warn('[linear-agent] failed to update external url', {
         slug: agentConfig.slug,
@@ -2188,11 +2204,21 @@ export class LinearAgentBridgeService {
     agentConfig: LinearBridgeAgentConfig,
     query: string,
     variables: Record<string, unknown>,
+    options?: {
+      authMode?: 'auto' | 'oauth'
+    },
   ): Promise<unknown> {
     const explicitApiToken = resolveSecret(agentConfig.apiToken, agentConfig.apiTokenEnv)
-    let accessToken = explicitApiToken || await this.getStoredAccessToken(agentConfig) || resolveLinearApiTokenFallback(agentConfig)
+    const authMode = options?.authMode ?? 'auto'
+    let accessToken = authMode === 'oauth'
+      ? await this.getStoredAccessToken(agentConfig)
+      : explicitApiToken || await this.getStoredAccessToken(agentConfig) || resolveLinearApiTokenFallback(agentConfig)
     if (!accessToken) {
-      throw new Error(`Missing Linear API token for bridge agent "${agentConfig.slug}"`)
+      throw new Error(
+        authMode === 'oauth'
+          ? `Missing Linear OAuth token for bridge agent "${agentConfig.slug}"`
+          : `Missing Linear API token for bridge agent "${agentConfig.slug}"`,
+      )
     }
 
     const config = await this.readConfig()
@@ -2205,7 +2231,7 @@ export class LinearAgentBridgeService {
       body: JSON.stringify({ query, variables }),
     })
 
-    if ((response.status === 401 || response.status === 403) && !explicitApiToken) {
+    if (response.status === 401 || response.status === 403) {
       const refreshed = await this.refreshStoredAccessToken(agentConfig)
       if (refreshed) {
         accessToken = refreshed

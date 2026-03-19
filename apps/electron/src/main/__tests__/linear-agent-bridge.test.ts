@@ -441,7 +441,7 @@ describe('linear-agent bridge helpers', () => {
     expect(thinkingCalls).toEqual([{ sessionId: 'session-1', level: 'medium' }])
   })
 
-  it('posts only an issue comment for successful Craft responses', async () => {
+  it('posts an agent response without mirroring a user issue comment for Craft responses', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-craft-publish-'))
     tempDirs.push(workspaceRoot)
 
@@ -517,8 +517,60 @@ describe('linear-agent bridge helpers', () => {
       webhookTimestamp: Date.now(),
     })
 
-    expect(activityCalls).toBe(0)
-    expect(issueComments).toBe(1)
+    expect(activityCalls).toBe(1)
+    expect(issueComments).toBe(0)
+  })
+
+  it('uses stored OAuth tokens for agent-session mutations even when an API token is configured', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-oauth-priority-'))
+    tempDirs.push(workspaceRoot)
+
+    const authHeaders: string[] = []
+    const service = new LinearAgentBridgeService({
+      workspaceId: 'ws-test',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        async createSession() {
+          return { id: 'session-1' }
+        },
+        async getSession() {
+          return null
+        },
+        async sendMessage() {},
+      },
+      deps: {
+        fetchImpl: Object.assign(
+          async (_url: URL | RequestInfo, init?: RequestInit) => {
+            authHeaders.push(String((init?.headers as Record<string, string>)?.Authorization ?? ''))
+            return {
+              ok: true,
+              status: 200,
+              async json() {
+                return { data: { agentActivityCreate: { success: true } } }
+              },
+            } as Response
+          },
+          { preconnect: fetch.preconnect.bind(fetch) },
+        ) as typeof fetch,
+      },
+    })
+
+    ;(service as any).readConfig = async () => ({
+      apiBaseUrl: 'https://api.linear.app/graphql',
+    })
+    ;(service as any).getStoredAccessToken = async () => 'oauth-token'
+
+    await (service as any).safeCreateActivity({
+      slug: 'craft-codex',
+      enabled: true,
+      webhookPath: '/craft',
+      apiToken: 'lin_api_explicit',
+      target: {
+        kind: 'craft',
+      },
+    }, 'agent-session-1', 'response', 'hello')
+
+    expect(authHeaders).toEqual(['Bearer oauth-token'])
   })
 
   it('posts only an issue comment for successful Codex responses', async () => {
@@ -581,21 +633,10 @@ describe('linear-agent bridge helpers', () => {
 
     ;(service as any).deps.spawnProcess = undefined
 
-    const module = await import('../linear-agent-bridge')
     const runCommandSpy = async () => result
     ;(service as any).safeCreateActivity = originalCreateActivity
     ;(service as any).createIssueComment = originalCreateIssueComment
-
-    const originalHandleCodexTarget = (service as any).handleCodexTarget.bind(service)
-    ;(service as any).handleCodexTarget = async function (_config: any, agentConfig: any, event: any) {
-      const originalRunCommand = (module as any).runCommand
-      ;(module as any).runCommand = runCommandSpy
-      try {
-        return await originalHandleCodexTarget(_config, agentConfig, event)
-      } finally {
-        ;(module as any).runCommand = originalRunCommand
-      }
-    }
+    ;(service as any).deps.runCommand = runCommandSpy
 
     await (service as any).handleCodexTarget({
       codexBin: 'codex',
