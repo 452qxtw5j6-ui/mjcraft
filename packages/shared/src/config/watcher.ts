@@ -433,6 +433,8 @@ export class ConfigWatcher {
       // File-level changes
       if (file === 'config.json') {
         this.debounce(`source-config:${slug}`, () => this.handleSourceConfigChange(slug));
+      } else if (file === 'manifest.json') {
+        this.debounce(`source-manifest:${slug}`, () => this.handleSourceConfigChange(slug));
       } else if (file === 'guide.md') {
         this.debounce(`source-guide:${slug}`, () => this.handleSourceGuideChange(slug));
       } else if (file === 'permissions.json') {

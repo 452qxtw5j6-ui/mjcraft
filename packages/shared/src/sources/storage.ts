@@ -16,6 +16,9 @@ import type {
   SourceGuide,
   LoadedSource,
   CreateSourceInput,
+  CliManifest,
+  CliManifestOperation,
+  CliManifestParam,
 } from './types.ts';
 import { validateSourceConfig } from '../config/validators.ts';
 import { debug } from '../utils/debug.ts';
@@ -211,6 +214,134 @@ export function loadSourceGuide(workspaceRootPath: string, sourceSlug: string): 
   }
 }
 
+function isCliManifestParamType(value: unknown): value is CliManifestParam['type'] {
+  return value === 'string' || value === 'number' || value === 'boolean' || value === 'string[]';
+}
+
+function validateCliManifestParam(param: unknown, path: string): string | null {
+  if (!param || typeof param !== 'object') return `${path} must be an object`;
+
+  const candidate = param as Record<string, unknown>;
+  if (!isCliManifestParamType(candidate.type)) return `${path}.type must be one of: string, number, boolean, string[]`;
+
+  if (candidate.description !== undefined && typeof candidate.description !== 'string') return `${path}.description must be a string`;
+  if (candidate.required !== undefined && typeof candidate.required !== 'boolean') return `${path}.required must be a boolean`;
+  if (candidate.position !== undefined && (!Number.isInteger(candidate.position) || (candidate.position as number) < 0)) {
+    return `${path}.position must be a non-negative integer`;
+  }
+  if (candidate.flag !== undefined && (typeof candidate.flag !== 'string' || candidate.flag.trim().length === 0)) {
+    return `${path}.flag must be a non-empty string`;
+  }
+  if (candidate.enum !== undefined) {
+    if (!Array.isArray(candidate.enum) || candidate.enum.some((item) => typeof item !== 'string')) {
+      return `${path}.enum must be an array of strings`;
+    }
+  }
+
+  const hasPosition = candidate.position !== undefined;
+  const hasFlag = candidate.flag !== undefined;
+  if (!hasPosition && !hasFlag) {
+    return `${path} must declare either position or flag`;
+  }
+  if (hasPosition && hasFlag) {
+    return `${path} cannot declare both position and flag`;
+  }
+  if (hasPosition && (candidate.type === 'boolean' || candidate.type === 'string[]')) {
+    return `${path} cannot use type ${candidate.type} as a positional parameter`;
+  }
+
+  const defaultValue = candidate.default;
+  if (defaultValue !== undefined) {
+    if (candidate.type === 'string' && typeof defaultValue !== 'string') return `${path}.default must be a string`;
+    if (candidate.type === 'number' && typeof defaultValue !== 'number') return `${path}.default must be a number`;
+    if (candidate.type === 'boolean' && typeof defaultValue !== 'boolean') return `${path}.default must be a boolean`;
+    if (candidate.type === 'string[]') {
+      if (!Array.isArray(defaultValue) || defaultValue.some((item) => typeof item !== 'string')) {
+        return `${path}.default must be an array of strings`;
+      }
+    }
+  }
+
+  return null;
+}
+
+function validateCliManifestOperation(operation: unknown, index: number): string | null {
+  if (!operation || typeof operation !== 'object') return `operations[${index}] must be an object`;
+
+  const candidate = operation as Record<string, unknown>;
+  if (typeof candidate.name !== 'string' || candidate.name.trim().length === 0) {
+    return `operations[${index}].name must be a non-empty string`;
+  }
+  if (typeof candidate.description !== 'string' || candidate.description.trim().length === 0) {
+    return `operations[${index}].description must be a non-empty string`;
+  }
+  if (candidate.args !== undefined) {
+    if (!Array.isArray(candidate.args) || candidate.args.some((item) => typeof item !== 'string')) {
+      return `operations[${index}].args must be an array of strings`;
+    }
+  }
+  if (candidate.timeoutMs !== undefined) {
+    if (!Number.isInteger(candidate.timeoutMs) || (candidate.timeoutMs as number) < 1000) {
+      return `operations[${index}].timeoutMs must be an integer >= 1000`;
+    }
+  }
+  if (candidate.params !== undefined) {
+    if (typeof candidate.params !== 'object' || candidate.params === null || Array.isArray(candidate.params)) {
+      return `operations[${index}].params must be an object`;
+    }
+
+    for (const [paramName, param] of Object.entries(candidate.params)) {
+      const error = validateCliManifestParam(param, `operations[${index}].params.${paramName}`);
+      if (error) return error;
+    }
+  }
+
+  return null;
+}
+
+function validateCliManifest(manifest: CliManifest): string | null {
+  if (manifest.version !== 1) {
+    return `version must be 1`;
+  }
+  if (!Array.isArray(manifest.operations)) {
+    return `operations must be an array`;
+  }
+  for (const [index, operation] of manifest.operations.entries()) {
+    const error = validateCliManifestOperation(operation, index);
+    if (error) return error;
+  }
+  if (
+    manifest.capabilitiesHint !== undefined &&
+    (!Array.isArray(manifest.capabilitiesHint) || manifest.capabilitiesHint.some((item) => typeof item !== 'string'))
+  ) {
+    return `capabilitiesHint must be an array of strings`;
+  }
+  return null;
+}
+
+/**
+ * Load manifest.json for CLI sources.
+ * Returns null when the file is missing or invalid.
+ */
+export function loadCliManifest(workspaceRootPath: string, sourceSlug: string): CliManifest | null {
+  const manifestPath = join(getSourcePath(workspaceRootPath, sourceSlug), 'manifest.json');
+  if (!existsSync(manifestPath)) return null;
+
+  try {
+    const manifest = readJsonFileSync<CliManifest>(manifestPath);
+    const validationError = validateCliManifest(manifest);
+    if (validationError) {
+      debug(`[loadCliManifest] Invalid manifest for ${sourceSlug}: ${validationError}`);
+      return null;
+    }
+    return manifest;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    debug(`[loadCliManifest] Failed to load manifest for ${sourceSlug}: ${message}`);
+    return null;
+  }
+}
+
 /**
  * Extract a short tagline from guide.md content
  * Looks for the first non-empty paragraph after the title, or falls back to scope section
@@ -324,6 +455,7 @@ export function loadSource(workspaceRootPath: string, sourceSlug: string): Loade
   return {
     config,
     guide: loadSourceGuide(workspaceRootPath, sourceSlug),
+    manifest: config.type === 'cli' ? loadCliManifest(workspaceRootPath, sourceSlug) : null,
     folderPath,
     workspaceRootPath,
     workspaceId,

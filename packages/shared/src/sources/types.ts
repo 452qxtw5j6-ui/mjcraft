@@ -271,7 +271,8 @@ export interface McpSourceConfig {
 /**
  * CLI-specific configuration.
  * A CLI source wraps a local command but is exposed to the agent through the
- * source tool proxy surface as `mcp__{slug}__run`.
+ * source tool proxy surface as either structured manifest-backed tools or the
+ * fallback `mcp__{slug}__run` tool.
  */
 export interface CliSourceConfig {
   command: string;
@@ -279,6 +280,32 @@ export interface CliSourceConfig {
   env?: Record<string, string>;
   cwd?: string;
   timeoutMs?: number;
+}
+
+export type CliManifestParamType = 'string' | 'number' | 'boolean' | 'string[]';
+
+export interface CliManifestParam {
+  type: CliManifestParamType;
+  description?: string;
+  required?: boolean;
+  enum?: string[];
+  default?: string | number | boolean | string[];
+  position?: number;
+  flag?: string;
+}
+
+export interface CliManifestOperation {
+  name: string;
+  description: string;
+  args?: string[];
+  params?: Record<string, CliManifestParam>;
+  timeoutMs?: number;
+}
+
+export interface CliManifest {
+  version: 1;
+  capabilitiesHint?: string[];
+  operations: CliManifestOperation[];
 }
 
 /**
@@ -425,6 +452,7 @@ export interface SourceGuide {
 export interface LoadedSource {
   config: FolderSourceConfig;
   guide: SourceGuide | null;
+  manifest?: CliManifest | null;
 
   /** Absolute path to source folder (for resolving relative icon paths) */
   folderPath: string;

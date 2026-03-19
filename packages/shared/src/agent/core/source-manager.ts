@@ -20,6 +20,20 @@ import type { SourceManagerConfig } from './types.ts';
 /** Slugs exempt from guide.md prerequisite (internal sources) */
 const GUIDE_EXEMPT_SLUGS = new Set(['session', 'craft-agents-docs']);
 
+function requiresGuideBeforeToolUse(source: LoadedSource): boolean {
+  if (!source.guide?.raw || GUIDE_EXEMPT_SLUGS.has(source.config.slug)) {
+    return false;
+  }
+
+  // Manifest-backed CLI sources should surface structured tools first and
+  // load the guide on demand through the dedicated help tool.
+  if (source.config.type === 'cli' && source.manifest?.operations.length) {
+    return false;
+  }
+
+  return true;
+}
+
 /**
  * SourceManager provides centralized source state tracking for agent backends.
  *
@@ -212,9 +226,7 @@ export class SourceManager {
     }
 
     // Persistent reminder: if any active source has a guide, remind the LLM every message
-    const activeSourcesWithGuides = activeSources.filter(
-      (s) => s.guide?.raw && !GUIDE_EXEMPT_SLUGS.has(s.config.slug)
-    );
+    const activeSourcesWithGuides = activeSources.filter(requiresGuideBeforeToolUse);
     if (activeSourcesWithGuides.length > 0) {
       parts.push('Read each source\'s guide.md before first tool use — calls are blocked until guide is read.');
     }
@@ -231,7 +243,7 @@ export class SourceManager {
         const tagline = s.config.tagline || s.config.provider;
         parts.push(`- ${s.config.slug}: ${tagline}`);
         // Add guide path for sources that have guides (excluding internal sources)
-        if (s.guide?.raw && !GUIDE_EXEMPT_SLUGS.has(s.config.slug)) {
+        if (requiresGuideBeforeToolUse(s)) {
           parts.push(`  Guide: ${join(s.folderPath, 'guide.md')}`);
           hasGuides = true;
         }
