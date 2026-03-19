@@ -79,6 +79,7 @@ import { ToolbarStatusSlot } from './ToolbarStatusSlot'
 import { buildPlanApprovalMessage } from '../plan-approval-message'
 import { shouldHandleScopedInputEvent } from './input-event-guards'
 import { clearPendingFocusForSession, consumePendingFocusForSession } from './focus-input-events'
+import type { OpenModelMenuEventDetail } from './open-model-menu-events'
 import {
   getRecentWorkingDirs,
   addRecentWorkingDir,
@@ -109,6 +110,50 @@ function formatFollowUpChipText(text: string, fallback: string, maxLength = 50):
   return normalized.length > maxLength
     ? `${normalized.slice(0, maxLength - 1).trimEnd()}…`
     : normalized
+}
+
+function getReasoningProviderSummary(connection?: {
+  providerType?: string | null
+  piAuthProvider?: string | null
+  customEndpoint?: { api?: string | null } | null
+} | null): {
+  label: string
+  detail: string
+} {
+  const providerType = connection?.providerType ?? null
+  const piAuthProvider = connection?.piAuthProvider ?? null
+  const customApi = connection?.customEndpoint?.api ?? null
+
+  if (
+    providerType === 'anthropic' ||
+    providerType === 'anthropic_compat' ||
+    providerType === 'bedrock' ||
+    providerType === 'vertex' ||
+    piAuthProvider === 'anthropic' ||
+    customApi === 'anthropic-messages'
+  ) {
+    return {
+      label: 'Claude extended thinking',
+      detail: 'Uses Claude-style extended thinking depth.',
+    }
+  }
+
+  if (
+    piAuthProvider === 'openai' ||
+    piAuthProvider === 'openai-codex' ||
+    piAuthProvider === 'github-copilot' ||
+    customApi === 'openai-completions'
+  ) {
+    return {
+      label: 'GPT reasoning effort',
+      detail: 'Uses GPT-style reasoning effort controls.',
+    }
+  }
+
+  return {
+    label: 'Reasoning controls',
+    detail: 'Provider-specific reasoning behavior for this model.',
+  }
 }
 
 
@@ -418,6 +463,14 @@ export function FreeFormInput({
     if (!effectiveConnection) return null
     return llmConnections.find(c => c.slug === effectiveConnection) ?? null
   }, [llmConnections, effectiveConnection])
+  const reasoningProviderSummary = React.useMemo(
+    () => getReasoningProviderSummary(effectiveConnectionDetails),
+    [effectiveConnectionDetails]
+  )
+  const currentThinkingLabel = React.useMemo(
+    () => getThinkingLevelName(thinkingLevel),
+    [thinkingLevel]
+  )
 
 
   // Access sessionStatuses and onSessionStatusChange from context for the # menu state picker
@@ -520,6 +573,8 @@ export function FreeFormInput({
   const [isFocused, setIsFocused] = React.useState(false)
   const [inputMaxHeight, setInputMaxHeight] = React.useState(540)
   const [modelDropdownOpen, setModelDropdownOpen] = React.useState(false)
+  const [thinkingSubmenuOpen, setThinkingSubmenuOpen] = React.useState(false)
+  const thinkingTriggerRef = React.useRef<HTMLDivElement | null>(null)
 
   // Input settings (loaded from config)
   const [autoCapitalisation, setAutoCapitalisation] = React.useState(true)
@@ -1228,6 +1283,29 @@ export function FreeFormInput({
     return () => window.removeEventListener('craft:submit-input', handleSubmitInput as EventListener)
   }, [sessionId, isFocusedPanel, submitMessage])
 
+  React.useEffect(() => {
+    const handleOpenModelMenu = (e: CustomEvent<OpenModelMenuEventDetail>) => {
+      const targetSessionId = e.detail?.sessionId
+      if (!shouldHandleScopedInputEvent({ sessionId, isFocusedPanel, targetSessionId })) return
+      // Custom shortcut behavior should win over upstream defaults:
+      // Cmd+T is reserved to jump directly to the model/thinking menu for the focused chat.
+      setModelDropdownOpen(true)
+    }
+
+    window.addEventListener('craft:open-model-menu', handleOpenModelMenu as EventListener)
+    return () => window.removeEventListener('craft:open-model-menu', handleOpenModelMenu as EventListener)
+  }, [sessionId, isFocusedPanel])
+
+  React.useEffect(() => {
+    if (!modelDropdownOpen) return
+
+    const frame = requestAnimationFrame(() => {
+      thinkingTriggerRef.current?.focus()
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [modelDropdownOpen])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     submitMessage()
@@ -1828,14 +1906,17 @@ export function FreeFormInput({
           <div className="flex items-center shrink-0">
           {/* 5. Model/Connection Selector - Hidden in compact mode (EditPopover embedding) */}
           {!compactMode && (
-          <DropdownMenu open={modelDropdownOpen} onOpenChange={setModelDropdownOpen}>
+          <DropdownMenu open={modelDropdownOpen} onOpenChange={(open) => {
+            setModelDropdownOpen(open)
+            if (!open) setThinkingSubmenuOpen(false)
+          }}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
                     className={cn(
-                      "inline-flex items-center h-7 px-1.5 gap-0.5 text-[13px] shrink-0 rounded-[6px] hover:bg-foreground/5 transition-colors select-none",
+                      "inline-flex items-center h-7 px-1.5 gap-1 text-[13px] shrink-0 rounded-[6px] hover:bg-foreground/5 transition-colors select-none",
                       modelDropdownOpen && "bg-foreground/5",
                       connectionUnavailable && "text-destructive",
                     )}
@@ -1847,8 +1928,15 @@ export function FreeFormInput({
                       </>
                     ) : (
                       <>
-                        {effectiveConnectionDetails && llmConnections.length > 1 && storage.get(storage.KEYS.showConnectionIcons, true) && <ConnectionIcon connection={effectiveConnectionDetails} size={14} showTooltip />}
-                        {currentModelDisplayName}
+                        {effectiveConnectionDetails && (
+                          <ConnectionIcon connection={effectiveConnectionDetails} size={14} showTooltip />
+                        )}
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span className="truncate">{currentModelDisplayName}</span>
+                          <span className="shrink-0 text-[13px] text-muted-foreground">
+                            {currentThinkingLabel}
+                          </span>
+                        </div>
                         {!connectionDefaultModel && <ChevronDown className="h-3 w-3 opacity-50 shrink-0" />}
                       </>
                     )}
@@ -1993,14 +2081,32 @@ Model
                 <>
                   <StyledDropdownMenuSeparator className="my-1" />
 
-                  <DropdownMenuSub>
-                    <StyledDropdownMenuSubTrigger disabled={thinkingDisabled} className={cn("flex items-center justify-between px-2 py-2 rounded-lg", thinkingDisabled && "opacity-50 cursor-not-allowed")}>
+                  <DropdownMenuSub open={thinkingSubmenuOpen} onOpenChange={setThinkingSubmenuOpen}>
+                    <StyledDropdownMenuSubTrigger
+                      ref={thinkingTriggerRef}
+                      disabled={thinkingDisabled}
+                      onKeyDown={(event) => {
+                        if (event.key === 'ArrowLeft' && !thinkingDisabled) {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setThinkingSubmenuOpen(true)
+                        }
+                      }}
+                      className={cn("flex items-center justify-between px-2 py-2 rounded-lg", thinkingDisabled && "opacity-50 cursor-not-allowed")}
+                    >
                       <div className="text-left flex-1">
                         <div className="font-medium text-sm">{getThinkingLevelName(thinkingLevel)}</div>
-                        <div className="text-xs text-muted-foreground">{thinkingDisabled ? 'Not supported by this model' : 'Extended reasoning depth'}</div>
+                        <div className="text-xs text-muted-foreground">{thinkingDisabled ? 'Not supported by this model' : reasoningProviderSummary.label}</div>
                       </div>
                     </StyledDropdownMenuSubTrigger>
                     <StyledDropdownMenuSubContent className="min-w-[220px]">
+                      {/* Keep reasoning UI aligned with upstream/default structure where possible.
+                          We only add provider clarity here; upstream presentation should stay primary. */}
+                      <div className="px-2 py-1.5 select-none">
+                        <div className="font-medium text-xs">{reasoningProviderSummary.label}</div>
+                        <div className="text-xs text-muted-foreground">{reasoningProviderSummary.detail}</div>
+                      </div>
+                      <StyledDropdownMenuSeparator className="my-1" />
                       {availableThinkingLevels.map(({ id, name, description }) => {
                         const isSelected = thinkingLevel === id
                         return (

@@ -15,7 +15,8 @@ export const actions = {
     id: 'app.newChatInPanel',
     label: 'New Chat in Panel',
     description: 'Create a new chat session in a new panel',
-    defaultHotkey: 'mod+t',
+    // Cmd+T is intentionally reserved for reasoning controls in chat.
+    defaultHotkey: 'mod+shift+t',
     category: 'General',
   },
   'app.settings': {
@@ -156,6 +157,15 @@ export const actions = {
     scope: 'navigator',
     when: 'navigatorFocus',
   },
+  'navigator.deleteSelectedSession': {
+    id: 'navigator.deleteSelectedSession',
+    label: 'Delete Selected Session',
+    description: 'Delete the currently selected session',
+    defaultHotkey: 'mod+backspace',
+    category: 'Navigator',
+    scope: 'navigator',
+    when: 'navigatorFocus && !inputFocus',
+  },
 
   // ═══════════════════════════════════════════
   // Panels
@@ -205,6 +215,16 @@ export const actions = {
     label: 'Previous Search Match',
     defaultHotkey: 'mod+shift+g',
     category: 'Chat',
+  },
+  'chat.openModelThinkingMenu': {
+    id: 'chat.openModelThinkingMenu',
+    label: 'Open Model and Thinking Menu',
+    description: 'Open the chat model menu and thinking level selector',
+    // Custom behavior should stay shortcut-first even if upstream changes the default trigger.
+    defaultHotkey: 'mod+t',
+    category: 'Chat',
+    scope: 'chat',
+    when: 'chatFocus',
   },
 
 } as const satisfies Record<string, ActionDefinition>

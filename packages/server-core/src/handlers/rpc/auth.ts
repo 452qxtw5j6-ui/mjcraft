@@ -36,7 +36,7 @@ export function registerAuthHandlers(server: RpcServer, deps: HandlerDeps): void
     const result = await requestClientConfirmDialog(server, ctx.clientId, {
       type: 'warning',
       buttons: ['Cancel', 'Delete'],
-      defaultId: 0,
+      defaultId: 1,
       cancelId: 0,
       title: 'Delete Conversation',
       message: `Are you sure you want to delete: "${name}"?`,

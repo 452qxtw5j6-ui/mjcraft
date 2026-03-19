@@ -472,6 +472,16 @@ export function SessionList({
     enabled: () => isMultiSelectActive && !showEscapeOverlay,
   }, [isMultiSelectActive, showEscapeOverlay, interactions.selection, selectionStore.state.selected, navigateToSession])
 
+  useAction('navigator.deleteSelectedSession', () => {
+    const selectedId = selectionStore.state.selected
+    if (!selectedId) return
+    void handleDeleteWithToast(selectedId)
+  }, {
+    enabled: () => {
+      return isFocusWithinZone() && !isMultiSelectActive && !!selectionStore.state.selected && !showEscapeOverlay
+    },
+  }, [isMultiSelectActive, selectionStore.state.selected, showEscapeOverlay, handleDeleteWithToast])
+
   // --- Click handlers ---
   const handleSelectSession = useCallback((row: SessionListRow, index: number) => {
     selectSession(row.item.id, index)

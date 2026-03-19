@@ -134,6 +134,7 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
+import { dispatchOpenModelMenuEvent } from "./input/open-model-menu-events"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -1149,6 +1150,13 @@ function AppShellContent({
   useAction('chat.prevSearchMatch', () => chatDisplayRef.current?.goToPrevMatch(), {
     enabled: () => searchActive && (chatMatchInfo.count ?? 0) > 0
   })
+  useAction('chat.openModelThinkingMenu', () => {
+    if (effectiveSessionId) {
+      dispatchOpenModelMenuEvent({ sessionId: effectiveSessionId })
+    }
+  }, {
+    enabled: () => !!effectiveSessionId
+  }, [effectiveSessionId])
 
   // ESC to stop processing - requires double-press within 1 second
   // First press shows warning overlay, second press interrupts
