@@ -418,7 +418,9 @@ export class NotionTaskService {
   }
 
   private async onSchedulerTick(payload: SchedulerTickPayload): Promise<void> {
-    if (!matchesCron(DEFAULT_CONFIG.pollCron)) return
+    const config = await this.readConfig().catch(() => null)
+    if (!config) return
+    if (!matchesCron(config.pollCron)) return
 
     const runtime = await this.loadRuntimeConfig()
     if (!runtime) return

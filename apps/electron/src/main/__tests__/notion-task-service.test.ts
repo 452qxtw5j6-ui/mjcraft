@@ -182,3 +182,40 @@ describe('NotionTaskService Slack kickoff', () => {
     expect(String(warnings[0]?.[0])).toContain('slack permalink lookup failed; continuing without permalink')
   })
 })
+
+describe('NotionTaskService scheduler', () => {
+  it('honors the configured poll cron instead of the default cron', async () => {
+    const service = createService()
+    const now = new Date()
+    const nextMinute = new Date(now.getTime() + 60_000)
+    const matchingCron = `${now.getMinutes()} ${now.getHours()} ${now.getDate()} ${now.getMonth() + 1} *`
+    const nonMatchingCron = `${nextMinute.getMinutes()} ${nextMinute.getHours()} ${nextMinute.getDate()} ${nextMinute.getMonth() + 1} *`
+
+    let loadRuntimeCount = 0
+    let drainQueueCount = 0
+
+    ;(service as any).readConfig = async () => ({ ...createConfig(), pollCron: nonMatchingCron })
+    ;(service as any).loadRuntimeConfig = async () => {
+      loadRuntimeCount += 1
+      return { config: createConfig() }
+    }
+
+    await (service as any).onSchedulerTick({} as any)
+    expect(loadRuntimeCount).toBe(0)
+
+    ;(service as any).readConfig = async () => ({ ...createConfig(), pollCron: matchingCron })
+    ;(service as any).loadRuntimeConfig = async () => {
+      loadRuntimeCount += 1
+      return { config: createConfig() }
+    }
+    ;(service as any).findNextCandidate = async () => ({ id: 'page-1' })
+    ;(service as any).drainQueue = async () => {
+      drainQueueCount += 1
+    }
+
+    await (service as any).onSchedulerTick({} as any)
+
+    expect(loadRuntimeCount).toBe(1)
+    expect(drainQueueCount).toBe(1)
+  })
+})
