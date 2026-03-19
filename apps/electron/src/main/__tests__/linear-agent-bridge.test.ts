@@ -332,6 +332,47 @@ describe('linear-agent bridge helpers', () => {
     }
   })
 
+  it('uses the shared config dir for the bridge runtime when no explicit override is set', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-config-root-'))
+    const configDir = await mkdtemp(join(tmpdir(), 'linear-agent-config-dir-'))
+    tempDirs.push(workspaceRoot, configDir)
+
+    const previousHome = process.env.CRAFT_LINEAR_AGENT_HOME
+    const previousConfigDir = process.env.CRAFT_CONFIG_DIR
+    delete process.env.CRAFT_LINEAR_AGENT_HOME
+    process.env.CRAFT_CONFIG_DIR = configDir
+
+    const service = new LinearAgentBridgeService({
+      workspaceId: 'ws-test',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        async createSession() {
+          return { id: 'session-1' }
+        },
+        async getSession() {
+          return null
+        },
+        async sendMessage() {},
+      },
+    })
+
+    await (service as any).ensureStorageFiles()
+
+    expect(await readFile(join(configDir, 'linear-agent', 'config.json'), 'utf-8')).toContain('"enabled": false')
+    expect(await readFile(join(configDir, 'linear-agent', 'session-map.json'), 'utf-8')).toContain('"version": 1')
+
+    if (previousHome === undefined) {
+      delete process.env.CRAFT_LINEAR_AGENT_HOME
+    } else {
+      process.env.CRAFT_LINEAR_AGENT_HOME = previousHome
+    }
+    if (previousConfigDir === undefined) {
+      delete process.env.CRAFT_CONFIG_DIR
+    } else {
+      process.env.CRAFT_CONFIG_DIR = previousConfigDir
+    }
+  })
+
   it('applies explicit Craft bridge model and thinking defaults when creating sessions', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-default-config-'))
     tempDirs.push(workspaceRoot)

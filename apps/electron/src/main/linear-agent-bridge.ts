@@ -6,7 +6,7 @@ import { homedir } from 'os'
 import { basename, join, relative } from 'path'
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
-import { getDefaultLlmConnection, getLlmConnection, getLlmConnections } from '@craft-agent/shared/config'
+import { CONFIG_DIR, getDefaultLlmConnection, getLlmConnection, getLlmConnections } from '@craft-agent/shared/config'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import type { StoredCredential } from '@craft-agent/shared/credentials/types'
 import { isValidLabelId } from '@craft-agent/shared/labels/storage'
@@ -339,7 +339,8 @@ function resolveLinearAgentHome(workspaceRootPath: string): string {
   const override = process.env.CRAFT_LINEAR_AGENT_HOME?.trim()
   if (override) return override
 
-  return join(homedir(), '.craft-agent', 'linear-agent')
+  const configDir = process.env.CRAFT_CONFIG_DIR?.trim() || CONFIG_DIR
+  return join(configDir, 'linear-agent')
 }
 
 function resolveLegacyLinearAgentHomes(workspaceRootPath: string, serviceDir: string): string[] {
