@@ -26,6 +26,10 @@ function guidePath(slug: string): string {
   return resolve(WORKSPACE_ROOT, 'sources', slug, 'guide.md');
 }
 
+function manifestPath(slug: string): string {
+  return resolve(WORKSPACE_ROOT, 'sources', slug, 'manifest.json');
+}
+
 function browserDocPath(): string {
   return resolve(join(homedir(), '.craft-agent', 'docs', 'browser-tools.md'));
 }
@@ -53,6 +57,14 @@ describe('PrerequisiteManager', () => {
       const result = manager.checkPrerequisites('mcp__linear__createIssue');
       expect(result.allowed).toBe(false);
       expect(result.blockReason).toContain('guide.md');
+    });
+
+    it('skips guide prerequisite for manifest-backed CLI tools', () => {
+      mockExistsPaths.add(guidePath('duckdb-cli'));
+      mockExistsPaths.add(manifestPath('duckdb-cli'));
+
+      const result = manager.checkPrerequisites('mcp__duckdb-cli__tables');
+      expect(result.allowed).toBe(true);
     });
 
     it('matches API source tools (api_{slug})', () => {

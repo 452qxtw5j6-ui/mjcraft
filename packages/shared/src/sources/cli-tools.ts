@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { LoadedSource } from './types.ts';
+import type { CliManifestOperation, CliManifestParam, LoadedSource } from './types.ts';
 import type { SummarizeCallback } from './api-tools.ts';
 import { guardLargeResult } from '../utils/large-response.ts';
 import { debug } from '../utils/debug.ts';
@@ -51,7 +51,7 @@ function getFilteredProcessEnv(extraEnv?: Record<string, string>): Record<string
   };
 }
 
-function buildCliToolDescription(source: LoadedSource): string {
+function buildCliRunDescription(source: LoadedSource): string {
   const cli = source.config.cli;
   const command = cli?.command ?? source.config.slug;
   const fixedArgs = cli?.args?.length
@@ -62,13 +62,29 @@ function buildCliToolDescription(source: LoadedSource): string {
     `Run the configured CLI for source "${source.config.slug}". ` +
     `The base command is \`${command}${fixedArgs}\`.\n\n` +
     'Pass only the additional argv tokens you want appended to the configured base command. ' +
-    'Do not repeat the base command itself. ' +
-    'Use `argv: ["--help"]` or a subcommand help form when you need discovery.';
+    'Do not repeat the base command itself.';
 
-  if (source.guide?.raw) {
-    description += `\n\n${source.guide.raw}`;
+  if (source.manifest?.operations.length) {
+    description += ' Prefer the structured tools for common operations. Use `help` for the full CLI guide before advanced or uncommon commands.';
+    if (source.manifest.capabilitiesHint?.length) {
+      description += `\n\nAdditional capabilities available via fallback run: ${source.manifest.capabilitiesHint.join(', ')}.`;
+    }
+  } else if (source.guide?.raw) {
+    description += '\n\nUse `help` to read the full guide before exploring unfamiliar commands.';
   }
 
+  return description;
+}
+
+function buildCliHelpDescription(source: LoadedSource): string {
+  return `Show the full guide for CLI source "${source.config.slug}". Use this when you need examples, edge cases, or advanced command coverage.`;
+}
+
+function buildManifestToolDescription(source: LoadedSource, operation: CliManifestOperation): string {
+  let description = operation.description;
+  if (source.guide?.raw) {
+    description += ' Use `help` if you need the full CLI guide.';
+  }
   return description;
 }
 
@@ -187,22 +203,196 @@ async function runCliCommand(
   }
 }
 
+function getManifestParamValue(
+  args: Record<string, unknown>,
+  paramName: string,
+  param: CliManifestParam
+): string | number | boolean | string[] | undefined {
+  const value = args[paramName];
+  return value === undefined ? param.default : value as string | number | boolean | string[] | undefined;
+}
+
+function buildArgvFromOperation(operation: CliManifestOperation, args: Record<string, unknown>): string[] {
+  const argv = [...(operation.args ?? [])];
+  const entries = Object.entries(operation.params ?? {});
+
+  const positionalParams = entries
+    .filter(([, param]) => param.position !== undefined)
+    .sort((a, b) => (a[1].position ?? 0) - (b[1].position ?? 0));
+  const optionParams = entries.filter(([, param]) => param.position === undefined);
+
+  for (const [paramName, param] of positionalParams) {
+    const value = getManifestParamValue(args, paramName, param);
+    if (value === undefined) {
+      if (param.required) {
+        throw new Error(`Missing required parameter: ${paramName}`);
+      }
+      continue;
+    }
+
+    if (param.type === 'boolean' || param.type === 'string[]') {
+      throw new Error(`Positional parameter ${paramName} must be string or number typed`);
+    }
+
+    argv.push(String(value));
+  }
+
+  for (const [paramName, param] of optionParams) {
+    const value = getManifestParamValue(args, paramName, param);
+    if (value === undefined) {
+      if (param.required) {
+        throw new Error(`Missing required parameter: ${paramName}`);
+      }
+      continue;
+    }
+
+    if (!param.flag) {
+      throw new Error(`Manifest parameter ${paramName} must declare a flag or position`);
+    }
+
+    if (param.type === 'boolean') {
+      if (value === true) {
+        argv.push(param.flag);
+      }
+      continue;
+    }
+
+    if (param.type === 'string[]') {
+      for (const item of value as string[]) {
+        argv.push(param.flag, item);
+      }
+      continue;
+    }
+
+    argv.push(param.flag, String(value));
+  }
+
+  return argv;
+}
+
+function buildManifestParamSchema(paramName: string, param: CliManifestParam): z.ZodTypeAny {
+  let schema: z.ZodTypeAny;
+
+  switch (param.type) {
+    case 'number':
+      schema = z.number();
+      break;
+    case 'boolean':
+      schema = z.boolean();
+      break;
+    case 'string[]':
+      schema = z.array(z.string());
+      break;
+    case 'string':
+    default:
+      schema = z.string();
+      if (param.enum?.length) {
+        schema = schema.refine((value) => param.enum!.includes(value), {
+          message: `${paramName} must be one of: ${param.enum.join(', ')}`,
+        });
+      }
+      break;
+  }
+
+  if (param.description) {
+    schema = schema.describe(param.description);
+  }
+
+  return param.required ? schema : schema.optional();
+}
+
+function buildManifestTool(
+  source: LoadedSource,
+  operation: CliManifestOperation,
+  sessionPath?: string,
+  summarize?: SummarizeCallback
+) {
+  const schemaShape: Record<string, z.ZodTypeAny> = {};
+
+  for (const [paramName, param] of Object.entries(operation.params ?? {})) {
+    schemaShape[paramName] = buildManifestParamSchema(paramName, param);
+  }
+
+  schemaShape.timeoutMs = z.number().int().min(1000).max(120000).optional().describe(
+    'Optional timeout override in milliseconds.'
+  );
+  schemaShape._intent = z.string().optional().describe(
+    'Describe what you are trying to accomplish with this CLI call.'
+  );
+
+  return tool(
+    operation.name,
+    buildManifestToolDescription(source, operation),
+    schemaShape,
+    async (args: Record<string, unknown>) => {
+      let argv: string[];
+
+      try {
+        argv = buildArgvFromOperation(operation, args);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text' as const, text: `Invalid manifest operation arguments: ${message}` }],
+          isError: true,
+        };
+      }
+
+      const result = await runCliCommand(
+        source,
+        {
+          argv,
+          timeoutMs: (args.timeoutMs as number | undefined) ?? operation.timeoutMs,
+          _intent: args._intent as string | undefined,
+        },
+        sessionPath,
+        summarize
+      );
+
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        ...(result.isError ? { isError: true } : {}),
+      };
+    }
+  );
+}
+
+function buildHelpTool(source: LoadedSource) {
+  return tool(
+    'help',
+    buildCliHelpDescription(source),
+    {},
+    async () => ({
+      content: [{
+        type: 'text' as const,
+        text: source.guide?.raw ?? `No guide.md is configured for CLI source "${source.config.slug}".`,
+      }],
+    })
+  );
+}
+
 /**
- * Create an in-process MCP server that exposes a single flexible `run` tool
- * for a configured CLI source.
+ * Create an in-process MCP server for a configured CLI source.
+ * Manifest-backed CLI sources expose structured tools plus `help` and `run`.
+ * Legacy CLI sources expose `help` and the flexible fallback `run` tool.
  */
 export function createCliServer(
   source: LoadedSource,
   sessionPath?: string,
   summarize?: SummarizeCallback
 ) {
+  const manifestTools = source.manifest?.operations.map((operation) =>
+    buildManifestTool(source, operation, sessionPath, summarize)
+  ) ?? [];
+
   return createSdkMcpServer({
     name: `cli-source-${source.config.slug}`,
     version: '1.0.0',
     tools: [
+      ...manifestTools,
+      buildHelpTool(source),
       tool(
         'run',
-        buildCliToolDescription(source),
+        buildCliRunDescription(source),
         {
           argv: z.array(z.string()).optional().describe(
             'Additional argv tokens appended after the configured base command. Do not include the base command itself.'

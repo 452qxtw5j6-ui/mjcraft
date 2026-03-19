@@ -51,6 +51,10 @@ const EXEMPT_SLUGS = new Set(['session', 'craft-agents-docs']);
 /** Global browser tools docs path required before browser tool usage. */
 const BROWSER_TOOLS_DOC_PATH = resolve(join(homedir(), '.craft-agent', 'docs', 'browser-tools.md'));
 
+function getSourceManifestPath(workspaceRootPath: string, slug: string): string {
+  return resolve(workspaceRootPath, 'sources', slug, 'manifest.json');
+}
+
 // ============================================================
 // Rules
 // ============================================================
@@ -74,6 +78,10 @@ const RULES: PrerequisiteRule[] = [
     resolveRequiredPath: (toolName: string, workspaceRootPath: string) => {
       const parts = toolName.split('__');
       const slug = parts[1]!;
+      const manifestPath = getSourceManifestPath(workspaceRootPath, slug);
+      if (existsSync(manifestPath)) {
+        return null;
+      }
       const guidePath = resolve(workspaceRootPath, 'sources', slug, 'guide.md');
       return existsSync(guidePath) ? guidePath : null;
     },

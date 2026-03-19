@@ -25,6 +25,7 @@ function createMockSource(
       ...overrides,
     },
     guide: null,
+    manifest: null,
     folderPath: `/test/sources/${slug}`,
     workspaceRootPath: '/test/workspace',
     workspaceId: 'test-workspace',
@@ -203,6 +204,33 @@ describe('SourceManager', () => {
       // First call should include taglines for unseen sources
       expect(formatted).toContain('github');
       expect(formatted).toContain('GitHub integration');
+    });
+
+    it('does not require guide-first messaging for manifest-backed cli sources', () => {
+      sourceManager.setAllSources([
+        {
+          ...createMockSource('duckdb-cli', {
+            type: 'cli',
+            provider: 'duckdb',
+            cli: { command: 'python3' },
+            tagline: 'DuckDB operations',
+          }),
+          guide: { raw: '# DuckDB CLI\n\nGuide text' },
+          manifest: {
+            version: 1,
+            operations: [
+              { name: 'tables', description: 'List tables', args: ['tables'] },
+            ],
+          },
+        },
+      ]);
+
+      sourceManager.updateActiveState(['duckdb-cli'], [], ['duckdb-cli']);
+
+      const formatted = sourceManager.formatSourceState();
+
+      expect(formatted).not.toContain('Read each source\'s guide.md before first tool use');
+      expect(formatted).not.toContain('Guide: /test/sources/duckdb-cli/guide.md');
     });
 
     it('should mark sources with failed builds', () => {

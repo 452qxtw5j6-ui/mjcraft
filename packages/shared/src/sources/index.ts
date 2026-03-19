@@ -15,6 +15,10 @@ export type {
   ApiSourceConfig,
   LocalSourceConfig,
   CliSourceConfig,
+  CliManifestParamType,
+  CliManifestParam,
+  CliManifestOperation,
+  CliManifest,
   SourceConnectionStatus,
   FolderSourceConfig,
   SourceGuide,
@@ -39,6 +43,7 @@ export {
   markSourceAuthenticated,
   // Guide operations
   loadSourceGuide,
+  loadCliManifest,
   saveSourceGuide,
   // Icon operations
   findSourceIcon,
