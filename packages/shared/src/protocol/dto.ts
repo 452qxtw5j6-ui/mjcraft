@@ -63,6 +63,8 @@ export interface Session {
   sessionStatus?: SessionStatus
   /** Labels (additive tags, many-per-session — bare IDs or "id::value" entries) */
   labels?: string[]
+  /** Persona applied to this session */
+  personaId?: string
   lastReadMessageId?: string
   /**
    * Explicit unread flag - single source of truth for NEW badge.
@@ -123,6 +125,7 @@ export interface CreateSessionOptions {
   hidden?: boolean
   sessionStatus?: SessionStatus
   labels?: string[]
+  personaId?: string
   isFlagged?: boolean
   enabledSourceSlugs?: string[]
   sessionOrigin?: SessionOrigin
@@ -172,6 +175,7 @@ export type SessionEvent =
   | { type: 'plan_submitted'; sessionId: string; message: Message }
   | { type: 'sources_changed'; sessionId: string; enabledSourceSlugs: string[] }
   | { type: 'labels_changed'; sessionId: string; labels: string[] }
+  | { type: 'persona_changed'; sessionId: string; personaId: string }
   | { type: 'connection_changed'; sessionId: string; connectionSlug: string; supportsBranching?: boolean }
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
@@ -222,6 +226,7 @@ export type SessionCommand =
   | { type: 'updateWorkingDirectory'; dir: string }
   | { type: 'setSources'; sourceSlugs: string[] }
   | { type: 'setLabels'; labels: string[] }
+  | { type: 'setPersona'; personaId: string }
   | { type: 'showInFinder' }
   | { type: 'copyPath' }
   | { type: 'shareToViewer' }

@@ -25,6 +25,14 @@ const IS_WINDOWS = process.platform === "win32";
 const BIN_EXT = IS_WINDOWS ? ".exe" : "";
 const VITE_BIN = join(ROOT_DIR, `node_modules/.bin/vite${BIN_EXT}`);
 const ELECTRON_BIN = join(ROOT_DIR, `node_modules/.bin/electron${BIN_EXT}`);
+const ELECTRON_MAIN_EXTERNALS = [
+  "electron",
+  "playwright",
+  "playwright-core",
+  "playwright-core/*",
+  "chromium-bidi",
+  "chromium-bidi/*",
+] as const;
 
 function resolveBuildPlatform(): Platform {
   if (process.platform === "darwin") return "darwin";
@@ -276,7 +284,7 @@ async function runEsbuild(
       platform: "node",
       format: "cjs",
       outfile: join(ROOT_DIR, outfile),
-      external: ["electron"],
+      external: [...ELECTRON_MAIN_EXTERNALS],
       ...(options.packagesExternal ? { packages: "external" as const } : {}),
       define: defines,
       logLevel: "warning",
@@ -495,7 +503,7 @@ async function main(): Promise<void> {
     platform: "node",
     format: "cjs",
     outfile: join(ROOT_DIR, "apps/electron/dist/main.cjs"),
-    external: ["electron"],
+    external: [...ELECTRON_MAIN_EXTERNALS],
     define: oauthDefines,
     logLevel: "info",
   });

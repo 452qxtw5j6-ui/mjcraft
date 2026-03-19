@@ -35,7 +35,12 @@ import {
   InlineLabelMenu,
   useInlineLabelMenu,
 } from '@/components/ui/label-menu'
+import {
+  InlinePersonaMenu,
+  useInlinePersonaMenu,
+} from '@/components/ui/persona-menu'
 import type { LabelConfig } from '@craft-agent/shared/labels'
+import { resolvePersonaBindings } from '@craft-agent/shared/personas/resolve'
 import { parseMentions } from '@/lib/mentions'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
@@ -65,7 +70,7 @@ import { SourceAvatar } from '@/components/ui/source-avatar'
 import { SourceSelectorPopover } from '@/components/ui/SourceSelectorPopover'
 import { ConnectionIcon } from '@/components/icons/ConnectionIcon'
 import { FreeFormInputContextBadge } from './FreeFormInputContextBadge'
-import type { FileAttachment, LoadedSource, LoadedSkill } from '../../../../shared/types'
+import type { FileAttachment, LoadedSource, LoadedSkill, LoadedPersona } from '../../../../shared/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/modes'
 import { type ThinkingLevel, THINKING_LEVELS, getThinkingLevelName } from '@craft-agent/shared/agent/thinking-levels'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
@@ -189,6 +194,12 @@ export interface FreeFormInputProps {
   // Skill selection (for @mentions)
   /** Available skills for @mention autocomplete */
   skills?: LoadedSkill[]
+  /** Available personas for % selection */
+  personas?: LoadedPersona[]
+  /** Currently applied persona ID */
+  currentPersonaId?: string
+  /** Callback when persona changes before first user message */
+  onPersonaChange?: (personaId: string) => Promise<void>
   // Label selection (for #labels)
   /** Available labels for #label autocomplete */
   labels?: LabelConfig[]
@@ -271,6 +282,9 @@ export function FreeFormInput({
   enabledSourceSlugs = [],
   onSourcesChange,
   skills = [],
+  personas = [],
+  currentPersonaId,
+  onPersonaChange,
   labels = [],
   sessionLabels = [],
   onLabelAdd,
@@ -296,6 +310,26 @@ export function FreeFormInput({
   const appShellCtx = useOptionalAppShellContext()
   const llmConnections = appShellCtx?.llmConnections ?? []
   const workspaceDefaultConnection = appShellCtx?.workspaceDefaultLlmConnection
+
+  const personaBindings = React.useMemo(
+    () => resolvePersonaBindings(
+      personas,
+      currentPersonaId,
+      skills.map(skill => skill.slug),
+      sources.map(source => source.config.slug),
+    ),
+    [personas, currentPersonaId, skills, sources],
+  )
+
+  const visibleSkills = React.useMemo(
+    () => skills.filter(skill => personaBindings.visibleSkills.includes(skill.slug)),
+    [skills, personaBindings.visibleSkills],
+  )
+
+  const visibleSources = React.useMemo(
+    () => sources.filter(source => personaBindings.visibleSources.includes(source.config.slug)),
+    [sources, personaBindings.visibleSources],
+  )
 
   // Derive connectionDefaultModel per-session from the effective connection.
   // Only non-null for compat providers (custom endpoints with fixed models).
@@ -881,8 +915,8 @@ export function FreeFormInput({
   // Inline mention hook (for skills, sources, and files)
   const inlineMention = useInlineMention({
     inputRef: richInputRef,
-    skills,
-    sources,
+    skills: visibleSkills,
+    sources: visibleSources,
     basePath: workingDirectory,
     onSelect: handleMentionSelect,
     // Use workspace slug (not UUID) for SDK skill qualification
@@ -901,6 +935,15 @@ export function FreeFormInput({
     onSelect: handleLabelSelect,
     sessionStatuses,
     activeStateId: currentSessionStatus,
+  })
+
+  const inlinePersona = useInlinePersonaMenu({
+    inputRef: richInputRef,
+    personas,
+    enabled: Boolean(isEmptySession && onPersonaChange),
+    onSelect: async (personaId) => {
+      await onPersonaChange?.(personaId)
+    },
   })
 
   // "Add New Label" handler: cleans up the #trigger text and opens a controlled
@@ -1140,8 +1183,8 @@ export function FreeFormInput({
     if (disableSend) return false
 
     // Parse all @mentions (skills, sources, folders)
-    const skillSlugs = skills.map(s => s.slug)
-    const sourceSlugs = sources.map(s => s.config.slug)
+    const skillSlugs = visibleSkills.map(s => s.slug)
+    const sourceSlugs = visibleSources.map(s => s.config.slug)
     const mentions = parseMentions(input, skillSlugs, sourceSlugs)
 
     // Enable any mentioned sources that aren't already enabled
@@ -1171,7 +1214,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
+  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onSubmit, visibleSkills, visibleSources, optimisticSourceSlugs, onSourcesChange])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {
@@ -1240,6 +1283,19 @@ export function FreeFormInput({
       }
     }
 
+    // Don't submit when persona menu is open - let it handle navigation/selection keys
+    if (inlinePersona.isOpen) {
+      if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        inlinePersona.close()
+        return
+      }
+    }
+
     // Skip submission during IME composition - user is confirming composed characters, not sending
     // Handle send key based on user preference:
     // - 'enter': Enter sends (Shift+Enter for newline)
@@ -1284,7 +1340,7 @@ export function FreeFormInput({
 
     // Sync source selection when mentions are removed from input
     if (onSourcesChange) {
-      const sourceSlugs = sources.map(s => s.config.slug)
+      const sourceSlugs = visibleSources.map(s => s.config.slug)
 
       // Parse mentions from previous and current input
       const prevMentions = parseMentions(prevValue, [], sourceSlugs)
@@ -1298,7 +1354,7 @@ export function FreeFormInput({
         onSourcesChange(newSlugs)
       }
     }
-  }, [syncToParent, sources, optimisticSourceSlugs, onSourcesChange])
+  }, [syncToParent, visibleSources, optimisticSourceSlugs, onSourcesChange])
 
   // Handle input with cursor position (for menu detection)
   const handleRichInput = React.useCallback((value: string, cursorPosition: number) => {
@@ -1311,10 +1367,13 @@ export function FreeFormInput({
     // Update inline label state (for #labels)
     inlineLabel.handleInputChange(value, cursorPosition)
 
-    // Auto-capitalize first letter (but not for slash commands, @mentions, or #labels)
+    // Update inline persona state (for %personas)
+    inlinePersona.handleInputChange(value, cursorPosition)
+
+    // Auto-capitalize first letter (but not for slash commands, @mentions, #labels, or %personas)
     // Only if autoCapitalisation setting is enabled
     let newValue = value
-    if (autoCapitalisation && value.length > 0 && value.charAt(0) !== '/' && value.charAt(0) !== '@' && value.charAt(0) !== '#') {
+    if (autoCapitalisation && value.length > 0 && value.charAt(0) !== '/' && value.charAt(0) !== '@' && value.charAt(0) !== '#' && value.charAt(0) !== '%') {
       const capitalizedFirst = value.charAt(0).toUpperCase()
       if (capitalizedFirst !== value.charAt(0)) {
         newValue = capitalizedFirst + value.slice(1)
@@ -1335,7 +1394,7 @@ export function FreeFormInput({
       setInput(newValue)
       syncToParent(newValue)
     }
-  }, [inlineSlash, inlineMention, inlineLabel, syncToParent, autoCapitalisation])
+  }, [inlineSlash, inlineMention, inlineLabel, inlinePersona, syncToParent, autoCapitalisation])
 
   // Handle inline slash command selection (removes the /command text)
   const handleInlineSlashCommandSelect = React.useCallback((commandId: SlashCommandId) => {
@@ -1372,6 +1431,17 @@ export function FreeFormInput({
     syncToParent(newValue)
     richInputRef.current?.focus()
   }, [inlineLabel, syncToParent])
+
+  const handleInlinePersonaSelect = React.useCallback(async (personaId: string) => {
+    try {
+      const newValue = await inlinePersona.handleSelect(personaId)
+      setInput(newValue)
+      syncToParent(newValue)
+      richInputRef.current?.focus()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update persona')
+    }
+  }, [inlinePersona, syncToParent])
 
   // Handle inline state selection from # menu (removes #text, changes session state)
   const handleInlineStateSelect = React.useCallback((stateId: string) => {
@@ -1466,6 +1536,16 @@ export function FreeFormInput({
           states={inlineLabel.states}
           activeStateId={inlineLabel.activeStateId}
           onSelectState={handleInlineStateSelect}
+        />
+
+        <InlinePersonaMenu
+          open={inlinePersona.isOpen}
+          onOpenChange={(open) => !open && inlinePersona.close()}
+          personas={inlinePersona.personas}
+          currentPersonaId={currentPersonaId}
+          onSelect={(personaId) => { void handleInlinePersonaSelect(personaId) }}
+          filter={inlinePersona.filter}
+          position={inlinePersona.position}
         />
 
         {/* Controlled EditPopover for "Add New Label" — opens when user selects
@@ -1602,8 +1682,8 @@ export function FreeFormInput({
           }}
           placeholder={effectivePlaceholder}
           disabled={disabled}
-          skills={skills}
-          sources={sources}
+          skills={visibleSkills}
+          sources={visibleSources}
           workspaceId={workspaceSlug}
           className="pl-5 pr-4 pt-4 pb-3 overflow-y-auto min-h-[88px]"
           style={{ maxHeight: inputMaxHeight }}
@@ -1662,7 +1742,7 @@ export function FreeFormInput({
                   ) : (
                     <div className="flex items-center -ml-0.5">
                       {(() => {
-                        const enabledSources = sources.filter(s => optimisticSourceSlugs.includes(s.config.slug))
+                        const enabledSources = visibleSources.filter(s => optimisticSourceSlugs.includes(s.config.slug))
                         const displaySources = enabledSources.slice(0, 3)
                         const remainingCount = enabledSources.length - 3
                         return (
@@ -1694,7 +1774,7 @@ export function FreeFormInput({
                   optimisticSourceSlugs.length === 0
                     ? "Choose Sources"
                     : (() => {
-                        const enabledSources = sources.filter(s => optimisticSourceSlugs.includes(s.config.slug))
+                        const enabledSources = visibleSources.filter(s => optimisticSourceSlugs.includes(s.config.slug))
                         if (enabledSources.length === 1) return enabledSources[0].config.name
                         if (enabledSources.length === 2) return enabledSources.map(s => s.config.name).join(', ')
                         return `${enabledSources.length} sources`
@@ -1714,7 +1794,7 @@ export function FreeFormInput({
                 open={sourceDropdownOpen}
                 onOpenChange={setSourceDropdownOpen}
                 anchorRef={sourceButtonRef}
-                sources={sources}
+                sources={visibleSources}
                 selectedSlugs={optimisticSourceSlugs}
                 onToggleSlug={(slug) => {
                   const isEnabled = optimisticSourceSlugs.includes(slug)

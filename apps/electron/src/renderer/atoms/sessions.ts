@@ -42,6 +42,8 @@ export interface SessionMeta {
   hasUnread?: boolean
   /** Labels for filtering (additive tags, many-per-session) */
   labels?: string[]
+  /** Persona applied to this session */
+  personaId?: string
   /** Permission mode ('safe', 'ask', 'allow-all') — used by view expressions */
   permissionMode?: string
   /** Session status for filtering */

@@ -165,6 +165,8 @@ interface ChatDisplayProps {
   // Skill selection (for @mentions)
   /** Available skills for @mention autocomplete */
   skills?: LoadedSkill[]
+  /** Available personas for % selection */
+  personas?: import('../../../shared/types').LoadedPersona[]
   // Label selection (for #labels)
   /** Available label configs (tree) for label menu and badge display */
   labels?: import('@craft-agent/shared/labels').LabelConfig[]
@@ -175,6 +177,8 @@ interface ChatDisplayProps {
   sessionStatuses?: import('@/config/session-status-config').SessionStatus[]
   /** Callback when session state changes */
   onSessionStatusChange?: (stateId: string) => void
+  /** Callback when session persona changes */
+  onPersonaChange?: (personaId: string) => Promise<void>
   /** Workspace ID for loading skill icons */
   workspaceId?: string
   // Working directory (per session)
@@ -502,12 +506,14 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   onSourcesChange,
   // Skills (for @mentions)
   skills,
+  personas,
   // Labels (for #labels)
   labels,
   onLabelsChange,
   // States (for # menu and badge)
   sessionStatuses,
   onSessionStatusChange,
+  onPersonaChange,
   workspaceId,
   // Working directory
   workingDirectory,
@@ -1227,6 +1233,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Latest message metadata (for commit-time auto-scroll)
   const messageCount = session?.messages.length ?? 0
+  const isEmptySession = session
+    ? ((session.messageCount ?? session.messages.length) === 0)
+    : false
   const lastMessage = messageCount > 0 ? session?.messages[messageCount - 1] : undefined
   const lastMessageId = lastMessage?.id
   const lastMessageRole = lastMessage?.role
@@ -2057,12 +2066,15 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               enabledSourceSlugs: session.enabledSourceSlugs,
               onSourcesChange,
               skills,
+              personas,
+              currentPersonaId: session.personaId,
+              onPersonaChange,
               workspaceId,
               workingDirectory,
               onWorkingDirectoryChange,
               disableSend: disableSend || connectionUnavailable,
               connectionUnavailable,
-              isEmptySession: session.messages.length === 0,
+              isEmptySession,
               currentConnection: session.llmConnection,
               onConnectionChange,
               contextStatus: {

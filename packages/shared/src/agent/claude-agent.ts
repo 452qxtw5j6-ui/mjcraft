@@ -8,6 +8,7 @@ type ContentBlockParam =
   | { type: 'document'; source: { type: 'base64'; media_type: string; data: string } };
 import { z } from 'zod';
 import { getSystemPrompt } from '../prompts/system.ts';
+import { loadPersonaPromptForInjection } from '../personas/storage.ts';
 import { BaseAgent, type MiniAgentConfig, MINI_AGENT_TOOLS, MINI_AGENT_MCP_KEYS } from './base-agent.ts';
 import type { BackendConfig, PostInitResult, PermissionRequestType, SdkMcpServerConfig } from './backend/types.ts';
 // Plan types are used by UI components; not needed in craft-agent.ts since Safe Mode is user-controlled
@@ -901,7 +902,14 @@ export class ClaudeAgent extends BaseAgent {
                 this.pinnedPreferencesPrompt ?? undefined,
                 this.config.debugMode,
                 this.workspaceRootPath,
-                this.config.session?.workingDirectory
+                this.config.session?.workingDirectory,
+                undefined,
+                undefined,
+                undefined,
+                loadPersonaPromptForInjection(
+                  this.workspaceRootPath,
+                  this.config.session?.personaId,
+                ),
               ),
             },
         // Use sdkCwd for SDK session storage - this is set once at session creation and never changes.

@@ -339,11 +339,15 @@ export function getSystemPrompt(
   preset?: SystemPromptPreset | string,
   backendName?: string,
   promptCapabilities?: PromptGuidanceCapabilities,
+  personaPrompt?: string,
 ): string {
   // Use mini agent prompt for quick edits (pass workspace root for config paths)
   if (preset === 'mini') {
     debug('[getSystemPrompt] 🤖 Generating MINI agent system prompt for workspace:', workspaceRootPath);
-    return getMiniAgentSystemPrompt(workspaceRootPath);
+    const miniPrompt = getMiniAgentSystemPrompt(workspaceRootPath);
+    return personaPrompt?.trim()
+      ? `${miniPrompt}\n\n## Persona\n${personaPrompt.trim()}`
+      : miniPrompt;
   }
 
   // Use pinned preferences if provided (for session consistency after compaction)
@@ -362,7 +366,10 @@ export function getSystemPrompt(
     resolvePromptGuidanceProfile({ backendName }).capabilities,
     promptCapabilities,
   );
-  const fullPrompt = `${basePrompt}${preferences}${debugContext}${projectContextFiles}`;
+  const personaContext = personaPrompt?.trim()
+    ? `\n\n## Persona\n${personaPrompt.trim()}`
+    : '';
+  const fullPrompt = `${basePrompt}${personaContext}${preferences}${debugContext}${projectContextFiles}`;
 
   debug('[getSystemPrompt] full prompt length:', fullPrompt.length);
 

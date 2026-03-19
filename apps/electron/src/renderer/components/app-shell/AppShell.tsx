@@ -84,7 +84,7 @@ import { useFocusZone } from "@/hooks/keyboard"
 import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
-import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
+import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, LoadedPersona, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
 import { sessionMetaMapAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
@@ -800,6 +800,8 @@ function AppShellContent({
   React.useEffect(() => {
     setSkillsAtom(skills)
   }, [skills, setSkillsAtom])
+  // Personas state (workspace-scoped)
+  const [personas, setPersonas] = React.useState<LoadedPersona[]>([])
   // Automations — state, handlers, loading, subscriptions
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
   const {
@@ -916,6 +918,15 @@ function AppShellContent({
       // Session will emit a 'labels_changed' event that updates the session state
     } catch (err) {
       console.error('[Chat] Failed to set session labels:', err)
+    }
+  }, [])
+
+  const handleSessionPersonaChange = React.useCallback(async (sessionId: string, personaId: string) => {
+    try {
+      await window.electronAPI.sessionCommand(sessionId, { type: 'setPersona', personaId })
+    } catch (err) {
+      console.error('[Chat] Failed to set session persona:', err)
+      throw err
     }
   }, [])
 
@@ -1290,6 +1301,23 @@ function AppShellContent({
     })
   }, [activeWorkspaceId, activeSessionWorkingDirectory])
 
+  React.useEffect(() => {
+    if (!activeWorkspaceId) return
+    window.electronAPI.listPersonas(activeWorkspaceId).then((loaded) => {
+      setPersonas(loaded || [])
+    }).catch(err => {
+      console.error('[Chat] Failed to load personas:', err)
+    })
+  }, [activeWorkspaceId])
+
+  React.useEffect(() => {
+    const cleanup = window.electronAPI.onPersonasChanged((workspaceId, updatedPersonas) => {
+      if (workspaceId !== activeWorkspaceId) return
+      setPersonas(updatedPersonas || [])
+    })
+    return cleanup
+  }, [activeWorkspaceId])
+
   // Filter session metadata by active workspace
   // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
   const workspaceSessionMetas = useMemo(() => {
@@ -1557,8 +1585,10 @@ function AppShellContent({
     onDeleteSession: handleDeleteSession,
     enabledSources: sources,
     skills,
+    personas,
     labels: labelConfigs,
     onSessionLabelsChange: handleSessionLabelsChange,
+    onSessionPersonaChange: handleSessionPersonaChange,
     enabledModes,
     sessionStatuses: effectiveSessionStatuses,
     onSessionSourcesChange: handleSessionSourcesChange,
@@ -1575,7 +1605,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, labelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, personas, labelConfigs, handleSessionLabelsChange, handleSessionPersonaChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {

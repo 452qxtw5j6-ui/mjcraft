@@ -84,6 +84,7 @@ const EXPECTED_CHANNELS: string[] = [
   'file:readBinary',
   'file:readDataUrl',
   'file:storeAttachment',
+  'fs:listDirectory',
   'fs:search',
   'git:getBranch',
   'gitbash:browse',
@@ -128,6 +129,7 @@ const EXPECTED_CHANNELS: string[] = [
   'oauth:revoke',
   'oauth:start',
   'onboarding:clearClaudeOAuthState',
+  'onboarding:deferSetup',
   'onboarding:exchangeClaudeCode',
   'onboarding:getAuthState',
   'onboarding:hasClaudeOAuthState',
@@ -136,6 +138,8 @@ const EXPECTED_CHANNELS: string[] = [
   'onboarding:validateMcp',
   'permissions:defaultsChanged',
   'permissions:getDefaults',
+  'personas:changed',
+  'personas:list',
   'pi:getApiKeyProviders',
   'pi:getProviderBaseUrl',
   'pi:getProviderModels',
@@ -282,6 +286,12 @@ describe('BroadcastEventMap payload shapes', () => {
 
   it('skills:changed carries (workspaceId, skills)', () => {
     type Payload = BroadcastEventMap[typeof RPC_CHANNELS.skills.CHANGED]
+    const _check: AssertTuple<Payload, 2> = true
+    expect(_check).toBe(true)
+  })
+
+  it('personas:changed carries (workspaceId, personas)', () => {
+    type Payload = BroadcastEventMap[typeof RPC_CHANNELS.personas.CHANGED]
     const _check: AssertTuple<Payload, 2> = true
     expect(_check).toBe(true)
   })

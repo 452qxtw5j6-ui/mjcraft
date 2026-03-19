@@ -56,6 +56,8 @@ Only use 'attachments' for existing file paths on disk — the tool reads them a
         .describe('Instructions for the new session (required when not in help mode)'),
       name: z.string().optional()
         .describe('Session name'),
+      personaId: z.string().optional()
+        .describe('Persona ID for the new session (defaults to current session persona)'),
       llmConnection: z.string().optional()
         .describe('Connection slug (e.g., "anthropic-api", "codex")'),
       model: z.string().optional()

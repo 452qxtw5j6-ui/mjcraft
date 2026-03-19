@@ -63,7 +63,7 @@ import {
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
-import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
+import { ConfigWatcher, validatePersona, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
 import { resolveAuthEnvVars } from '@craft-agent/shared/config'
 import { toolMetadataStore, getLastApiError } from '@craft-agent/shared/interceptor'
@@ -74,6 +74,7 @@ import { type Session, type SessionEvent, type FileAttachment, type SendMessageO
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/shared/skills'
+import { AUTHOR_PERSONA_ID, loadWorkspacePersonas, resolvePersonaBindings, type ResolvedPersonaBindings } from '@craft-agent/shared/personas'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
@@ -82,6 +83,7 @@ import { listLabels } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
 import { AutomationSystem, AUTOMATIONS_HISTORY_FILE, createPromptHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { parseMentions } from '@craft-agent/shared/mentions'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, deriveFallbackTitleFromMessages, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -205,6 +207,23 @@ async function validateSpawnAttachmentPath(filePath: string): Promise<string> {
   }
 
   return realFilePath
+}
+
+export function validateEnabledSourcesForPersona(
+  sourceSlugs: string[] | undefined,
+  personaBindings: Pick<ResolvedPersonaBindings, 'name' | 'visibleSources'>,
+): string[] | undefined {
+  if (sourceSlugs === undefined) return undefined
+
+  const normalizedSourceSlugs = Array.from(new Set(sourceSlugs.filter(Boolean)))
+  const allowedSources = new Set(personaBindings.visibleSources)
+  const disallowedSources = normalizedSourceSlugs.filter((slug) => !allowedSources.has(slug))
+
+  if (disallowedSources.length > 0) {
+    throw new Error(`Sources not available in persona "${personaBindings.name}": ${disallowedSources.join(', ')}`)
+  }
+
+  return normalizedSourceSlugs
 }
 
 const PI_TURN_ANCHORS_VERSION = 1
@@ -795,6 +814,8 @@ interface ManagedSession {
   enabledSourceSlugs?: string[]
   // Labels applied to this session (additive tags, many-per-session)
   labels?: string[]
+  // Persona applied to this session
+  personaId?: string
   // Working directory for this session (used by agent for bash commands)
   workingDirectory?: string
   // SDK cwd for session storage - set once at creation, never changes.
@@ -924,6 +945,7 @@ export function createManagedSession(
     // Spread all session-like fields from source (id, name, permissionMode, labels, model, etc.)
     // This ensures new persistent fields automatically flow through without manual copying.
     ...sourceFields,
+    personaId: (sourceFields.personaId as string | undefined) ?? AUTHOR_PERSONA_ID,
     // Runtime-only defaults (not persisted)
     workspace,
     agent: null,
@@ -1229,6 +1251,12 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
+    if ((managed.personaId ?? AUTHOR_PERSONA_ID) !== (header.personaId ?? AUTHOR_PERSONA_ID)) {
+      managed.personaId = header.personaId ?? AUTHOR_PERSONA_ID
+      this.sendEvent({ type: 'persona_changed', sessionId, personaId: managed.personaId }, managed.workspace.id)
+      changed = true
+    }
+
     // Flagged
     if ((managed.isFlagged ?? false) !== (header.isFlagged ?? false)) {
       managed.isFlagged = header.isFlagged ?? false
@@ -1373,6 +1401,14 @@ export class SessionManager implements ISessionManager {
         const { loadAllSkills } = await import('@craft-agent/shared/skills')
         const skills = loadAllSkills(workspaceRootPath)
         this.broadcastSkillsChanged(workspaceId, skills)
+      },
+      onPersonasListChange: async (personas) => {
+        sessionLog.info(`Personas list changed in ${workspaceRootPath} (${personas.length} personas)`)
+        this.broadcastPersonasChanged(workspaceId)
+      },
+      onPersonaChange: async (slug, persona) => {
+        sessionLog.info(`Persona '${slug}' changed:`, persona ? 'updated' : 'deleted')
+        this.broadcastPersonasChanged(workspaceId)
       },
 
       // Session metadata changes (edits to session.jsonl headers).
@@ -1532,6 +1568,56 @@ export class SessionManager implements ISessionManager {
     if (!this.eventSink) return
     sessionLog.info(`Broadcasting skills changed (${skills.length} skills)`)
     this.eventSink(RPC_CHANNELS.skills.CHANGED, { to: 'workspace', workspaceId }, workspaceId, skills)
+  }
+
+  private broadcastPersonasChanged(workspaceId: string): void {
+    if (!this.eventSink) return
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) return
+    const personas = loadWorkspacePersonas(workspace.rootPath).filter((persona) =>
+      persona.source === 'builtin' || validatePersona(workspace.rootPath, persona.id).valid,
+    )
+    sessionLog.info(`Broadcasting personas changed (${personas.length} personas)`)
+    this.eventSink(RPC_CHANNELS.personas.CHANGED, { to: 'workspace', workspaceId }, workspaceId, personas)
+  }
+
+  private resolvePersonaBindingsForWorkspace(workspaceRootPath: string, personaId?: string, workingDirectory?: string) {
+    const personas = loadWorkspacePersonas(workspaceRootPath).filter((persona) =>
+      persona.source === 'builtin' || validatePersona(workspaceRootPath, persona.id).valid,
+    )
+    const skillSlugs = loadAllSkills(workspaceRootPath, workingDirectory).map((skill) => skill.slug)
+    const sourceSlugs = loadWorkspaceSources(workspaceRootPath).map((source) => source.config.slug)
+    return resolvePersonaBindings(personas, personaId, skillSlugs, sourceSlugs)
+  }
+
+  private resolvePersonaBindingsForManagedSession(managed: ManagedSession) {
+    return this.resolvePersonaBindingsForWorkspace(
+      managed.workspace.rootPath,
+      managed.personaId,
+      managed.workingDirectory,
+    )
+  }
+
+  private resolvePersonaFallbackSources(
+    workspaceRootPath: string,
+    personaBindings: ReturnType<SessionManager['resolvePersonaBindingsForWorkspace']>,
+  ): string[] | undefined {
+    if (personaBindings.defaultSources.length > 0) {
+      return [...personaBindings.defaultSources]
+    }
+
+    const workspaceDefaultSources = loadWorkspaceConfig(workspaceRootPath)?.defaults?.enabledSourceSlugs
+    if (!workspaceDefaultSources?.length) {
+      return undefined
+    }
+
+    const visibleSources = new Set(personaBindings.visibleSources)
+    const filteredWorkspaceDefaults = workspaceDefaultSources.filter((slug) => visibleSources.has(slug))
+    return filteredWorkspaceDefaults.length > 0 ? filteredWorkspaceDefaults : undefined
+  }
+
+  private sessionHasUserMessages(managed: ManagedSession): boolean {
+    return managed.messages.some((message) => message.role === 'user')
   }
 
   private broadcastDefaultPermissionsChanged(): void {
@@ -2181,7 +2267,7 @@ export class SessionManager implements ISessionManager {
     // Get default model from workspace config (used when no session-specific model is set)
     const defaultModel = wsConfig?.defaults?.model
     // Get default enabled sources from workspace config
-    const defaultEnabledSourceSlugs = options?.enabledSourceSlugs ?? wsConfig?.defaults?.enabledSourceSlugs
+    let defaultEnabledSourceSlugs = wsConfig?.defaults?.enabledSourceSlugs
 
     // Resolve backend target early for branching policy checks.
     const targetBackendContext = resolveBackendContext({
@@ -2393,6 +2479,30 @@ export class SessionManager implements ISessionManager {
       })
     }
 
+    const inheritedPersonaId = validatedBranch?.sourceSession.personaId
+    const resolvedPersonaId = options?.personaId
+      ?? inheritedPersonaId
+      ?? AUTHOR_PERSONA_ID
+    const resolvedPersona = this.resolvePersonaBindingsForWorkspace(
+      workspaceRootPath,
+      resolvedPersonaId,
+      resolvedWorkingDir,
+    )
+
+    if (options?.personaId && resolvedPersona.id !== options.personaId) {
+      throw new Error(`Persona not found: ${options.personaId}`)
+    }
+
+    if (options?.enabledSourceSlugs !== undefined) {
+      defaultEnabledSourceSlugs = validateEnabledSourcesForPersona(options.enabledSourceSlugs, resolvedPersona)
+    } else {
+      defaultEnabledSourceSlugs = this.resolvePersonaFallbackSources(workspaceRootPath, resolvedPersona)
+    }
+
+    const resolvedLabels = (options?.labels?.length ?? 0) > 0
+      ? ensureLabelsExist(workspaceRootPath, Array.from(new Set(options?.labels ?? [])))
+      : undefined
+
     // Use storage layer to create and persist the session
     const storedSession = await createStoredSession(workspaceRootPath, {
       name: options?.name,
@@ -2400,11 +2510,15 @@ export class SessionManager implements ISessionManager {
       workingDirectory: resolvedWorkingDir,
       hidden: options?.hidden,
       sessionStatus: options?.sessionStatus,
-      labels: options?.labels,
+      labels: resolvedLabels,
+      personaId: resolvedPersona.id,
       isFlagged: options?.isFlagged,
       sessionOrigin: options?.sessionOrigin,
       notionRef: options?.notionRef,
       slackRef: options?.slackRef,
+      enabledSourceSlugs: defaultEnabledSourceSlugs,
+      model: options?.model,
+      llmConnection: options?.llmConnection,
     })
 
     // Branch: copy messages from source session up to and including the branch point
@@ -2467,6 +2581,7 @@ export class SessionManager implements ISessionManager {
       thinkingLevel: defaultThinkingLevel,
       systemPromptPreset: options?.systemPromptPreset,
       enabledSourceSlugs: defaultEnabledSourceSlugs,
+      personaId: resolvedPersona.id,
       branchFromMessageId: validatedBranch?.sourceMessageId,
       branchContextStrategy: validatedBranch?.branchContextStrategy,
       branchFromSdkSessionId: validatedBranch?.branchFromSdkSessionId,
@@ -2699,6 +2814,7 @@ export class SessionManager implements ISessionManager {
         sdkCwd: managed.sdkCwd,
         model: managed.model,
         llmConnection: managed.llmConnection,
+        personaId: managed.personaId,
         permissionMode: managed.permissionMode,
         previousPermissionMode: managed.previousPermissionMode,
       }
@@ -3412,6 +3528,7 @@ export class SessionManager implements ISessionManager {
 
         const session = await this.createSession(managed.workspace.id, {
           name: request.name,
+          personaId: request.personaId ?? managed.personaId,
           llmConnection: request.llmConnection ?? managed.llmConnection,
           model: request.model ?? managed.model,
           enabledSourceSlugs: request.enabledSourceSlugs ?? managed.enabledSourceSlugs,
@@ -3929,12 +4046,15 @@ export class SessionManager implements ISessionManager {
     }
 
     const workspaceRootPath = managed.workspace.rootPath
-    sessionLog.info(`Setting sources for session ${sessionId}:`, sourceSlugs)
+    const personaBindings = this.resolvePersonaBindingsForManagedSession(managed)
+    const validatedSourceSlugs = validateEnabledSourcesForPersona(sourceSlugs, personaBindings) ?? []
+
+    sessionLog.info(`Setting sources for session ${sessionId}:`, validatedSourceSlugs)
 
     // Clean up credential cache for sources being disabled (security)
     // This removes decrypted tokens from disk when sources are no longer active
     const previousSlugs = new Set(managed.enabledSourceSlugs || [])
-    const newSlugs = new Set(sourceSlugs)
+    const newSlugs = new Set(validatedSourceSlugs)
     const disabledSlugs = [...previousSlugs].filter(prevSlug => !newSlugs.has(prevSlug))
     if (disabledSlugs.length > 0) {
       try {
@@ -3945,11 +4065,11 @@ export class SessionManager implements ISessionManager {
     }
 
     // Store the selection
-    managed.enabledSourceSlugs = sourceSlugs
+    managed.enabledSourceSlugs = validatedSourceSlugs
 
     // If agent exists, build and apply servers immediately
     if (managed.agent) {
-      const sources = getSourcesBySlugs(workspaceRootPath, sourceSlugs)
+      const sources = getSourcesBySlugs(workspaceRootPath, validatedSourceSlugs)
       // Pass session path so large API responses can be saved to session folder
       const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
       const { mcpServers, apiServers, errors } = await buildServersFromSources(sources, sessionPath, managed.tokenRefreshManager, managed.agent.getSummarizeCallback())
@@ -3980,10 +4100,10 @@ export class SessionManager implements ISessionManager {
     this.sendEvent({
       type: 'sources_changed',
       sessionId,
-      enabledSourceSlugs: sourceSlugs,
+      enabledSourceSlugs: validatedSourceSlugs,
     }, managed.workspace.id)
 
-    sessionLog.info(`Session ${sessionId} sources updated: ${sourceSlugs.length} sources`)
+    sessionLog.info(`Session ${sessionId} sources updated: ${validatedSourceSlugs.length} sources`)
   }
 
   /**
@@ -4626,6 +4746,30 @@ export class SessionManager implements ISessionManager {
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
 
+    const personaBindings = this.resolvePersonaBindingsForManagedSession(managed)
+    const availableSkillSlugs = loadAllSkills(managed.workspace.rootPath, managed.workingDirectory).map((skill) => skill.slug)
+    const availableSourceSlugs = loadWorkspaceSources(managed.workspace.rootPath).map((source) => source.config.slug)
+    const mentionedEntities = parseMentions(message, availableSkillSlugs, availableSourceSlugs)
+    const hiddenMentionedSkills = mentionedEntities.skills.filter((slug) => !personaBindings.visibleSkills.includes(slug))
+    if (hiddenMentionedSkills.length > 0) {
+      throw new Error(`Skills not available in persona "${personaBindings.name}": ${hiddenMentionedSkills.join(', ')}`)
+    }
+
+    const hiddenMentionedSources = mentionedEntities.sources.filter((slug) => !personaBindings.visibleSources.includes(slug))
+    if (hiddenMentionedSources.length > 0) {
+      throw new Error(`Sources not available in persona "${personaBindings.name}": ${hiddenMentionedSources.join(', ')}`)
+    }
+
+    const effectiveSkillSlugs = Array.from(new Set([
+      ...(personaBindings.primarySkill ? [personaBindings.primarySkill] : []),
+      ...(options?.skillSlugs ?? []),
+    ]))
+
+    const invalidExplicitSkills = effectiveSkillSlugs.filter((slug) => !personaBindings.visibleSkills.includes(slug))
+    if (invalidExplicitSkills.length > 0) {
+      throw new Error(`Skills not available in persona "${personaBindings.name}": ${invalidExplicitSkills.join(', ')}`)
+    }
+
     // If currently processing, redirect mid-stream. Each backend decides its strategy:
     // - Pi: steers (injects message, events continue through existing stream)
     // - Claude: aborts internally, session layer queues for re-send
@@ -4793,12 +4937,12 @@ export class SessionManager implements ISessionManager {
     // Pre-enable sources required by invoked skills (Issue #249)
     // This eliminates the two-turn penalty where the agent discovers missing sources at runtime.
     // Uses targeted loadSkillBySlug() instead of loadAllSkills() to avoid O(N) filesystem scans.
-    if (options?.skillSlugs?.length) {
+    if (effectiveSkillSlugs.length > 0) {
       try {
         const workspaceRoot = managed.workspace.rootPath
 
         const requiredSources = new Set<string>()
-        for (const slug of options.skillSlugs) {
+        for (const slug of effectiveSkillSlugs) {
           const skill = loadSkillBySlug(workspaceRoot, slug, managed.workingDirectory)
           if (skill?.metadata.requiredSources) {
             for (const src of skill.metadata.requiredSources) {
@@ -4812,6 +4956,10 @@ export class SessionManager implements ISessionManager {
           const toEnable: string[] = []
           const skipped: string[] = []
           const candidateSlugs = Array.from(requiredSources)
+          const disallowedRequiredSources = candidateSlugs.filter((srcSlug) => !personaBindings.visibleSources.includes(srcSlug))
+          if (disallowedRequiredSources.length > 0) {
+            throw new Error(`Persona "${personaBindings.name}" blocks required sources: ${disallowedRequiredSources.join(', ')}`)
+          }
           const loadedSources = getSourcesBySlugs(workspaceRoot, candidateSlugs)
           const usableSources = new Set(
             loadedSources
@@ -4944,8 +5092,11 @@ export class SessionManager implements ISessionManager {
       // rather than part of the user's message content. The original message is stored
       // in session JSONL (line ~3952); this only affects the SDK's in-process context.
       let effectiveMessage = message
+      if (personaBindings.primarySkill && !mentionedEntities.skills.includes(personaBindings.primarySkill)) {
+        effectiveMessage = `[skill:${personaBindings.primarySkill}]\n\n${effectiveMessage}`
+      }
       if (managed.wasInterrupted) {
-        effectiveMessage = `${message}\n\n<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>`
+        effectiveMessage = `${effectiveMessage}\n\n<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>`
         managed.wasInterrupted = false
       }
 
@@ -5353,6 +5504,20 @@ export class SessionManager implements ISessionManager {
     const isViewing = this.isSessionBeingViewed(sessionId, managed.workspace.id)
     const currentFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
     const didReceiveNewFinalMessage = !!currentFinalMessageId && currentFinalMessageId !== turnStartFinalMessageId
+    const hasAnyCompletedTurns = !!turnStartFinalMessageId || !!currentFinalMessageId
+
+    // If Claude/Codex processing stopped before any final assistant message was ever
+    // recorded, the provider SDK session can be left in a broken "empty resume" state.
+    // Clear the cached SDK session ID so the next turn starts fresh instead of trying
+    // to resume a dead conversation.
+    if (!hasAnyCompletedTurns && managed.sdkSessionId && (reason === 'complete' || reason === 'interrupted' || reason === 'timeout')) {
+      sessionLog.warn(`Clearing stale sdkSessionId for session ${sessionId} after stop with no completed turns`, {
+        reason,
+        sdkSessionId: managed.sdkSessionId,
+      })
+      managed.sdkSessionId = undefined
+      managed.agent?.setSessionId(null)
+    }
 
     if (reason === 'complete' && didReceiveNewFinalMessage) {
       if (isViewing) {
@@ -5783,6 +5948,61 @@ export class SessionManager implements ISessionManager {
       const watcher = this.configWatchers.get(managed.workspace.rootPath)
       watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
     }
+  }
+
+  async setSessionPersona(sessionId: string, personaId: string): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) {
+      throw new Error(`Session not found: ${sessionId}`)
+    }
+
+    await this.ensureMessagesLoaded(managed)
+    if (this.sessionHasUserMessages(managed)) {
+      throw new Error('Persona can only be changed before the first user message')
+    }
+
+    const workspaceRootPath = managed.workspace.rootPath
+    const previousPersonaBindings = this.resolvePersonaBindingsForManagedSession(managed)
+    const nextPersonaBindings = this.resolvePersonaBindingsForWorkspace(
+      workspaceRootPath,
+      personaId,
+      managed.workingDirectory,
+    )
+
+    if (nextPersonaBindings.id !== personaId) {
+      throw new Error(`Persona not found: ${personaId}`)
+    }
+
+    const previousLabels = JSON.stringify(managed.labels ?? [])
+    const previousSources = JSON.stringify(managed.enabledSourceSlugs ?? [])
+    const previousPersonaId = managed.personaId ?? AUTHOR_PERSONA_ID
+
+    managed.personaId = nextPersonaBindings.id
+    managed.enabledSourceSlugs = this.resolvePersonaFallbackSources(workspaceRootPath, nextPersonaBindings) ?? []
+
+    this.persistSession(managed)
+
+    if (previousPersonaId !== managed.personaId) {
+      this.sendEvent({ type: 'persona_changed', sessionId, personaId: managed.personaId }, managed.workspace.id)
+    }
+
+    if (previousSources !== JSON.stringify(managed.enabledSourceSlugs ?? [])) {
+      this.sendEvent({
+        type: 'sources_changed',
+        sessionId,
+        enabledSourceSlugs: managed.enabledSourceSlugs ?? [],
+      }, managed.workspace.id)
+    }
+
+    if (previousLabels !== JSON.stringify(managed.labels ?? [])) {
+      this.sendEvent({
+        type: 'labels_changed',
+        sessionId,
+        labels: managed.labels ?? [],
+      }, managed.workspace.id)
+    }
+
+    sessionLog.info(`Session ${sessionId} persona changed: ${previousPersonaBindings.id} -> ${managed.personaId}`)
   }
 
   /**

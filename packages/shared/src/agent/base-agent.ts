@@ -64,6 +64,7 @@ import { buildTitlePrompt, buildRegenerateTitlePrompt, validateTitle } from '../
 // Skill extraction for Codex/Copilot backends (Claude uses native SDK Skill tool)
 import { parseMentions, stripAllMentions, resolveFileMentions } from '../mentions/index.ts';
 import { loadAllSkills } from '../skills/storage.ts';
+import { loadPersonaPromptForInjection } from '../personas/storage.ts';
 
 // ============================================================
 // Mini Agent Configuration
@@ -91,6 +92,7 @@ export interface MiniAgentConfig {
 export interface SpawnSessionRequest {
   prompt: string;
   name?: string;
+  personaId?: string;
   llmConnection?: string;
   model?: string;
   enabledSourceSlugs?: string[];
@@ -678,7 +680,14 @@ export abstract class BaseAgent implements AgentBackend {
    * Uses workspace root path for config file locations.
    */
   getMiniSystemPrompt(): string {
-    return getMiniAgentSystemPrompt(this.config.workspace.rootPath);
+    const basePrompt = getMiniAgentSystemPrompt(this.config.workspace.rootPath);
+    const personaPrompt = loadPersonaPromptForInjection(
+      this.config.workspace.rootPath,
+      this.config.session?.personaId,
+    );
+    return personaPrompt?.trim()
+      ? `${basePrompt}\n\n## Persona\n${personaPrompt.trim()}`
+      : basePrompt;
   }
 
   /**
@@ -1111,6 +1120,7 @@ ${formattedMessages}
     const request: SpawnSessionRequest = {
       prompt,
       name: input.name as string | undefined,
+      personaId: input.personaId as string | undefined,
       llmConnection: input.llmConnection as string | undefined,
       model: input.model as string | undefined,
       enabledSourceSlugs: input.enabledSourceSlugs as string[] | undefined,

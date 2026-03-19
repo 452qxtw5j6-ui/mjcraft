@@ -186,6 +186,7 @@ export async function createSession(
     hidden?: boolean;
     sessionStatus?: SessionConfig['sessionStatus'];
     labels?: string[];
+    personaId?: string;
     isFlagged?: boolean;
     sessionOrigin?: SessionConfig['sessionOrigin'];
     notionRef?: SessionConfig['notionRef'];
@@ -223,6 +224,7 @@ export async function createSession(
     hidden: options?.hidden,
     sessionStatus: options?.sessionStatus,
     labels: options?.labels,
+    personaId: options?.personaId,
     isFlagged: options?.isFlagged,
   };
 
@@ -535,6 +537,7 @@ export async function updateSessionMetadata(
     | 'name'
     | 'sessionStatus'
     | 'labels'
+    | 'personaId'
     | 'lastReadMessageId'
     | 'hasUnread'
     | 'enabledSourceSlugs'
@@ -559,6 +562,7 @@ export async function updateSessionMetadata(
   if (updates.name !== undefined) session.name = updates.name;
   if (updates.sessionStatus !== undefined) session.sessionStatus = updates.sessionStatus;
   if (updates.labels !== undefined) session.labels = updates.labels;
+  if (updates.personaId !== undefined) session.personaId = updates.personaId;
   if (updates.enabledSourceSlugs !== undefined) session.enabledSourceSlugs = updates.enabledSourceSlugs;
   if (updates.workingDirectory !== undefined) session.workingDirectory = updates.workingDirectory;
   if (updates.sdkCwd !== undefined) session.sdkCwd = updates.sdkCwd;

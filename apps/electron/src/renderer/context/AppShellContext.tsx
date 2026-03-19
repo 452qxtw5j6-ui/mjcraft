@@ -21,6 +21,7 @@ import type {
   SessionStatus,
   LoadedSource,
   LoadedSkill,
+  LoadedPersona,
   NewChatActionParams,
   LlmConnectionWithStatus,
   TestAutomationResult,
@@ -53,6 +54,8 @@ export interface AppShellContextType {
   enabledSources?: LoadedSource[]
   /** All skills for this workspace - provided by AppShell component (for @mentions) */
   skills?: LoadedSkill[]
+  /** All personas for this workspace */
+  personas?: LoadedPersona[]
   /** All label configs (tree) for label menu and badge display */
   labels?: import('@craft-agent/shared/labels').LabelConfig[]
   /** Callback when session labels change */
@@ -61,6 +64,8 @@ export interface AppShellContextType {
   enabledModes?: PermissionMode[]
   /** Dynamic todo states from workspace config (provided by AppShell, defaults to empty) */
   sessionStatuses?: SessionStatusConfig[]
+  /** Callback when session persona changes */
+  onSessionPersonaChange?: (sessionId: string, personaId: string) => Promise<void>
 
   // Unified session options map
   /** All session-scoped options in one map. Use useSessionOptionsFor() hook for easy access. */
@@ -190,7 +195,7 @@ export function useAppShellContext(): AppShellContextType {
  */
 export function useSession(sessionId: string): Session | null {
   // Use per-session atom for isolated updates
-  return useAtomValue(sessionAtomFamily(sessionId))
+  return useAtomValue(sessionAtomFamily(sessionId)) as Session | null
 }
 
 /**

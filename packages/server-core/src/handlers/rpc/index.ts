@@ -8,6 +8,7 @@ import { registerLabelsHandlers } from './labels'
 import { registerLlmConnectionsHandlers } from './llm-connections'
 import { registerOAuthHandlers } from './oauth'
 import { registerOnboardingHandlers } from './onboarding'
+import { registerPersonasHandlers } from './personas'
 import { registerSessionsHandlers } from './sessions'
 export { registerSessionsHandlers, cleanupSessionFileWatchForClient } from './sessions'
 import { registerSettingsHandlers } from './settings'
@@ -25,6 +26,7 @@ export function registerCoreRpcHandlers(server: RpcServer, deps: HandlerDeps): v
   registerLlmConnectionsHandlers(server, deps)
   registerOAuthHandlers(server, deps)
   registerOnboardingHandlers(server, deps)
+  registerPersonasHandlers(server, deps)
   registerSessionsHandlers(server, deps)
   registerSettingsHandlers(server, deps)
   registerSkillsHandlers(server, deps)

@@ -29,6 +29,7 @@ import { loadStoredConfig, type StoredConfig } from './storage.ts';
 import {
   validateConfig,
   validatePreferences,
+  validatePersona,
   validateSource,
   type ValidationResult,
 } from './validators.ts';
@@ -44,6 +45,8 @@ import { permissionsConfigCache, getAppPermissionsDir } from '../agent/permissio
 import { getWorkspacePath, getWorkspaceSourcesPath, getWorkspaceSkillsPath } from '../workspaces/storage.ts';
 import type { LoadedSkill } from '../skills/types.ts';
 import { loadSkill, loadAllSkills, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
+import type { LoadedPersona } from '../personas/types.ts';
+import { loadPersona, loadWorkspacePersonas } from '../personas/storage.ts';
 import {
   loadStatusConfig,
   statusNeedsIconDownload,
@@ -113,6 +116,12 @@ export interface ConfigWatcherCallbacks {
   onSkillChange?: (slug: string, skill: LoadedSkill | null) => void;
   /** Called when the skills list changes (add/remove folders) */
   onSkillsListChange?: (skills: LoadedSkill[]) => void;
+
+  // Persona callbacks
+  /** Called when a specific persona changes (null if deleted or invalid) */
+  onPersonaChange?: (slug: string, persona: LoadedPersona | null) => void;
+  /** Called when the personas list changes (add/remove folders) */
+  onPersonasListChange?: (personas: LoadedPersona[]) => void;
 
   // Permissions callbacks
   /** Called when app-level default permissions change (~/.craft-agent/permissions/default.json) */
@@ -193,6 +202,7 @@ export class ConfigWatcher {
   // Track known items for detecting adds/removes
   private knownSources: Set<string> = new Set();
   private knownSkills: Set<string> = new Set();
+  private knownPersonas: Set<string> = new Set();
   private knownThemes: Set<string> = new Set();
 
   // Track LLM connections for change detection (JSON string for deep comparison)
@@ -202,6 +212,7 @@ export class ConfigWatcher {
   private workspaceDir: string;
   private sourcesDir: string;
   private skillsDir: string;
+  private personasDir: string;
 
   constructor(workspaceIdOrPath: string, callbacks: ConfigWatcherCallbacks) {
     this.callbacks = callbacks;
@@ -218,6 +229,7 @@ export class ConfigWatcher {
     }
     this.sourcesDir = getWorkspaceSourcesPath(this.workspaceDir);
     this.skillsDir = getWorkspaceSkillsPath(this.workspaceDir);
+    this.personasDir = join(this.workspaceDir, 'personas');
   }
 
   /**
@@ -268,6 +280,9 @@ export class ConfigWatcher {
 
     this.scanSkills();
     span.mark('scanSkills');
+
+    this.scanPersonas();
+    span.mark('scanPersonas');
 
     this.scanAppThemes();
     span.mark('scanAppThemes');
@@ -328,6 +343,7 @@ export class ConfigWatcher {
 
     this.knownSources.clear();
     this.knownSkills.clear();
+    this.knownPersonas.clear();
     this.knownThemes.clear();
 
     debug('[ConfigWatcher] Stopped');
@@ -442,6 +458,23 @@ export class ConfigWatcher {
       } else if (file && /^icon\.(svg|png|jpg|jpeg)$/i.test(file)) {
         // Icon file changes also trigger a skill change (to update iconPath)
         this.debounce(`skill-icon:${slug}`, () => this.handleSkillChange(slug));
+      }
+      return;
+    }
+
+    // Persona changes: personas/{slug}/...
+    if (parts[0] === 'personas' && parts.length >= 2) {
+      const slug = parts[1]!;
+
+      if (parts.length === 2) {
+        this.debounce('personas-dir', () => this.handlePersonasDirChange());
+        return;
+      }
+
+      // personaPromptFile is configurable, so any file change inside the
+      // persona folder may affect validity or injected prompt contents.
+      if (parts.length >= 3) {
+        this.debounce(`persona:${slug}`, () => this.handlePersonaChange(slug));
       }
       return;
     }
@@ -789,6 +822,97 @@ export class ConfigWatcher {
           debug('[ConfigWatcher] Icon download failed for skill:', slug, error);
         });
     }
+  }
+
+  // ============================================================
+  // Personas Handlers
+  // ============================================================
+
+  private scanPersonas(): void {
+    if (!existsSync(this.personasDir)) {
+      mkdirSync(this.personasDir, { recursive: true });
+      return;
+    }
+
+    try {
+      const entries = readdirSync(this.personasDir);
+
+      for (const entry of entries) {
+        const entryPath = join(this.personasDir, entry);
+        if (statSync(entryPath).isDirectory()) {
+          this.knownPersonas.add(entry);
+        }
+      }
+
+      debug('[ConfigWatcher] Known personas:', Array.from(this.knownPersonas));
+    } catch (error) {
+      debug('[ConfigWatcher] Error scanning personas:', error);
+    }
+  }
+
+  private handlePersonasDirChange(): void {
+    debug('[ConfigWatcher] Personas directory changed');
+
+    if (!existsSync(this.personasDir)) {
+      const removed = Array.from(this.knownPersonas);
+      this.knownPersonas.clear();
+
+      for (const slug of removed) {
+        this.callbacks.onPersonaChange?.(slug, null);
+      }
+
+      this.callbacks.onPersonasListChange?.(loadWorkspacePersonas(this.workspaceDir));
+      return;
+    }
+
+    try {
+      const entries = readdirSync(this.personasDir);
+      const currentFolders = new Set<string>();
+
+      for (const entry of entries) {
+        const entryPath = join(this.personasDir, entry);
+        if (statSync(entryPath).isDirectory()) {
+          currentFolders.add(entry);
+        }
+      }
+
+      for (const folder of currentFolders) {
+        if (!this.knownPersonas.has(folder)) {
+          debug('[ConfigWatcher] New persona folder:', folder);
+          this.knownPersonas.add(folder);
+          this.callbacks.onPersonaChange?.(folder, loadPersona(this.workspaceDir, folder));
+        }
+      }
+
+      for (const folder of this.knownPersonas) {
+        if (!currentFolders.has(folder)) {
+          debug('[ConfigWatcher] Removed persona folder:', folder);
+          this.knownPersonas.delete(folder);
+          this.callbacks.onPersonaChange?.(folder, null);
+        }
+      }
+
+      this.callbacks.onPersonasListChange?.(loadWorkspacePersonas(this.workspaceDir));
+    } catch (error) {
+      debug('[ConfigWatcher] Error handling personas dir change:', error);
+      this.callbacks.onError?.('personas/', error as Error);
+    }
+  }
+
+  private handlePersonaChange(slug: string): void {
+    debug('[ConfigWatcher] Persona changed:', slug);
+
+    const validation = validatePersona(this.workspaceDir, slug);
+    if (!validation.valid) {
+      debug('[ConfigWatcher] Persona validation failed:', slug, validation.errors);
+      this.callbacks.onValidationError?.(`personas/${slug}/persona.json`, validation);
+      this.callbacks.onPersonaChange?.(slug, null);
+      this.callbacks.onPersonasListChange?.(loadWorkspacePersonas(this.workspaceDir));
+      return;
+    }
+
+    this.callbacks.onPersonaChange?.(slug, loadPersona(this.workspaceDir, slug));
+    this.callbacks.onPersonasListChange?.(loadWorkspacePersonas(this.workspaceDir));
   }
 
   // ============================================================

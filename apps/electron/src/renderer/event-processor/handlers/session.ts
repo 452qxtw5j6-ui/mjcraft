@@ -13,6 +13,7 @@ import type {
   TypedErrorEvent,
   SourcesChangedEvent,
   LabelsChangedEvent,
+  PersonaChangedEvent,
   SessionStatusChangedEvent,
   SessionFlaggedEvent,
   SessionUnflaggedEvent,
@@ -613,6 +614,24 @@ export function handleLabelsChanged(
   }
 }
 
+export function handlePersonaChanged(
+  state: SessionState,
+  event: PersonaChangedEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  return {
+    state: {
+      session: {
+        ...session,
+        personaId: event.personaId,
+      },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
 /**
  * Handle session_status_changed - update session's sessionStatus (external metadata change or agent tool)
  */
@@ -906,4 +925,3 @@ export function handleUsageUpdate(
     effects: [],
   }
 }
-
