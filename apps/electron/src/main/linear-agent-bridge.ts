@@ -335,10 +335,7 @@ function joinWebhookPath(prefix: string, path: string): string {
   return `${normalizedPrefix}${normalizedPath}`
 }
 
-function resolveLinearAgentHome(workspaceRootPath: string): string {
-  const override = process.env.CRAFT_LINEAR_AGENT_HOME?.trim()
-  if (override) return override
-
+function resolveLinearAgentHome(): string {
   const configDir = process.env.CRAFT_CONFIG_DIR?.trim() || CONFIG_DIR
   return join(configDir, 'linear-agent')
 }
@@ -818,7 +815,7 @@ export class LinearAgentBridgeService {
       logger: options.deps?.logger ?? linearBridgeLog,
       spawnProcess: options.deps?.spawnProcess ?? spawn,
     }
-    this.serviceDir = resolveLinearAgentHome(this.workspaceRootPath)
+    this.serviceDir = resolveLinearAgentHome()
     this.configPath = join(this.serviceDir, CONFIG_FILENAME)
     this.sessionMapPath = join(this.serviceDir, SESSION_MAP_FILENAME)
     this.eventsPath = join(this.serviceDir, EVENTS_LOG_FILENAME)

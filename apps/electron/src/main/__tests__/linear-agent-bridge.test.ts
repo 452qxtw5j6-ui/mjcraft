@@ -221,9 +221,10 @@ describe('linear-agent bridge helpers', () => {
 
   it('overwrites stale bridge config with a minimal Codex config', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-bridge-'))
-    tempDirs.push(workspaceRoot)
+    const configDir = await mkdtemp(join(tmpdir(), 'linear-agent-config-'))
+    tempDirs.push(workspaceRoot, configDir)
 
-    const serviceDir = join(workspaceRoot, '.linear-agent')
+    const serviceDir = join(configDir, 'linear-agent')
     const bridgeHome = join(serviceDir, 'codex-home')
     await mkdir(bridgeHome, { recursive: true })
     await writeFile(join(bridgeHome, 'config.toml'), [
@@ -235,8 +236,8 @@ describe('linear-agent bridge helpers', () => {
       '',
     ].join('\n'), 'utf-8')
 
-    const previousHome = process.env.CRAFT_LINEAR_AGENT_HOME
-    process.env.CRAFT_LINEAR_AGENT_HOME = serviceDir
+    const previousConfigDir = process.env.CRAFT_CONFIG_DIR
+    process.env.CRAFT_CONFIG_DIR = configDir
 
     const service = new LinearAgentBridgeService({
       workspaceId: 'ws-test',
@@ -267,17 +268,18 @@ describe('linear-agent bridge helpers', () => {
     expect(configToml).not.toContain('[mcp_servers.craft]')
     expect(configToml).not.toContain('streamable_http')
 
-    if (previousHome === undefined) {
-      delete process.env.CRAFT_LINEAR_AGENT_HOME
+    if (previousConfigDir === undefined) {
+      delete process.env.CRAFT_CONFIG_DIR
     } else {
-      process.env.CRAFT_LINEAR_AGENT_HOME = previousHome
+      process.env.CRAFT_CONFIG_DIR = previousConfigDir
     }
   })
 
   it('migrates and repairs legacy session-map workspace paths into the new runtime home', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-legacy-root-'))
-    const runtimeHome = await mkdtemp(join(tmpdir(), 'linear-agent-runtime-home-'))
-    tempDirs.push(workspaceRoot, runtimeHome)
+    const configDir = await mkdtemp(join(tmpdir(), 'linear-agent-runtime-root-'))
+    const runtimeHome = join(configDir, 'linear-agent')
+    tempDirs.push(workspaceRoot, configDir)
 
     const legacyDir = join(workspaceRoot, '.linear-agent')
     const legacyWorkspaces = join(legacyDir, 'workspaces')
@@ -296,9 +298,9 @@ describe('linear-agent bridge helpers', () => {
       },
     }, null, 2), 'utf-8')
 
-    const previousHome = process.env.CRAFT_LINEAR_AGENT_HOME
+    const previousConfigDir = process.env.CRAFT_CONFIG_DIR
     const previousAppRoot = process.env.CRAFT_APP_ROOT
-    process.env.CRAFT_LINEAR_AGENT_HOME = runtimeHome
+    process.env.CRAFT_CONFIG_DIR = configDir
     process.env.CRAFT_APP_ROOT = workspaceRoot
 
     const service = new LinearAgentBridgeService({
@@ -320,10 +322,10 @@ describe('linear-agent bridge helpers', () => {
     const migratedSessionMap = JSON.parse(await readFile(join(runtimeHome, 'session-map.json'), 'utf-8'))
     expect(migratedSessionMap.mappings['codex:agent-1'].workspacePath).toBe(join(runtimeHome, 'workspaces', 'MJA-60'))
 
-    if (previousHome === undefined) {
-      delete process.env.CRAFT_LINEAR_AGENT_HOME
+    if (previousConfigDir === undefined) {
+      delete process.env.CRAFT_CONFIG_DIR
     } else {
-      process.env.CRAFT_LINEAR_AGENT_HOME = previousHome
+      process.env.CRAFT_CONFIG_DIR = previousConfigDir
     }
     if (previousAppRoot === undefined) {
       delete process.env.CRAFT_APP_ROOT
@@ -337,9 +339,7 @@ describe('linear-agent bridge helpers', () => {
     const configDir = await mkdtemp(join(tmpdir(), 'linear-agent-config-dir-'))
     tempDirs.push(workspaceRoot, configDir)
 
-    const previousHome = process.env.CRAFT_LINEAR_AGENT_HOME
     const previousConfigDir = process.env.CRAFT_CONFIG_DIR
-    delete process.env.CRAFT_LINEAR_AGENT_HOME
     process.env.CRAFT_CONFIG_DIR = configDir
 
     const service = new LinearAgentBridgeService({
@@ -361,11 +361,6 @@ describe('linear-agent bridge helpers', () => {
     expect(await readFile(join(configDir, 'linear-agent', 'config.json'), 'utf-8')).toContain('"enabled": false')
     expect(await readFile(join(configDir, 'linear-agent', 'session-map.json'), 'utf-8')).toContain('"version": 1')
 
-    if (previousHome === undefined) {
-      delete process.env.CRAFT_LINEAR_AGENT_HOME
-    } else {
-      process.env.CRAFT_LINEAR_AGENT_HOME = previousHome
-    }
     if (previousConfigDir === undefined) {
       delete process.env.CRAFT_CONFIG_DIR
     } else {
