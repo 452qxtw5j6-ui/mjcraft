@@ -1011,7 +1011,7 @@ function buildNotionPageIndexKey(workspaceId: string, pageId: string): string {
  * Uses pickSessionFields() for persistent fields so new fields propagate automatically.
  */
 function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Session {
-  return {
+  const session = {
     ...pickSessionFields(m),
     // Pre-computed fields from header (not in SESSION_PERSISTENT_FIELDS)
     preview: m.preview,
@@ -1028,6 +1028,9 @@ function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Sess
     supportsBranching: resolveSupportsBranching(m),
     ...overrides,
   } as Session
+
+  session.thinkingLevel = normalizeThinkingLevel(session.thinkingLevel)
+  return session
 }
 
 // Performance: Batch IPC delta events to reduce renderer load
@@ -1297,6 +1300,15 @@ export class SessionManager implements ISessionManager {
     const newSlackRef = JSON.stringify(header.slackRef ?? null)
     if (oldSlackRef !== newSlackRef) {
       managed.slackRef = header.slackRef
+      changed = true
+    }
+
+    const normalizedThinkingLevel = normalizeThinkingLevel(header.thinkingLevel)
+    if (managed.thinkingLevel !== normalizedThinkingLevel) {
+      managed.thinkingLevel = normalizedThinkingLevel
+      if (managed.agent && normalizedThinkingLevel) {
+        managed.agent.setThinkingLevel(normalizedThinkingLevel)
+      }
       changed = true
     }
 
@@ -2205,6 +2217,7 @@ export class SessionManager implements ISessionManager {
       if (storedSession.connectionLocked) {
         managed.connectionLocked = storedSession.connectionLocked
       }
+      managed.thinkingLevel = normalizeThinkingLevel(storedSession.thinkingLevel) ?? managed.thinkingLevel
       sessionLog.debug(`Lazy-loaded ${managed.messages.length} messages for session ${managed.id}`)
 
       // Queue recovery: find orphaned queued messages from crash/restart and re-queue them
@@ -6011,15 +6024,16 @@ export class SessionManager implements ISessionManager {
   setSessionThinkingLevel(sessionId: string, level: ThinkingLevel): void {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      const normalizedLevel = normalizeThinkingLevel(level) ?? DEFAULT_THINKING_LEVEL
       // Update thinking level in managed session
-      managed.thinkingLevel = level
+      managed.thinkingLevel = normalizedLevel
 
       // Update the agent's thinking level if it exists
       if (managed.agent) {
-        managed.agent.setThinkingLevel(level)
+        managed.agent.setThinkingLevel(normalizedLevel)
       }
 
-      sessionLog.info(`Session ${sessionId}: thinking level set to ${level}`)
+      sessionLog.info(`Session ${sessionId}: thinking level set to ${normalizedLevel}`)
       // Persist to disk
       this.persistSession(managed)
     }

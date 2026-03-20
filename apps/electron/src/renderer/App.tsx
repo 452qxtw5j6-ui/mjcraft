@@ -4,7 +4,7 @@ import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
 import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
-import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
+import { defaultSessionOptions, mergeSessionOptions, normalizeSessionOptions, resolveSessionThinkingLevel } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
 import { useEventProcessor } from './event-processor'
 import type { AgentEvent, Effect } from './event-processor'
@@ -463,12 +463,13 @@ export default function App() {
       for (const s of loadedSessions) {
         // Only store non-default options to keep the map lean
         const hasNonDefaultMode = s.permissionMode && s.permissionMode !== 'ask'
-        const hasNonDefaultThinking = s.thinkingLevel && s.thinkingLevel !== DEFAULT_THINKING_LEVEL
+        const thinkingLevel = resolveSessionThinkingLevel(s.thinkingLevel)
+        const hasNonDefaultThinking = thinkingLevel !== DEFAULT_THINKING_LEVEL
         if (hasNonDefaultMode || hasNonDefaultThinking) {
-          optionsMap.set(s.id, {
+          optionsMap.set(s.id, normalizeSessionOptions({
             permissionMode: s.permissionMode ?? 'ask',
-            thinkingLevel: s.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
-          })
+            thinkingLevel,
+          }))
         }
       }
       setSessionOptions(optionsMap)
@@ -810,15 +811,16 @@ export default function App() {
   // Populate sessionOptions for a session with non-default permission mode or thinking level.
   // Centralised helper used by all session creation paths (create, branch, event handler).
   const populateSessionOptions = useCallback((session: Session) => {
+    const thinkingLevel = resolveSessionThinkingLevel(session.thinkingLevel)
     const hasNonDefaultMode = session.permissionMode && session.permissionMode !== 'ask'
-    const hasNonDefaultThinking = session.thinkingLevel && session.thinkingLevel !== DEFAULT_THINKING_LEVEL
+    const hasNonDefaultThinking = thinkingLevel !== DEFAULT_THINKING_LEVEL
     if (hasNonDefaultMode || hasNonDefaultThinking) {
       setSessionOptions(prev => {
         const next = new Map(prev)
-        next.set(session.id, {
+        next.set(session.id, normalizeSessionOptions({
           permissionMode: session.permissionMode ?? 'ask',
-          thinkingLevel: session.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
-        })
+          thinkingLevel,
+        }))
         return next
       })
     }
@@ -1125,21 +1127,28 @@ export default function App() {
    * Handles persistence and backend sync for each option type.
    */
   const handleSessionOptionsChange = useCallback((sessionId: string, updates: SessionOptionUpdates) => {
+    const normalizedUpdates = {
+      ...updates,
+      ...(updates.thinkingLevel !== undefined
+        ? { thinkingLevel: resolveSessionThinkingLevel(updates.thinkingLevel) }
+        : {}),
+    } satisfies SessionOptionUpdates
+
     setSessionOptions(prev => {
       const next = new Map(prev)
       const current = next.get(sessionId) ?? defaultSessionOptions
-      next.set(sessionId, mergeSessionOptions(current, updates))
+      next.set(sessionId, mergeSessionOptions(current, normalizedUpdates))
       return next
     })
 
     // Handle persistence/backend for specific options
-    if (updates.permissionMode !== undefined) {
+    if (normalizedUpdates.permissionMode !== undefined) {
       // Sync permission mode change with backend
-      window.electronAPI.sessionCommand(sessionId, { type: 'setPermissionMode', mode: updates.permissionMode })
+      window.electronAPI.sessionCommand(sessionId, { type: 'setPermissionMode', mode: normalizedUpdates.permissionMode })
     }
-    if (updates.thinkingLevel !== undefined) {
+    if (normalizedUpdates.thinkingLevel !== undefined) {
       // Sync thinking level change with backend (session-level, persisted)
-      window.electronAPI.sessionCommand(sessionId, { type: 'setThinkingLevel', level: updates.thinkingLevel })
+      window.electronAPI.sessionCommand(sessionId, { type: 'setThinkingLevel', level: normalizedUpdates.thinkingLevel })
     }
   }, [sessionOptions])
 

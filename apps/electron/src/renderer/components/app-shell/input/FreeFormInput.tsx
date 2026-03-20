@@ -72,7 +72,7 @@ import { ConnectionIcon } from '@/components/icons/ConnectionIcon'
 import { FreeFormInputContextBadge } from './FreeFormInputContextBadge'
 import type { FileAttachment, LoadedSource, LoadedSkill, LoadedPersona } from '../../../../shared/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/modes'
-import { type ThinkingLevel, THINKING_LEVELS, getThinkingLevelName } from '@craft-agent/shared/agent/thinking-levels'
+import { type ThinkingLevel, THINKING_LEVELS, DEFAULT_THINKING_LEVEL, getThinkingLevelName, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { hasOpenOverlay } from '@/lib/overlay-detection'
 import { ToolbarStatusSlot } from './ToolbarStatusSlot'
@@ -407,6 +407,10 @@ export function FreeFormInput({
   }, [llmConnections, currentConnection, workspaceDefaultConnection, connectionUnavailable])
 
   const availableThinkingLevels = THINKING_LEVELS
+  const normalizedThinkingLevel = React.useMemo(
+    () => normalizeThinkingLevel(thinkingLevel) ?? DEFAULT_THINKING_LEVEL,
+    [thinkingLevel]
+  )
 
   // Disable thinking selector when the current model explicitly doesn't support it
   const thinkingDisabled = React.useMemo(() => {
@@ -468,8 +472,8 @@ export function FreeFormInput({
     [effectiveConnectionDetails]
   )
   const currentThinkingLabel = React.useMemo(
-    () => getThinkingLevelName(thinkingLevel),
-    [thinkingLevel]
+    () => getThinkingLevelName(normalizedThinkingLevel),
+    [normalizedThinkingLevel]
   )
 
 
@@ -2095,7 +2099,7 @@ Model
                       className={cn("flex items-center justify-between px-2 py-2 rounded-lg", thinkingDisabled && "opacity-50 cursor-not-allowed")}
                     >
                       <div className="text-left flex-1">
-                        <div className="font-medium text-sm">{getThinkingLevelName(thinkingLevel)}</div>
+                        <div className="font-medium text-sm">{getThinkingLevelName(normalizedThinkingLevel)}</div>
                         <div className="text-xs text-muted-foreground">{thinkingDisabled ? 'Not supported by this model' : reasoningProviderSummary.label}</div>
                       </div>
                     </StyledDropdownMenuSubTrigger>
@@ -2108,7 +2112,7 @@ Model
                       </div>
                       <StyledDropdownMenuSeparator className="my-1" />
                       {availableThinkingLevels.map(({ id, name, description }) => {
-                        const isSelected = thinkingLevel === id
+                        const isSelected = normalizedThinkingLevel === id
                         return (
                           <StyledDropdownMenuItem
                             key={id}
