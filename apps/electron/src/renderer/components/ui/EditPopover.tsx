@@ -15,7 +15,7 @@ import { Popover, PopoverTrigger, PopoverContent } from './popover'
 import { Button } from './button'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@craft-agent/ui'
-import type { ContentBadge, Session, CreateSessionOptions } from '../../../shared/types'
+import type { ContentBadge, Session, CreateSessionOptions, ThinkingLevel } from '../../../shared/types'
 import { useActiveWorkspace, useAppShellContext, useSession } from '@/context/AppShellContext'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { ChatDisplay } from '../app-shell/ChatDisplay'
@@ -100,6 +100,12 @@ export interface EditConfig {
   overridePlaceholder?: string
   /** Optional model for mini agent (e.g., 'haiku', 'sonnet') */
   model?: string
+  /** Optional connection override for the mini agent */
+  llmConnection?: string
+  /** Optional thinking level override for the mini agent */
+  thinkingLevel?: ThinkingLevel
+  /** Optional source slugs to inject when the hidden session is created */
+  enabledSourceSlugs?: string[]
   /** Optional system prompt preset for mini agent (e.g., 'mini' for focused edits) */
   systemPromptPreset?: 'default' | 'mini'
   /** When true, executes inline within the popover instead of opening a new window */
@@ -573,10 +579,18 @@ export interface EditPopoverProps {
   workingDirectory?: string | 'user_default' | 'none'
   /** Model override for mini agent (e.g., 'haiku', 'sonnet') */
   model?: string
+  /** Connection override for the mini agent */
+  llmConnection?: string
+  /** Thinking level override for the mini agent */
+  thinkingLevel?: ThinkingLevel
+  /** Source slugs to inject when the hidden session is created */
+  enabledSourceSlugs?: string[]
   /** System prompt preset for mini agent (e.g., 'mini' for focused edits) */
   systemPromptPreset?: 'default' | 'mini'
   /** Width of the popover (default: 320) */
   width?: number
+  /** Initial height of the popover */
+  height?: number
   /** Additional className for the trigger */
   triggerClassName?: string
   /** Side of the popover relative to trigger */
@@ -610,13 +624,17 @@ export interface EditPopoverProps {
    * opening a new window. Best for quick config edits with mini agents.
    */
   inlineExecution?: boolean
+  /** When false, keep the rest of the app interactive while the inline agent is running. */
+  blockInteractionWhileProcessing?: boolean
+  /** Optional custom prompt builder for non-edit workflows */
+  promptBuilder?: (message: string) => EditPromptResult
 }
 
 /**
  * Result from buildEditPrompt containing both the full prompt and badge metadata
  * for hiding the XML context in the UI while keeping it in the actual message.
  */
-interface EditPromptResult {
+export interface EditPromptResult {
   /** Full prompt including XML metadata and user instructions */
   prompt: string
   /** Badge marking the hidden metadata section */
@@ -676,8 +694,12 @@ export function EditPopover({
   permissionMode = 'allow-all',
   workingDirectory = 'none', // Default to session folder for config edits
   model,
+  llmConnection,
+  thinkingLevel,
+  enabledSourceSlugs = [],
   systemPromptPreset,
   width = 400, // Default 400px for compact chat embedding
+  height = 480,
   triggerClassName,
   side = 'bottom',
   align = 'end',
@@ -688,6 +710,8 @@ export function EditPopover({
   modal = false,
   defaultValue = '',
   inlineExecution = false,
+  blockInteractionWhileProcessing = true,
+  promptBuilder,
 }: EditPopoverProps) {
   const { onOpenFile, onOpenUrl } = usePlatform()
   const workspace = useActiveWorkspace()
@@ -709,16 +733,16 @@ export function EditPopover({
   const [internalOpen, setInternalOpen] = useState(false)
   const isControlled = controlledOpen !== undefined
   const open = isControlled ? controlledOpen : internalOpen
-  const setOpen = (value: boolean) => {
+  const setOpen = useCallback((value: boolean) => {
     if (isControlled) {
       controlledOnOpenChange?.(value)
     } else {
       setInternalOpen(value)
     }
-  }
+  }, [controlledOnOpenChange, isControlled])
 
   // Use App context for session management (same code path as main chat)
-  const { onCreateSession, onSendMessage } = useAppShellContext()
+  const { onCreateSession, onSendMessage, enabledSources = [], skills = [], personas = [], labels = [], sessionStatuses = [] } = useAppShellContext()
 
   // Session ID for inline execution (created on first message)
   const [inlineSessionId, setInlineSessionId] = useState<string | null>(null)
@@ -729,6 +753,8 @@ export function EditPopover({
 
   // Model state for ChatDisplay (starts with prop value, can be changed by user)
   const [currentModel, setCurrentModel] = useState(model || 'haiku')
+  const [currentConnection, setCurrentConnection] = useState<string | undefined>(llmConnection)
+  const [currentThinkingLevel, setCurrentThinkingLevel] = useState<ThinkingLevel>(thinkingLevel ?? 'medium')
 
   // Create a stub session for ChatDisplay when no real session exists yet
   // This allows showing the input before the first message is sent
@@ -739,7 +765,9 @@ export function EditPopover({
     messages: [],
     isProcessing: false,
     lastMessageAt: Date.now(),
-  }), [workspace?.id, workspace?.name])
+    enabledSourceSlugs,
+    llmConnection: currentConnection,
+  }), [workspace?.id, workspace?.name, enabledSourceSlugs, currentConnection])
 
   // Use real session if available, otherwise stub
   const displaySession = inlineSession || stubSession
@@ -800,8 +828,12 @@ export function EditPopover({
   const dragOffsetRef = useRef({ x: 0, y: 0 })
   const popoverRef = useRef<HTMLDivElement>(null)
 
+  const initialContainerSize = React.useMemo(
+    () => ({ width: width || 400, height }),
+    [width, height],
+  )
   // Resize state for dynamic sizing
-  const [containerSize, setContainerSize] = useState({ width: width || 400, height: 480 })
+  const [containerSize, setContainerSize] = useState(initialContainerSize)
   const [isResizing, setIsResizing] = useState(false)
   const resizeStartRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
 
@@ -810,9 +842,9 @@ export function EditPopover({
     if (open) {
       dragOffsetRef.current = { x: 0, y: 0 }
       setDragOffset({ x: 0, y: 0 })
-      setContainerSize({ width: width || 400, height: 480 })
+      setContainerSize(initialContainerSize)
     }
-  }, [open, width])
+  }, [open, initialContainerSize])
 
   // Handle drag events
   const handleDragStart = useCallback((e: React.MouseEvent) => {
@@ -902,28 +934,39 @@ export function EditPopover({
   useEffect(() => {
     if (open) {
       setCurrentModel(model || 'haiku')
+      setCurrentConnection(llmConnection)
+      setCurrentThinkingLevel(thinkingLevel ?? 'medium')
       resetInlineSession()
     }
-  }, [open, model, resetInlineSession])
+  }, [open, model, llmConnection, thinkingLevel, resetInlineSession])
 
   // Handle sending message from ChatDisplay (inline mode)
   // Creates hidden session on first message, then uses App context for sending
   const handleInlineSendMessage = useCallback(async (message: string) => {
-    const { prompt, badges } = buildEditPrompt(context, message)
+    const builder = promptBuilder ?? ((input: string) => buildEditPrompt(context, input))
+    const { prompt, badges } = builder(message)
 
     // Create session on first message
     let sessionId = inlineSessionId
     if (!sessionId && workspace?.id) {
       const createOptions: CreateSessionOptions = {
-        model: model || 'haiku',
+        model: currentModel || model || 'haiku',
+        llmConnection: currentConnection,
         systemPromptPreset: systemPromptPreset || 'mini',
         permissionMode,
         workingDirectory,
+        enabledSourceSlugs,
         hidden: true, // Hidden sessions use same App code path but don't appear in list
       }
       const newSession = await onCreateSession(workspace.id, createOptions)
       sessionId = newSession.id
       setInlineSessionId(sessionId)
+      if (currentThinkingLevel) {
+        await window.electronAPI.sessionCommand(sessionId, {
+          type: 'setThinkingLevel',
+          level: currentThinkingLevel,
+        })
+      }
     }
 
     // Send message via App context (includes optimistic user message update)
@@ -931,29 +974,46 @@ export function EditPopover({
     if (sessionId) {
       onSendMessage(sessionId, prompt, undefined, undefined, badges)
     }
-  }, [context, inlineSessionId, workspace?.id, model, systemPromptPreset, permissionMode, workingDirectory, onCreateSession, onSendMessage])
+  }, [
+    context,
+    promptBuilder,
+    inlineSessionId,
+    workspace?.id,
+    currentModel,
+    model,
+    currentConnection,
+    currentThinkingLevel,
+    systemPromptPreset,
+    permissionMode,
+    workingDirectory,
+    enabledSourceSlugs,
+    onCreateSession,
+    onSendMessage,
+  ])
 
   // Legacy mode: navigates to chat in the same window
   const handleLegacySendMessage = useCallback((message: string) => {
-    const { prompt, badges } = buildEditPrompt(context, message)
+    const builder = promptBuilder ?? ((input: string) => buildEditPrompt(context, input))
+    const { prompt, badges } = builder(message)
     const encodedInput = encodeURIComponent(prompt)
     const encodedBadges = encodeURIComponent(JSON.stringify(badges))
 
     const workdirParam = workingDirectory ? `&workdir=${encodeURIComponent(workingDirectory)}` : ''
-    const modelParam = model ? `&model=${encodeURIComponent(model)}` : ''
+    const modelParam = currentModel ? `&model=${encodeURIComponent(currentModel)}` : ''
+    const connectionParam = currentConnection ? `&llmConnection=${encodeURIComponent(currentConnection)}` : ''
     const systemPromptParam = systemPromptPreset ? `&systemPrompt=${encodeURIComponent(systemPromptPreset)}` : ''
     // Navigate in same window by omitting window=focused parameter
-    const url = `craftagents://action/new-session?input=${encodedInput}&send=true&mode=${permissionMode}&badges=${encodedBadges}${workdirParam}${modelParam}${systemPromptParam}`
+    const url = `craftagents://action/new-session?input=${encodedInput}&send=true&mode=${permissionMode}&badges=${encodedBadges}${workdirParam}${modelParam}${connectionParam}${systemPromptParam}`
 
     window.electronAPI.openUrl(url)
     setOpen(false)
-  }, [context, workingDirectory, model, systemPromptPreset, permissionMode, setOpen])
+  }, [context, promptBuilder, workingDirectory, currentModel, currentConnection, systemPromptPreset, permissionMode, setOpen])
 
   return (
     <>
       {/* Full-screen backdrop - rendered BEHIND the popover during processing */}
       <AnimatePresence>
-        {open && isProcessing && (
+        {open && isProcessing && blockInteractionWhileProcessing && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1011,7 +1071,19 @@ export function EditPopover({
                   onOpenFile={onOpenFile || (() => {})}
                   onOpenUrl={onOpenUrl || (() => {})}
                   currentModel={currentModel}
-                  onModelChange={setCurrentModel}
+                  onModelChange={(nextModel, nextConnection) => {
+                    setCurrentModel(nextModel)
+                    if (nextConnection) setCurrentConnection(nextConnection)
+                  }}
+                  onConnectionChange={setCurrentConnection}
+                  thinkingLevel={currentThinkingLevel}
+                  onThinkingLevelChange={setCurrentThinkingLevel}
+                  permissionMode={permissionMode}
+                  sources={enabledSources}
+                  skills={skills}
+                  personas={personas}
+                  labels={labels}
+                  sessionStatuses={sessionStatuses}
                   compactMode={true}
                   placeholder={placeholder}
                   emptyStateLabel={context.label}

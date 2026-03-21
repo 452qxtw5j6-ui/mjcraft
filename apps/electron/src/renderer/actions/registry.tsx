@@ -84,13 +84,14 @@ export function ActionRegistryProvider({ children }: { children: React.ReactNode
 
       // Check all actions for matching hotkey
       for (const [actionId, action] of Object.entries(actions)) {
-        const hotkey = getHotkey(actionId as ActionId)
-        if (!hotkey || !matchesHotkey(e, hotkey)) continue
+        const typedActionId = actionId as ActionId
+        const hotkey = getHotkey(typedActionId)
+        if (!hotkey || !matchesHotkey(e, hotkey, action as ActionDefinition)) continue
 
         // Evaluate when-clause against current context
         if (!evaluateWhen((action as ActionDefinition).when, context)) continue
 
-        const handlers = handlersRef.current.get(actionId as ActionId) || []
+        const handlers = handlersRef.current.get(typedActionId) || []
         for (const handler of handlers) {
           if (!handler.enabled || handler.enabled()) {
             e.preventDefault()
@@ -135,7 +136,7 @@ export function useActionRegistry() {
 // Utility functions
 // ─────────────────────────────────────────────
 
-function matchesHotkey(e: KeyboardEvent, hotkey: string): boolean {
+function matchesHotkey(e: KeyboardEvent, hotkey: string, action?: ActionDefinition): boolean {
   const parts = hotkey.toLowerCase().split('+')
   const key = parts[parts.length - 1]
   const needsMod = parts.includes('mod')
@@ -169,12 +170,16 @@ function matchesHotkey(e: KeyboardEvent, hotkey: string): boolean {
     ? e.code === specialCode
     : logicalKeyMatches
 
+  const physicalCodeMatches = action?.physicalKey
+    ? e.code === action.physicalKey
+    : false
+
   // Check modifier requirements
   const modCorrect = needsMod ? modPressed : !modPressed
   const shiftCorrect = needsShift ? e.shiftKey : !e.shiftKey
   const altCorrect = needsAlt ? e.altKey : !e.altKey
 
-  return codeMatches && modCorrect && shiftCorrect && altCorrect
+  return (codeMatches || physicalCodeMatches) && modCorrect && shiftCorrect && altCorrect
 }
 
 function formatHotkeyDisplay(hotkey: string): string {

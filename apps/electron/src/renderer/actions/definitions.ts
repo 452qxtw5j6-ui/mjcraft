@@ -225,6 +225,16 @@ export const actions = {
     scope: 'chat',
     when: 'chatFocus',
   },
+  'chat.openLinearQuickIssue': {
+    id: 'chat.openLinearQuickIssue',
+    label: 'Open Linear Quick Issue',
+    description: 'Open the quick Linear issue composer',
+    defaultHotkey: 'c',
+    physicalKey: 'KeyC',
+    category: 'Chat',
+    scope: 'chat',
+    when: 'chatFocus && !inputFocus && !menuOpen',
+  },
   'chat.deleteCurrentSession': {
     id: 'chat.deleteCurrentSession',
     label: 'Delete Current Session',

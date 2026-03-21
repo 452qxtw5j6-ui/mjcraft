@@ -135,6 +135,7 @@ import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
 import { dispatchOpenModelMenuEvent } from "./input/open-model-menu-events"
+import { buildLinearQuickIssuePrompt, resolveLinearQuickIssueDefaults } from "./linear-quick-issue"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -499,6 +500,7 @@ function AppShellContent({
   const {
     workspaces,
     activeWorkspaceId,
+    llmConnections,
     sessionOptions,
     onSelectWorkspace,
     onRefreshWorkspaces,
@@ -545,6 +547,12 @@ function AppShellContent({
   const [showWhatsNew, setShowWhatsNew] = React.useState(false)
   const [releaseNotesContent, setReleaseNotesContent] = React.useState('')
   const [hasUnseenReleaseNotes, setHasUnseenReleaseNotes] = React.useState(false)
+  const [linearQuickIssueOpen, setLinearQuickIssueOpen] = useState(false)
+  const [linearQuickIssueAnchor, setLinearQuickIssueAnchor] = useState(() => ({
+    x: typeof window !== 'undefined' ? Math.round(window.innerWidth / 2) : 320,
+    y: typeof window !== 'undefined' ? Math.round(window.innerHeight / 4) : 180,
+  }))
+  const lastPointerPositionRef = React.useRef(linearQuickIssueAnchor)
 
   // Check for unseen release notes on mount
   useEffect(() => {
@@ -553,6 +561,15 @@ function AppShellContent({
       const lastSeen = storage.get(storage.KEYS.whatsNewLastSeenVersion, '')
       setHasUnseenReleaseNotes(lastSeen !== latestVersion)
     })
+  }, [])
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      lastPointerPositionRef.current = { x: event.clientX, y: event.clientY }
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, true)
+    return () => window.removeEventListener('pointermove', handlePointerMove, true)
   }, [])
 
   const [isResizing, setIsResizing] = React.useState<'sidebar' | 'session-list' | null>(null)
@@ -1157,6 +1174,12 @@ function AppShellContent({
   }, {
     enabled: () => !!effectiveSessionId
   }, [effectiveSessionId])
+  useAction('chat.openLinearQuickIssue', () => {
+    setLinearQuickIssueAnchor(lastPointerPositionRef.current)
+    setLinearQuickIssueOpen(true)
+  }, {
+    enabled: () => !!activeWorkspace && !hasOpenOverlay()
+  }, [activeWorkspace])
   useAction('chat.deleteCurrentSession', () => {
     if (effectiveSessionId) {
       void contextValue.onDeleteSession(effectiveSessionId)
@@ -1782,6 +1805,20 @@ function AppShellContent({
   // Stores the trigger element (button) so we can keep it highlighted while the
   // EditPopover is open (after Radix removes data-state="open" on context menu close).
   const editPopoverTriggerRef = useRef<Element | null>(null)
+
+  const linearQuickIssueDefaults = useMemo(
+    () => resolveLinearQuickIssueDefaults({ llmConnections, sources }),
+    [llmConnections, sources],
+  )
+  const linearQuickIssueSourceSlug = linearQuickIssueDefaults.enabledSourceSlugs[0]
+  const handleLinearQuickIssueOpenChange = useCallback((isOpen: boolean) => {
+    setLinearQuickIssueOpen(isOpen)
+    if (isOpen) return
+
+    const activeElement = document.activeElement as HTMLElement | null
+    activeElement?.blur?.()
+    focusZone('chat', { intent: 'programmatic', moveFocus: false })
+  }, [focusZone])
 
   // Captures the bounding rect of the currently-open context menu trigger (the button).
   // Radix sets data-state="open" on the button (via ContextMenuTrigger asChild)
@@ -3357,6 +3394,40 @@ function AppShellContent({
        */}
       {activeWorkspace && (
         <>
+          <EditPopover
+            open={linearQuickIssueOpen}
+            onOpenChange={handleLinearQuickIssueOpenChange}
+            modal={false}
+            trigger={
+              <div
+                className="fixed w-0 h-0 pointer-events-none"
+                style={{ left: linearQuickIssueAnchor.x, top: linearQuickIssueAnchor.y }}
+                aria-hidden="true"
+              />
+            }
+            side="bottom"
+            align="start"
+            width={360}
+            height={440}
+            inlineExecution={true}
+            permissionMode="allow-all"
+            context={{
+              label: 'Context',
+              filePath: linearQuickIssueSourceSlug ? `source://${linearQuickIssueSourceSlug}` : 'Linear',
+              context: linearQuickIssueSourceSlug
+                ? `Use the enabled "${linearQuickIssueSourceSlug}" source to create the issue in Linear immediately.`
+                : 'Create the issue in Linear immediately using the available Linear tooling.',
+            }}
+            model={linearQuickIssueDefaults.model}
+            llmConnection={linearQuickIssueDefaults.llmConnection}
+            thinkingLevel={linearQuickIssueDefaults.thinkingLevel}
+            enabledSourceSlugs={linearQuickIssueDefaults.enabledSourceSlugs}
+            systemPromptPreset="mini"
+            blockInteractionWhileProcessing={false}
+            promptBuilder={(message) => buildLinearQuickIssuePrompt(message, {
+              sourceSlug: linearQuickIssueSourceSlug,
+            })}
+          />
           {/* Configure Statuses EditPopover - anchored near sidebar */}
           <EditPopover
             open={editPopoverOpen === 'statuses'}

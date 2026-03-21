@@ -5,6 +5,8 @@ export interface ActionDefinition {
   label: string
   description?: string
   defaultHotkey: string | null  // null = no default hotkey
+  /** Optional physical KeyboardEvent.code to support layout-independent shortcuts */
+  physicalKey?: string
   category: string
   scope?: ActionScope           // Default: 'global'
   /** When-clause expression controlling when the action fires.
