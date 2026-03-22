@@ -2941,6 +2941,7 @@ export class SessionManager implements ISessionManager {
             apiServers,
             enabledSlugs,
           },
+          enable1MContext: workspaceConfig?.defaults?.enable1MContext ?? true,
         },
       }) as AgentInstance
 

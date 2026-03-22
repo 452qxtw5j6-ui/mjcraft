@@ -6,18 +6,6 @@ import type { LoadedSource } from '../types.ts';
 
 function createCliSource(overrides: Partial<LoadedSource> = {}): LoadedSource {
   return {
-    config: {
-      id: 'gws-test',
-      slug: 'gws-test',
-      name: 'GWS Test',
-      enabled: true,
-      provider: 'googleworkspace-cli',
-      type: 'cli',
-      cli: {
-        command: 'python3',
-        args: ['-c', 'import json,sys; print(json.dumps(sys.argv[1:]))'],
-      },
-    },
     guide: null,
     manifest: null,
     folderPath: '/tmp/gws-test',

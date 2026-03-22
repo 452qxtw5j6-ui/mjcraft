@@ -499,6 +499,7 @@ export interface WorkspaceSettings {
   localMcpEnabled?: boolean
   defaultLlmConnection?: string
   enabledSourceSlugs?: string[]
+  enable1MContext?: boolean
 }
 
 // ---------------------------------------------------------------------------

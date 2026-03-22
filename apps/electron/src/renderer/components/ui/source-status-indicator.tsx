@@ -144,7 +144,7 @@ export function deriveConnectionStatus(source: {
     type?: string
     mcp?: { authType?: string; transport?: string }
     api?: { authType?: string }
-    cli?: Record<string, unknown>
+    cli?: unknown
   }
 }, localMcpEnabled = true): SourceConnectionStatus {
   // Check if this is a local process source and local MCP is disabled
