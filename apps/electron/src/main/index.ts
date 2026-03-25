@@ -105,6 +105,12 @@ import { SlackBotService } from './slack-bot'
 import { LinearAgentBridgeService } from './linear-agent-bridge'
 import { PlaywrightBrowserHost } from './playwright-browser-host'
 import { checkVCRedistInstalled } from '@craft-agent/server-core/services'
+import { applyThinClientProfileToEnv, isThinClientMode } from './thin-client-profile'
+
+// Thin-client packages ship a bundled profile that points the app at an
+// externally managed server. Normal dev/runtime launches have no profile file,
+// so this is a no-op unless the dedicated client package is running.
+applyThinClientProfileToEnv()
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -120,16 +126,18 @@ if (isDebugMode) {
 // These are available to all agent Bash sessions via CRAFT_UV, CRAFT_SCRIPTS env vars
 // and PATH prepend. uv auto-downloads Python 3.12 on first use (~5s, then cached).
 {
-  // In packaged app: resources are at process.resourcesPath/app/resources/
-  // In dev: resources are at __dirname/../resources/ (sibling of dist/)
   const resourcesBase = app.isPackaged
-    ? join(process.resourcesPath, 'app')
-    : join(__dirname, '..')
+    ? app.getAppPath()
+    : existsSync(join(process.cwd(), 'apps', 'electron', 'resources'))
+      ? join(process.cwd(), 'apps', 'electron')
+      : join(__dirname, '..')
+  const resolveBundledResourcePath = (...segments: string[]): string =>
+    join(resourcesBase, 'resources', ...segments)
   const platformKey = `${process.platform}-${process.arch}`
-  const uvPlatformDir = join(resourcesBase, 'resources', 'bin', platformKey)
+  const uvPlatformDir = resolveBundledResourcePath('bin', platformKey)
   const uvBinary = join(uvPlatformDir, process.platform === 'win32' ? 'uv.exe' : 'uv')
-  const binDir = join(resourcesBase, 'resources', 'bin')
-  const scriptsDir = join(resourcesBase, 'resources', 'scripts')
+  const binDir = resolveBundledResourcePath('bin')
+  const scriptsDir = resolveBundledResourcePath('scripts')
 
   const bundledUvExists = existsSync(uvBinary)
   const fallbackUv = bundledUvExists ? null : 'uv'
@@ -155,7 +163,7 @@ if (isDebugMode) {
     ? join(app.getAppPath(), 'packages', 'craft-cli', 'src', 'cli.ts')
     : join(process.cwd(), 'packages', 'craft-cli', 'src', 'cli.ts')
   process.env.CRAFT_COMMANDS_DOC_PATH = app.isPackaged
-    ? join(resourcesBase, 'resources', 'docs', 'craft-cli.md')
+    ? resolveBundledResourcePath('docs', 'craft-cli.md')
     : join(process.cwd(), 'apps', 'electron', 'resources', 'docs', 'craft-cli.md')
   process.env.CRAFT_CLI_DOC_PATH = process.env.CRAFT_COMMANDS_DOC_PATH
   process.env.CRAFT_AGENT_VERSION = app.getVersion()
@@ -359,9 +367,15 @@ app.whenReady().then(async () => {
   // Export packaged state as env var so logger.ts (and headless Bun) don't need 'electron'
   process.env.CRAFT_IS_PACKAGED = app.isPackaged ? 'true' : 'false'
 
+  const bundledAssetsRoot = app.isPackaged
+    ? app.getAppPath()
+    : existsSync(join(process.cwd(), 'apps', 'electron', 'resources'))
+      ? join(process.cwd(), 'apps', 'electron')
+      : join(__dirname, '..')
+
   // Register bundled assets root so all seeding functions can find their files
   // (docs, permissions, themes, tool-icons resolve via getBundledAssetsDir)
-  setBundledAssetsRoot(__dirname)
+  setBundledAssetsRoot(bundledAssetsRoot)
 
   // Initialize backend runtime bootstrapping (Codex vendor root, Claude SDK runtime paths).
   initializeBackendHostRuntime({
@@ -374,7 +388,7 @@ app.whenReady().then(async () => {
 
   // Register PowerShell validator root so it can find the bundled parser script
   // (Windows only: validates PowerShell commands in Explore mode using AST analysis)
-  setPowerShellValidatorRoot(join(__dirname, 'resources'))
+  setPowerShellValidatorRoot(join(bundledAssetsRoot, 'resources'))
 
   // Initialize bundled docs
   initializeDocs()
@@ -404,14 +418,9 @@ app.whenReady().then(async () => {
 
   // Set dock icon on macOS (required for dev mode, bundled apps use Info.plist)
   if (process.platform === 'darwin' && app.dock) {
-    // In packaged app, resources are at dist/resources/ (same level as __dirname)
-    // In dev, resources are at ../resources/ (sibling of dist/)
-    const dockIconPath = [
-      join(__dirname, 'resources/icon.png'),
-      join(__dirname, '../resources/icon.png'),
-    ].find(p => existsSync(p))
+    const dockIconPath = join(bundledAssetsRoot, 'resources', 'icon.png')
 
-    if (dockIconPath) {
+    if (existsSync(dockIconPath)) {
       app.dock.setIcon(dockIconPath)
       // Initialize badge icon for canvas-based badge overlay
       initBadgeIcon(dockIconPath)
@@ -862,10 +871,12 @@ app.whenReady().then(async () => {
     // Initialize auto-update (check immediately on launch)
     // Skip in dev mode to avoid replacing /Applications app and launching it instead
     if (moduleSink) setAutoUpdateEventSink(moduleSink)
-    if (app.isPackaged) {
+    if (app.isPackaged && !isThinClientMode()) {
       checkForUpdatesOnLaunch().catch(err => {
         mainLog.error('[auto-update] Launch check failed:', err)
       })
+    } else if (app.isPackaged) {
+      mainLog.info('[auto-update] Skipping auto-update in thin-client package')
     } else {
       mainLog.info('[auto-update] Skipping auto-update in dev mode')
     }

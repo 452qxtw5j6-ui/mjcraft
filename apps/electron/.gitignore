@@ -2,6 +2,7 @@
 vendor/
 packages/
 release/
+.client-build/
 node_modules/@anthropic-ai/
 
 # Platform-specific uv binaries (downloaded during build)
@@ -9,3 +10,6 @@ resources/bin/darwin-arm64/
 resources/bin/darwin-x64/
 resources/bin/win32-x64/
 resources/bin/linux-x64/
+
+# Generated packaging helpers
+resources/pi-agent-server/

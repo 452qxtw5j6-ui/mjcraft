@@ -1122,6 +1122,55 @@ export class SessionManager implements ISessionManager {
     return candidates[0] ?? null
   }
 
+  /**
+   * Detect whether a managed session is backed by the Pi agent subprocess.
+   *
+   * Prefer the live agent instance's runtime config when available so tests and
+   * temporary sessions don't depend on persisted connection lookups.
+   */
+  private isPiManagedSession(managed: ManagedSession): boolean {
+    const runtimeProvider = (managed.agent as { config?: { provider?: unknown } } | null)?.config?.provider
+    if (runtimeProvider === 'pi') return true
+
+    if (!managed.llmConnection) return false
+    const connection = getLlmConnection(managed.llmConnection)
+    return !!connection && providerTypeToAgentProvider(connection.providerType) === 'pi'
+  }
+
+  /**
+   * Dispose the live agent instance and clear runtime references.
+   *
+   * Pi-backed sessions spawn a localhost callback server inside their subprocess,
+   * so disposing idle agents prevents stale callback ports from accumulating.
+   */
+  private disposeManagedAgent(managed: ManagedSession, reason: string): void {
+    if (!managed.agent) return
+
+    try {
+      managed.agent.dispose()
+      sessionLog.info(`Disposed agent for session ${managed.id}: ${reason}`)
+    } catch (error) {
+      sessionLog.warn(`Failed to dispose agent for session ${managed.id}: ${reason}`, error)
+    } finally {
+      managed.agent = null
+      managed.agentReady = undefined
+      managed.agentReadyResolve = undefined
+    }
+  }
+
+  /**
+   * Pi sessions keep an internal callback server open for call_llm. Once a turn
+   * is done and the queue is empty, the subprocess is no longer needed until the
+   * next user action, so tear it down proactively.
+   */
+  private disposeIdlePiAgentIfNeeded(managed: ManagedSession, reason: string): void {
+    if (!managed.agent) return
+    if (managed.isProcessing) return
+    if (managed.messageQueue.length > 0) return
+    if (!this.isPiManagedSession(managed)) return
+    this.disposeManagedAgent(managed, reason)
+  }
+
   private updateSessionLinkIndexes(managed: Pick<ManagedSession, 'id' | 'workspace' | 'slackRef' | 'notionRef'>): void {
     const previous = this.sessionLinkIndexKeys.get(managed.id)
     if (previous?.slackKey) this.removeSessionLinkIndexEntry(this.slackThreadSessionIndex, previous.slackKey, managed.id)
@@ -5416,7 +5465,7 @@ export class SessionManager implements ISessionManager {
 
         // 2. Destroy the agent — the new agent's postInit() will refresh auth
         sessionLog.info(`[auth-retry] Destroying agent for session ${sessionId}`)
-        managed.agent = null
+        this.disposeManagedAgent(managed, 'auth retry')
 
         // 3. Retry the message
         const retryMessage = managed.lastSentMessage
@@ -5583,6 +5632,8 @@ export class SessionManager implements ISessionManager {
         hasUnread: managed.hasUnread,  // Propagate unread state to renderer
       }, managed.workspace.id)
     }
+
+    this.disposeIdlePiAgentIfNeeded(managed, `processing stopped (${reason})`)
 
     // 6. Always persist
     this.persistSession(managed)
@@ -6940,6 +6991,11 @@ export class SessionManager implements ISessionManager {
     // Clean up session-scoped tool callbacks for all sessions
     for (const sessionId of this.sessions.keys()) {
       unregisterSessionScopedToolCallbacks(sessionId)
+    }
+
+    // Dispose live agents so provider subprocesses and callback servers exit cleanly.
+    for (const managed of this.sessions.values()) {
+      this.disposeManagedAgent(managed, 'session manager cleanup')
     }
 
     sessionLog.info('Cleanup complete')

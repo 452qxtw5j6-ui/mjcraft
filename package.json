@@ -57,6 +57,7 @@
     "electron:dist:mac": "bun run electron:build && cd apps/electron && electron-builder --config electron-builder.yml --mac",
     "electron:dist:win": "bun run electron:build && cd apps/electron && electron-builder --config electron-builder.yml --win",
     "electron:dist:linux": "bun run electron:build && cd apps/electron && electron-builder --config electron-builder.yml --linux",
+    "electron:dist:client:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false bun run scripts/electron-prepare-client-packaging.ts && bun run electron:build && cd apps/electron && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.client.yml --mac --arm64",
     "electron:dist:dev:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false CRAFT_DEV_RUNTIME=1 bun run electron:build && cd apps/electron && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.yml --mac",
     "electron:dist:dev:win": "CRAFT_DEV_RUNTIME=1 bun run electron:build && cd apps/electron && electron-builder --config electron-builder.yml --win",
     "electron:dist:dev:linux": "CRAFT_DEV_RUNTIME=1 bun run electron:build && cd apps/electron && electron-builder --config electron-builder.yml --linux",
