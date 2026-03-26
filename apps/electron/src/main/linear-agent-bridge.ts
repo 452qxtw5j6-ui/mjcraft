@@ -48,6 +48,7 @@ interface LinearBridgeSessionManagerLike {
       llmConnection?: string
       model?: string
       labels?: string[]
+      enabledSourceSlugs?: string[]
       workingDirectory?: string | 'user_default' | 'none'
     },
   ): Promise<LinearBridgeSessionLike>
@@ -425,6 +426,14 @@ function resolveCraftBridgeConnectionSlug(workspaceRootPath: string, target: Cra
   return undefined
 }
 
+function resolveCraftBridgeEnabledSourceSlugs(workspaceRootPath: string): string[] | undefined {
+  const defaults = loadWorkspaceConfig(workspaceRootPath)?.defaults?.enabledSourceSlugs
+  if (!Array.isArray(defaults) || defaults.length === 0) return undefined
+
+  const filtered = defaults.filter((slug): slug is string => typeof slug === 'string' && slug !== 'linear-cli')
+  return filtered
+}
+
 export function resolveLinearSessionLabels(workspaceRootPath: string, labels?: string[]): string[] {
   if (!isValidLabelId(workspaceRootPath, 'linear')) return labels ?? []
   return Array.from(new Set(['linear', ...(labels ?? [])]))
@@ -613,11 +622,19 @@ function resolveSecret(value: string | undefined, envName: string | undefined): 
   return ''
 }
 
-function resolveLinearApiTokenFallback(agentConfig: LinearBridgeAgentConfig): string {
+function normalizeEnvSegment(value: string): string {
+  return value
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .toUpperCase()
+}
+
+export function resolveLinearApiTokenFallback(agentConfig: LinearBridgeAgentConfig): string {
   const explicit = resolveSecret(agentConfig.apiToken, agentConfig.apiTokenEnv)
   if (explicit) return explicit
 
-  const slugUpper = agentConfig.slug.toUpperCase()
+  const slugUpper = normalizeEnvSegment(agentConfig.slug)
   const candidates = [
     `LINEAR_${slugUpper}_API_TOKEN`,
     'LINEAR_API_KEY',
@@ -1739,6 +1756,7 @@ export class LinearAgentBridgeService {
         llmConnection: connectionSlug,
         model: agentConfig.target.model,
         labels: resolveLinearSessionLabels(this.workspaceRootPath, agentConfig.target.labels),
+        enabledSourceSlugs: resolveCraftBridgeEnabledSourceSlugs(this.workspaceRootPath),
         workingDirectory: agentConfig.target.workingDirectory,
       })
       if (agentConfig.target.thinkingLevel) {
@@ -1815,12 +1833,23 @@ export class LinearAgentBridgeService {
       throw new Error(latestError || 'Craft session completed without a final assistant reply')
     }
 
-    await this.safeCreateActivity(
+    const activityWritten = await this.safeCreateActivity(
       agentConfig,
       event.agentSessionId,
       'response',
       finalReply,
     )
+    if (!activityWritten && issue?.id) {
+      await this.createIssueComment(agentConfig, issue.id, finalReply)
+      await this.appendEvent({
+        type: 'craft-stage',
+        slug: agentConfig.slug,
+        agentSessionId: event.agentSessionId,
+        issueIdentifier: issue.identifier,
+        stage: 'issue_comment_fallback_written',
+        issueId: issue.id,
+      })
+    }
     await this.appendEvent({
       type: 'craft-stage',
       slug: agentConfig.slug,
@@ -2144,7 +2173,7 @@ export class LinearAgentBridgeService {
     type: 'thought' | 'response' | 'error',
     body: string,
     ephemeral = false,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await this.linearGraphql(agentConfig, `
         mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
@@ -2162,6 +2191,7 @@ export class LinearAgentBridgeService {
           ...(ephemeral ? { ephemeral: true } : {}),
         },
       }, { authMode: 'oauth' })
+      return true
     } catch (error) {
       this.deps.logger.warn('[linear-agent] failed to create activity', {
         slug: agentConfig.slug,
@@ -2169,6 +2199,7 @@ export class LinearAgentBridgeService {
         type,
         error: error instanceof Error ? error.message : String(error),
       })
+      return false
     }
   }
 

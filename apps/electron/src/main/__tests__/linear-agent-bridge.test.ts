@@ -8,6 +8,7 @@ import {
   LinearAgentBridgeService,
   buildLinearInstallUrl,
   normalizeLinearAgentEvent,
+  resolveLinearApiTokenFallback,
   resolveLinearSessionLabels,
 } from '../linear-agent-bridge'
 
@@ -219,6 +220,26 @@ describe('linear-agent bridge helpers', () => {
     expect(labels).toEqual(['linear', 'project::ENG', 'bug'])
   })
 
+  it('normalizes hyphenated craft slugs when resolving api token fallbacks', () => {
+    const previous = process.env.LINEAR_CRAFT_CLAUDE_API_TOKEN
+    process.env.LINEAR_CRAFT_CLAUDE_API_TOKEN = 'lin_api_hyphen_slug'
+
+    expect(resolveLinearApiTokenFallback({
+      slug: 'craft-claude',
+      enabled: true,
+      webhookPath: '/craft-claude',
+      target: {
+        kind: 'craft',
+      },
+    })).toBe('lin_api_hyphen_slug')
+
+    if (previous === undefined) {
+      delete process.env.LINEAR_CRAFT_CLAUDE_API_TOKEN
+    } else {
+      process.env.LINEAR_CRAFT_CLAUDE_API_TOKEN = previous
+    }
+  })
+
   it('overwrites stale bridge config with a minimal Codex config', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-bridge-'))
     const configDir = await mkdtemp(join(tmpdir(), 'linear-agent-config-'))
@@ -372,6 +393,13 @@ describe('linear-agent bridge helpers', () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-default-config-'))
     tempDirs.push(workspaceRoot)
 
+    await mkdir(join(workspaceRoot), { recursive: true })
+    await writeFile(join(workspaceRoot, 'config.json'), JSON.stringify({
+      defaults: {
+        enabledSourceSlugs: ['linear-cli', 'duckdb-cli', 'branch-cli'],
+      },
+    }, null, 2), 'utf-8')
+
     const createCalls: Array<Record<string, unknown> | undefined> = []
     const thinkingCalls: Array<{ sessionId: string; level: string }> = []
     let sentMessage = false
@@ -438,6 +466,7 @@ describe('linear-agent bridge helpers', () => {
 
     expect(createCalls).toHaveLength(1)
     expect(createCalls[0]?.model).toBe('claude-opus-4-6')
+    expect(createCalls[0]?.enabledSourceSlugs).toEqual(['duckdb-cli', 'branch-cli'])
     expect(thinkingCalls).toEqual([{ sessionId: 'session-1', level: 'medium' }])
   })
 
@@ -490,6 +519,7 @@ describe('linear-agent bridge helpers', () => {
     })
     ;(service as any).safeCreateActivity = async () => {
       activityCalls += 1
+      return true
     }
     ;(service as any).createIssueComment = async () => {
       issueComments += 1
@@ -519,6 +549,82 @@ describe('linear-agent bridge helpers', () => {
 
     expect(activityCalls).toBe(1)
     expect(issueComments).toBe(0)
+  })
+
+  it('falls back to an issue comment when Craft activity publishing fails', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-craft-fallback-'))
+    tempDirs.push(workspaceRoot)
+
+    let sentMessage = false
+    let issueComments = 0
+    const service = new LinearAgentBridgeService({
+      workspaceId: 'ws-test',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        async createSession() {
+          return { id: 'session-1' }
+        },
+        async getSession() {
+          if (!sentMessage) return null
+          return {
+            id: 'session-1',
+            messages: [
+              {
+                id: 'assistant-1',
+                role: 'assistant',
+                content: 'Fallback bridge reply',
+                isIntermediate: false,
+              },
+            ],
+          }
+        },
+        async sendMessage() {
+          sentMessage = true
+        },
+      },
+    })
+
+    ;(service as any).appendEvent = async () => {}
+    ;(service as any).safeUpdateExternalUrl = async () => {}
+    ;(service as any).updateSessionMap = async () => {}
+    ;(service as any).fetchIssueSnapshot = async () => ({
+      id: 'issue-1',
+      identifier: 'MJA-102',
+      stateName: 'Todo',
+      comments: [],
+      teamStates: [],
+    })
+    ;(service as any).readConfig = async () => ({
+      publicBaseUrl: '',
+    })
+    ;(service as any).safeCreateActivity = async () => false
+    ;(service as any).createIssueComment = async () => {
+      issueComments += 1
+    }
+
+    await (service as any).handleCraftTarget({
+      slug: 'craft',
+      enabled: true,
+      webhookPath: '/craft',
+      target: {
+        kind: 'craft',
+        namePrefix: 'Linear',
+        permissionMode: 'allow-all',
+        model: 'claude-opus-4-6',
+        thinkingLevel: 'medium',
+        workingDirectory: 'user_default',
+      },
+    }, {
+      action: 'created',
+      eventType: 'AgentSessionEvent',
+      agentSessionId: 'agent-session-3',
+      prompt: 'Investigate the issue',
+      issueId: 'issue-1',
+      issueIdentifier: 'MJA-102',
+      webhookTimestamp: Date.now(),
+    })
+
+    expect(issueComments).toBe(1)
   })
 
   it('uses stored OAuth tokens for agent-session mutations even when an API token is configured', async () => {
