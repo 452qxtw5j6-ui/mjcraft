@@ -213,6 +213,7 @@ export function applyAnthropicRuntimeBootstrap(
   options?: { strict?: boolean },
 ): void {
   const strict = options?.strict ?? true;
+  const interceptorPath = paths.claudeInterceptorPath || paths.interceptorBundlePath;
 
   if (paths.claudeCliPath) {
     setPathToClaudeCodeExecutable(paths.claudeCliPath);
@@ -220,8 +221,8 @@ export function applyAnthropicRuntimeBootstrap(
     throw new Error('Claude Code SDK not found. The app package may be corrupted.');
   }
 
-  if (paths.claudeInterceptorPath) {
-    setInterceptorPath(paths.claudeInterceptorPath);
+  if (interceptorPath) {
+    setInterceptorPath(interceptorPath);
   } else if (strict) {
     throw new Error('Network interceptor not found. The app package may be corrupted.');
   }
@@ -234,4 +235,3 @@ export function applyAnthropicRuntimeBootstrap(
     }
   }
 }
-

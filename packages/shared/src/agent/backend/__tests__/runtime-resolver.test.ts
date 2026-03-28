@@ -3,6 +3,7 @@
  *
  * Verifies:
  * - Packaged server path resolution with dist/resources/ fallback
+ * - Packaged interceptor bundle resolution from dist/interceptor.cjs
  */
 import { describe, it, expect, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -54,5 +55,21 @@ describe('resolveServerPath fallback', () => {
 
     const paths = resolveBackendRuntimePaths(hostRuntime);
     expect(paths.piServerPath).toBe(join(primaryDir, 'index.js'));
+  });
+
+  it('finds packaged interceptor bundle in dist/interceptor.cjs', () => {
+    const appRoot = join(tmpBase, 'app3');
+    const bundlePath = join(appRoot, 'dist', 'interceptor.cjs');
+    mkdirSync(join(appRoot, 'dist'), { recursive: true });
+    writeFileSync(bundlePath, '// interceptor bundle');
+
+    const hostRuntime: BackendHostRuntimeContext = {
+      appRootPath: appRoot,
+      resourcesPath: appRoot,
+      isPackaged: true,
+    };
+
+    const paths = resolveBackendRuntimePaths(hostRuntime);
+    expect(paths.interceptorBundlePath).toBe(bundlePath);
   });
 });
