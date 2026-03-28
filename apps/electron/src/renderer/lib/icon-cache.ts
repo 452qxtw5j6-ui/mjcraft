@@ -454,10 +454,6 @@ function deriveServiceUrl(config: SourceConfig): string | null {
     return config.api.baseUrl
   }
 
-  if (config.type === 'cli') {
-    return null
-  }
-
   return null
 }
 

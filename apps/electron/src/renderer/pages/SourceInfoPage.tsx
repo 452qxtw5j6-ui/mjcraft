@@ -58,10 +58,9 @@ function formatRelativeTime(timestamp?: number): string {
  * Get source URL for display
  */
 function getSourceUrl(source: LoadedSource): string | null {
-  const { type, mcp, api, local, cli } = source.config
+  const { type, mcp, api, local } = source.config
 
   if (type === 'mcp' && mcp?.url) return mcp.url
-  if (type === 'cli' && cli?.command) return [cli.command, ...(cli.args ?? [])].join(' ')
   if (type === 'api' && api?.baseUrl) return api.baseUrl
   if (type === 'local' && local?.path) return local.path
 
@@ -144,9 +143,6 @@ function getConnectionDescription(source: LoadedSource): string {
     }
     return 'Server URL and connection status.'
   }
-  if (type === 'cli') {
-    return 'Local CLI command exposed to the agent as a source tool.'
-  }
   if (type === 'api') {
     return 'Base URL for API requests.'
   }
@@ -163,9 +159,6 @@ function getPermissionsDescription(source: LoadedSource): string {
   const { type } = source.config
 
   if (type === 'mcp') {
-    return 'Tool patterns allowed in Explore mode.'
-  }
-  if (type === 'cli') {
     return 'Tool patterns allowed in Explore mode.'
   }
   if (type === 'api') {
@@ -226,7 +219,7 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
 
   // Load MCP tools when source is loaded and is MCP type
   useEffect(() => {
-    if (!source || (source.config.type !== 'mcp' && source.config.type !== 'cli')) {
+    if (!source || source.config.type !== 'mcp') {
       setMcpTools(null)
       setMcpToolsError(null)
       return
@@ -301,20 +294,15 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
 
   // Compute source URL
   const sourceUrl = useMemo(() => source ? getSourceUrl(source) : null, [source])
-  const isClickableConnection = useMemo(() => {
-    if (!source || !sourceUrl) return false
-    if (source.config.type === 'cli') return false
-    return true
-  }, [source, sourceUrl])
 
   // Build data for PermissionsDataTable
   const apiPermissionsData = useMemo(() => {
-    if (!permissionsConfig || source?.config.type === 'mcp' || source?.config.type === 'cli') return []
+    if (!permissionsConfig || source?.config.type === 'mcp') return []
     return buildApiPermissionsData(permissionsConfig)
   }, [permissionsConfig, source])
 
   const mcpPermissionsData = useMemo(() => {
-    if (!permissionsConfig || (source?.config.type !== 'mcp' && source?.config.type !== 'cli')) return []
+    if (!permissionsConfig || source?.config.type !== 'mcp') return []
     return buildMcpPermissionsData(permissionsConfig)
   }, [permissionsConfig, source])
 
@@ -366,11 +354,6 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
 
   // Get source name for header
   const sourceName = source?.config.name || sourceSlug
-  const connectionLabel = source?.config.type === 'mcp' && source.config.mcp?.url
-    ? 'URL'
-    : source?.config.type === 'local'
-      ? 'Path'
-      : 'Command'
 
   return (
     <Info_Page
@@ -401,11 +384,11 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
           />
 
           {/* Disabled Warning */}
-          {(source.config.mcp?.transport === 'stdio' || source.config.type === 'cli') && !localMcpEnabled && (
+          {source.config.mcp?.transport === 'stdio' && !localMcpEnabled && (
             <Info_Alert variant="warning" icon={<AlertCircle className="h-4 w-4" />}>
               <Info_Alert.Title>Source Disabled</Info_Alert.Title>
               <Info_Alert.Description>
-                Local MCP and CLI sources are disabled in Settings &gt; Advanced.
+                Local MCP servers are disabled in Settings &gt; Advanced.
                 Enable them to use this source.
               </Info_Alert.Description>
             </Info_Alert>
@@ -439,17 +422,13 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
             >
               <Info_Table.Row label="Type" value={source.config.type.toUpperCase()} />
               {sourceUrl && (
-                <Info_Table.Row label={connectionLabel}>
-                  {isClickableConnection ? (
-                    <button
-                      onClick={handleOpenUrl}
-                      className="truncate hover:underline text-foreground focus:outline-none focus-visible:underline text-left block w-full"
-                    >
-                      {sourceUrl}
-                    </button>
-                  ) : (
-                    <span className="block truncate text-foreground">{sourceUrl}</span>
-                  )}
+                <Info_Table.Row label="URL">
+                  <button
+                    onClick={handleOpenUrl}
+                    className="truncate hover:underline text-foreground focus:outline-none focus-visible:underline text-left block w-full"
+                  >
+                    {sourceUrl}
+                  </button>
                 </Info_Table.Row>
               )}
               <Info_Table.Row label="Last Tested" value={formatRelativeTime(source.config.lastTestedAt)} />
@@ -457,7 +436,7 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
           </Info_Section>
 
           {/* Permissions - for API and local sources */}
-          {source.config.type !== 'mcp' && source.config.type !== 'cli' && permissionsConfig && apiPermissionsData.length > 0 && (
+          {source.config.type !== 'mcp' && permissionsConfig && apiPermissionsData.length > 0 && (
             <Info_Section
               title="Permissions"
               description={getPermissionsDescription(source)}
@@ -478,7 +457,7 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
           )}
 
           {/* Tools - for MCP sources */}
-          {(source.config.type === 'mcp' || source.config.type === 'cli') && (
+          {source.config.type === 'mcp' && (
             <Info_Section
               title="Tools"
               description="Operations exposed by this server."
@@ -503,7 +482,7 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
           )}
 
           {/* Permissions - for MCP sources */}
-          {(source.config.type === 'mcp' || source.config.type === 'cli') && permissionsConfig && mcpPermissionsData.length > 0 && (
+          {source.config.type === 'mcp' && permissionsConfig && mcpPermissionsData.length > 0 && (
             <Info_Section
               title="Permissions"
               description={getPermissionsDescription(source)}

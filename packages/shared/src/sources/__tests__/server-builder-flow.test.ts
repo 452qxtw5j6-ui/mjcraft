@@ -124,37 +124,6 @@ describe('SourceServerBuilder.buildApiConfig', () => {
       'X-Custom-Header': 'custom-value',
     });
   });
-
-  test('should build CLI MCP config for transport=cli', () => {
-    const source = {
-      ...createMockSource({
-        type: 'cli',
-        cli: {
-          command: 'gws',
-          args: ['drive'],
-          env: { GOOGLE_WORKSPACE_CLI_TOKEN: 'masked' },
-          cwd: '/tmp/gws',
-          timeoutMs: 45000,
-        },
-      }),
-      config: {
-        ...createMockSource({
-          type: 'cli',
-          cli: {
-            command: 'gws',
-            args: ['drive'],
-            env: { GOOGLE_WORKSPACE_CLI_TOKEN: 'masked' },
-            cwd: '/tmp/gws',
-            timeoutMs: 45000,
-          },
-        }).config,
-      },
-    };
-
-    const config = builder.buildCliServer(source);
-
-    expect(config).toBeTruthy();
-  });
 });
 
 describe('buildHeaders with MultiHeaderCredential', () => {

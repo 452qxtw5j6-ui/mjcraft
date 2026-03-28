@@ -287,7 +287,7 @@ function buildManifestParamSchema(paramName: string, param: CliManifestParam): z
     default:
       schema = z.string();
       if (param.enum?.length) {
-        schema = schema.refine((value) => param.enum!.includes(value as string), {
+        schema = schema.refine((value) => typeof value === 'string' && param.enum!.includes(value), {
           message: `${paramName} must be one of: ${param.enum.join(', ')}`,
         });
       }

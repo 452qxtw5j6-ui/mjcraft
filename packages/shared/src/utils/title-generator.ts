@@ -47,8 +47,11 @@ export function sanitizeLanguage(language?: string): string | undefined {
  * Explicit preference takes priority; otherwise auto-detect from message content.
  */
 function buildLanguageInstruction(language?: string): string {
-  void language
-  return 'Always write the title in Korean.';
+  const safe = sanitizeLanguage(language);
+  if (safe) {
+    return `Reply in ${safe}.`;
+  }
+  return 'Reply in the same language as the user\'s messages.';
 }
 
 /**

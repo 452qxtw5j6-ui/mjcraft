@@ -43,8 +43,7 @@ import { PiEventAdapter } from './backend/pi/event-adapter.ts';
 import { EventQueue } from './backend/event-queue.ts';
 
 // System prompt for Craft Agent context
-import { getSystemPrompt } from '../prompts/system.ts';
-import { resolvePromptGuidanceProfile } from '../prompts/system.ts';
+import { getSystemPrompt, resolvePromptGuidanceProfile } from '../prompts/system.ts';
 
 // Credential manager for token storage
 import { getCredentialManager } from '../credentials/manager.ts';
@@ -146,6 +145,17 @@ export class PiAgent extends BaseAgent {
   // Event queue for streaming (AsyncGenerator pattern -- shared with CodexAgent/CopilotAgent)
   private eventQueue = new EventQueue();
 
+  // Error deduplication — suppress identical consecutive errors after a threshold
+  // to prevent a broken subprocess from flooding the user's session.
+  private lastSubprocessError: string | null = null;
+  private subprocessErrorRepeatCount = 0;
+  private static readonly MAX_IDENTICAL_SUBPROCESS_ERRORS = 3;
+
+  private resetSubprocessErrorDedup(): void {
+    this.lastSubprocessError = null;
+    this.subprocessErrorRepeatCount = 0;
+  }
+
   // Pending permission requests (used by handlePreToolUseRequest for ask-mode prompting)
   private pendingPermissions: Map<string, {
     resolve: (allowed: boolean) => void;
@@ -235,6 +245,9 @@ export class PiAgent extends BaseAgent {
     if (modelDef?.contextWindow) {
       this.adapter.setContextWindow(modelDef.contextWindow);
     }
+    if (config.miniModel) {
+      this.adapter.setMiniModel(config.miniModel);
+    }
 
     // Set session dir on adapter for concurrent-safe toolMetadataStore lookups
     if (config.session?.id && config.workspace.rootPath) {
@@ -293,6 +306,7 @@ export class PiAgent extends BaseAgent {
     const cwd = this.resolvedCwd();
 
     this.debug(`Spawning Pi subprocess: ${nodePath} ${piServerPath}`);
+    this.resetSubprocessErrorDedup();
 
     // Set up ready promise before spawning
     this.subprocessReady = new Promise<void>((resolve) => {
@@ -384,6 +398,7 @@ export class PiAgent extends BaseAgent {
 
     child.on('error', (error) => {
       this.debug(`Subprocess error: ${error.message}`);
+      this.resetSubprocessErrorDedup();
       this.eventQueue.enqueue({ type: 'error', message: `Pi subprocess error: ${error.message}` });
       this.eventQueue.complete();
     });
@@ -443,7 +458,7 @@ export class PiAgent extends BaseAgent {
     if (this.config.miniModel) {
       const callLlmDef = sessionToolDefs.find(d => d.name === 'mcp__session__call_llm');
       if (callLlmDef) {
-        callLlmDef.description += `\n\nDefault secondary model for this session: ${this.config.miniModel}. Omit the model parameter to use it automatically.`;
+        callLlmDef.description += `\n\nDefault fast model for this session: ${this.config.miniModel}. Omit the model parameter to use it automatically.`;
       }
     }
 
@@ -749,6 +764,10 @@ export class PiAgent extends BaseAgent {
 
     const type = msg.type as string;
 
+    if (type !== 'error') {
+      this.resetSubprocessErrorDedup();
+    }
+
     switch (type) {
       case 'ready':
         // Subprocess initialized, callback server listening
@@ -866,6 +885,19 @@ export class PiAgent extends BaseAgent {
         for (const [id, pending] of this.pendingAutoCompactionToggles) {
           pending.reject(new Error(rawMessage));
           this.pendingAutoCompactionToggles.delete(id);
+        }
+
+        // Suppress repeated identical errors to prevent a broken subprocess
+        // from flooding the user's session (e.g. EFAULT loop).
+        if (rawMessage === this.lastSubprocessError) {
+          this.subprocessErrorRepeatCount++;
+          if (this.subprocessErrorRepeatCount > PiAgent.MAX_IDENTICAL_SUBPROCESS_ERRORS) {
+            this.debug(`Suppressing repeated subprocess error (${this.subprocessErrorRepeatCount}x): ${rawMessage}`);
+            break;
+          }
+        } else {
+          this.lastSubprocessError = rawMessage;
+          this.subprocessErrorRepeatCount = 1;
         }
 
         const parsed = parseError(new Error(rawMessage));
@@ -1246,11 +1278,8 @@ export class PiAgent extends BaseAgent {
     }
 
     // Unknown tool
-    const mcpHint = toolName.startsWith('mcp__')
-      ? 'MCP source tools use `mcp__sources__{slug}__{tool}`. Try `mcp__sources__{slug}__list_tools` or confirm the source is enabled for this session.'
-      : 'Check the available tool list and use the exact tool name exposed in this session.';
     return {
-      content: `[ERROR] Unknown proxy tool: ${toolName}. ${mcpHint}`,
+      content: `Unknown proxy tool: ${toolName}`,
       isError: true,
     };
   }
@@ -1485,6 +1514,7 @@ export class PiAgent extends BaseAgent {
 
     this.subprocess = null;
     this.readline = null;
+    this.resetSubprocessErrorDedup();
     this.subprocessReady = null;
     this.subprocessReadyResolve = null;
 
@@ -1733,7 +1763,7 @@ export class PiAgent extends BaseAgent {
         backendName: 'Craft Agents Backend',
         providerType: this.config.providerType,
         piAuthProvider,
-        model: this._model,
+        model: this.config.model,
       }).capabilities;
 
       const systemPrompt = getSystemPrompt(
@@ -2063,7 +2093,7 @@ export class PiAgent extends BaseAgent {
    * Run a simple text completion via the subprocess.
    * Sends a mini_completion request and waits for the result.
    */
-  private async runSubprocessCompletion(prompt: string, model?: string): Promise<string | null> {
+  async runMiniCompletion(prompt: string): Promise<string | null> {
     // If subprocess isn't running, spawn it
     await this.ensureSubprocess();
 
@@ -2072,7 +2102,7 @@ export class PiAgent extends BaseAgent {
       this.pendingMiniCompletions.set(id, { resolve, reject });
     });
 
-    this.send({ type: 'mini_completion', id, prompt, model });
+    this.send({ type: 'mini_completion', id, prompt });
 
     // Keep this aligned with the subprocess-side queryLlm timeout.
     const timeout = new Promise<string | null>((resolve) => {
@@ -2090,10 +2120,6 @@ export class PiAgent extends BaseAgent {
     return text;
   }
 
-  async runMiniCompletion(prompt: string): Promise<string | null> {
-    return this.runSubprocessCompletion(prompt, this.config.miniModel);
-  }
-
   /**
    * Execute an LLM query via the subprocess.
    * Used by session-scoped tool callbacks (call_llm).
@@ -2101,11 +2127,10 @@ export class PiAgent extends BaseAgent {
   async queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
     this.debug('[PiAgent.queryLlm] Starting');
 
-    const effectiveModel = request.model || this.config.miniModel;
-    const text = await this.runSubprocessCompletion(request.prompt, effectiveModel);
+    const text = await this.runMiniCompletion(request.prompt);
     return {
       text: text || '',
-      model: effectiveModel || '',
+      model: request.model || this.config.miniModel || '',
     };
   }
 

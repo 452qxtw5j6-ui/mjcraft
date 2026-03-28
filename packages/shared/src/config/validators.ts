@@ -365,7 +365,7 @@ import { getWorkspaceSourcesPath } from '../workspaces/storage.ts';
 
 // --- sources/{slug}/config.json ---
 
-const SourceTypeSchema = z.enum(['mcp', 'api', 'local', 'cli']);
+const SourceTypeSchema = z.enum(['mcp', 'api', 'local']);
 
 // MCP source supports two transport types:
 // - HTTP/SSE: requires url and authType
@@ -376,7 +376,7 @@ const McpSourceConfigSchema = z.object({
   url: z.string().url().optional(),
   authType: z.enum(['oauth', 'bearer', 'none']).optional(),
   clientId: z.string().optional(),
-  // Local MCP process fields
+  // Stdio fields
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -387,7 +387,7 @@ const McpSourceConfigSchema = z.object({
 }).refine(
   (data) => {
     if (data.transport === 'stdio') {
-      // Local MCP process requires command
+      // Stdio transport requires command
       return !!data.command;
     } else {
       // HTTP/SSE transport (default) requires url and authType
@@ -422,14 +422,6 @@ const LocalSourceConfigSchema = z.object({
   format: z.string().optional(),
 });
 
-const CliSourceConfigSchema = z.object({
-  command: z.string().min(1),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  cwd: z.string().optional(),
-  timeoutMs: z.number().int().positive().optional(),
-});
-
 // Source brand schema
 const SourceBrandSchema = z.object({
   color: EntityColorSchema.optional(),
@@ -445,7 +437,6 @@ export const FolderSourceConfigSchema = z.object({
   mcp: McpSourceConfigSchema.optional(),
   api: ApiSourceConfigSchema.optional(),
   local: LocalSourceConfigSchema.optional(),
-  cli: CliSourceConfigSchema.optional(),
   brand: SourceBrandSchema.optional(),
   isAuthenticated: z.boolean().optional(),
   lastTestedAt: z.number().int().min(0).optional(),
@@ -460,10 +451,9 @@ export const FolderSourceConfigSchema = z.object({
       case 'mcp': return !!data.mcp;
       case 'api': return !!data.api;
       case 'local': return !!data.local;
-      case 'cli': return !!data.cli;
     }
   },
-  { message: 'Config must include type-specific configuration (mcp, api, local, or cli)' }
+  { message: 'Config must include type-specific configuration (mcp, api, or local)' }
 );
 
 /**

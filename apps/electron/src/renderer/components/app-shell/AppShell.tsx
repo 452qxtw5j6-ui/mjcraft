@@ -22,7 +22,6 @@ import {
   Inbox,
   Globe,
   FolderOpen,
-  Terminal,
   Cake,
   Calendar,
   Layers,
@@ -85,7 +84,7 @@ import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
 import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, LoadedPersona, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
-import { sessionMetaMapAtom, type SessionMeta } from "@/atoms/sessions"
+import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
@@ -93,9 +92,11 @@ import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuse
 import { useStatuses } from "@/hooks/useStatuses"
 import { useLabels } from "@/hooks/useLabels"
 import { useViews } from "@/hooks/useViews"
+import { useContainerWidth } from "@/hooks/useContainerWidth"
 import { LabelIcon, LabelValueTypeIcon } from "@/components/ui/label-icon"
-import { filterItems as filterLabelMenuItems, filterSessionStatuses as filterLabelMenuStates, type LabelMenuItem } from "@/components/ui/label-menu"
-import { buildLabelTree, getDescendantIds, getLabelDisplayName, flattenLabels, extractLabelId, findLabelById } from "@craft-agent/shared/labels"
+import { filterSessionStatuses as filterLabelMenuStates } from "@/components/ui/label-menu"
+import { createLabelMenuItems, filterItems as filterLabelMenuItems, type LabelMenuItem } from "@/components/ui/label-menu-utils"
+import { buildLabelTree, getDescendantIds, getLabelDisplayName, flattenLabels, extractLabelId, findLabelById, sortLabelsForDisplay } from "@craft-agent/shared/labels"
 import type { LabelConfig, LabelTreeNode } from "@craft-agent/shared/labels"
 import { resolveEntityColor } from "@craft-agent/shared/colors"
 import * as storage from "@/lib/local-storage"
@@ -119,6 +120,7 @@ import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO
 import { useAutomations } from "@/hooks/useAutomations"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
+import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
 import {
@@ -134,7 +136,6 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
-import { dispatchOpenModelMenuEvent } from "./input/open-model-menu-events"
 import { buildLinearQuickIssuePrompt, resolveLinearQuickIssueDefaults } from "./linear-quick-issue"
 
 /**
@@ -541,7 +542,16 @@ function AppShellContent({
   const [isSidebarAndNavigatorHidden, setIsSidebarAndNavigatorHidden] = React.useState(() => {
     return isFocusedMode || storage.get(storage.KEYS.focusModeEnabled, false)
   })
-  const effectiveSidebarAndNavigatorHidden = isSidebarAndNavigatorHidden
+
+  // Auto-compact mode: shell width below mobile threshold hides sidebar/navigator
+  // and switches to single-panel mode. Works in both webui (narrow viewport) and
+  // desktop (narrow window or small screen).
+  const shellRef = useRef<HTMLDivElement>(null)
+  const shellWidth = useContainerWidth(shellRef)
+  const MOBILE_THRESHOLD = 768
+  const isAutoCompact = shellWidth > 0 && shellWidth < MOBILE_THRESHOLD
+
+  const effectiveSidebarAndNavigatorHidden = isSidebarAndNavigatorHidden || isAutoCompact
 
   // What's New overlay
   const [showWhatsNew, setShowWhatsNew] = React.useState(false)
@@ -822,6 +832,13 @@ function AppShellContent({
   const [personas, setPersonas] = React.useState<LoadedPersona[]>([])
   // Automations — state, handlers, loading, subscriptions
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
+
+  // Send to Workspace dialog state (driven by sendToWorkspaceAtom set from SessionMenu/BatchSessionMenu)
+  const sendToWorkspaceIds = useAtomValue(sendToWorkspaceAtom)
+  const setSendToWorkspaceIds = useSetAtom(sendToWorkspaceAtom)
+  const handleTransferComplete = useCallback((targetWorkspaceId: string, _newSessionIds: string[]) => {
+    onSelectWorkspace(targetWorkspaceId)
+  }, [onSelectWorkspace])
   const {
     automations, automationTestResults,
     automationPendingDelete, pendingDeleteAutomation, setAutomationPendingDelete,
@@ -991,37 +1008,20 @@ function AppShellContent({
 
   // Load labels from workspace config
   const { labels: labelConfigs } = useLabels(activeWorkspace?.id || null)
+  const displayLabelConfigs = useMemo(() => sortLabelsForDisplay(labelConfigs), [labelConfigs])
 
   // Views: compiled once on config load, evaluated per session in list/chat
   const { evaluateSession: evaluateViews, viewConfigs } = useViews(activeWorkspace?.id || null)
 
-  // Build hierarchical label tree from nested config structure
-  const labelTree = useMemo(() => buildLabelTree(labelConfigs), [labelConfigs])
+  // Build hierarchical label tree from the display-sorted label config structure
+  const labelTree = useMemo(() => buildLabelTree(displayLabelConfigs), [displayLabelConfigs])
 
-  // Build flat LabelMenuItem[] from hierarchical labelConfigs for the filter dropdown's search mode.
-  // Uses the same structure as the # inline menu so we can reuse filterItems().
-  const flatLabelMenuItems = useMemo((): LabelMenuItem[] => {
-    const flat = flattenLabels(labelConfigs)
-    // Build parent path breadcrumbs for nested labels
-    const findParentPath = (tree: LabelConfig[], targetId: string, path: string[]): string[] | null => {
-      for (const node of tree) {
-        if (node.id === targetId) return path
-        if (node.children) {
-          const result = findParentPath(node.children, targetId, [...path, node.name])
-          if (result) return result
-        }
-      }
-      return null
-    }
-    return flat.map(label => {
-      let parentPath: string | undefined
-      const pathParts = findParentPath(labelConfigs, label.id, [])
-      if (pathParts && pathParts.length > 0) {
-        parentPath = pathParts.join(' / ') + ' / '
-      }
-      return { id: label.id, label: label.name, config: label, parentPath }
-    })
-  }, [labelConfigs])
+  // Build flat LabelMenuItem[] from hierarchical labels for the filter dropdown's search mode.
+  // Uses the same structure as the # inline menu so the two search surfaces stay aligned.
+  const flatLabelMenuItems = useMemo(
+    (): LabelMenuItem[] => createLabelMenuItems(displayLabelConfigs),
+    [displayLabelConfigs],
+  )
 
   // Filter dropdown keyboard navigation: tracks highlighted item index in flat search mode.
   // Unified index: [0..matchedStates-1] = statuses, [matchedStates..total-1] = labels.
@@ -1167,26 +1167,12 @@ function AppShellContent({
   useAction('chat.prevSearchMatch', () => chatDisplayRef.current?.goToPrevMatch(), {
     enabled: () => searchActive && (chatMatchInfo.count ?? 0) > 0
   })
-  useAction('chat.openModelThinkingMenu', () => {
-    if (effectiveSessionId) {
-      dispatchOpenModelMenuEvent({ sessionId: effectiveSessionId })
-    }
-  }, {
-    enabled: () => !!effectiveSessionId
-  }, [effectiveSessionId])
   useAction('chat.openLinearQuickIssue', () => {
     setLinearQuickIssueAnchor(lastPointerPositionRef.current)
     setLinearQuickIssueOpen(true)
   }, {
     enabled: () => !!activeWorkspace && !hasOpenOverlay()
   }, [activeWorkspace])
-  useAction('chat.deleteCurrentSession', () => {
-    if (effectiveSessionId) {
-      void contextValue.onDeleteSession(effectiveSessionId)
-    }
-  }, {
-    enabled: () => !!effectiveSessionId && !hasOpenOverlay()
-  }, [effectiveSessionId, contextValue.onDeleteSession])
 
   // ESC to stop processing - requires double-press within 1 second
   // First press shows warning overlay, second press interrupts
@@ -1325,8 +1311,8 @@ function AppShellContent({
   // Workspace-level unread indicators (needed for workspace selectors across all workspaces)
   const [workspaceUnreadMap, setWorkspaceUnreadMap] = useState<Record<string, boolean>>({})
 
-  // Reload skills when active session's workingDirectory changes.
-  // Skills are loaded from the workspace skills directory only.
+  // Reload skills when active session's workingDirectory changes (for project-level skills)
+  // Skills are loaded from: global (~/.agents/skills/), workspace, and project ({workingDirectory}/.agents/skills/)
   const activeSessionWorkingDirectory = session.selected
     ? sessionMetaMap.get(session.selected)?.workingDirectory
     : undefined
@@ -1358,12 +1344,16 @@ function AppShellContent({
 
   // Filter session metadata by active workspace
   // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
+  // For remote workspaces, sessions have the remote workspace ID (not the local one),
+  // so we match against both the local and remote workspace IDs.
+  const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId
   const workspaceSessionMetas = useMemo(() => {
     const metas = Array.from(sessionMetaMap.values())
-    return activeWorkspaceId
-      ? metas.filter(s => s.workspaceId === activeWorkspaceId && !s.hidden)
-      : metas.filter(s => !s.hidden)
-  }, [sessionMetaMap, activeWorkspaceId])
+    if (!activeWorkspaceId) return metas.filter(s => !s.hidden)
+    return metas.filter(s =>
+      !s.hidden && (s.workspaceId === activeWorkspaceId || (remoteWorkspaceId && s.workspaceId === remoteWorkspaceId))
+    )
+  }, [sessionMetaMap, activeWorkspaceId, remoteWorkspaceId])
 
   // Active sessions exclude archived - use this for all counts and filters except archived view
   const activeSessionMetas = useMemo(() => {
@@ -1460,10 +1450,10 @@ function AppShellContent({
 
   // Count sources by type for the Sources dropdown subcategories
   const sourceTypeCounts = useMemo(() => {
-    const counts = { api: 0, mcp: 0, cli: 0, local: 0 }
+    const counts = { api: 0, mcp: 0, local: 0 }
     for (const source of sources) {
       const t = source.config.type
-      if (t === 'api' || t === 'mcp' || t === 'local' || t === 'cli') {
+      if (t === 'api' || t === 'mcp' || t === 'local') {
         counts[t]++
       }
     }
@@ -1623,8 +1613,9 @@ function AppShellContent({
     onDeleteSession: handleDeleteSession,
     enabledSources: sources,
     skills,
+    activeSessionWorkingDirectory,
     personas,
-    labels: labelConfigs,
+    labels: displayLabelConfigs,
     onSessionLabelsChange: handleSessionLabelsChange,
     onSessionPersonaChange: handleSessionPersonaChange,
     enabledModes,
@@ -1643,7 +1634,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, personas, labelConfigs, handleSessionLabelsChange, handleSessionPersonaChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, activeSessionWorkingDirectory, personas, displayLabelConfigs, handleSessionLabelsChange, handleSessionPersonaChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -1741,10 +1732,6 @@ function AppShellContent({
     navigate(routes.view.sourcesLocal())
   }, [])
 
-  const handleSourcesCliClick = useCallback(() => {
-    navigate(routes.view.sourcesCli())
-  }, [])
-
   // Handler for skills view
   const handleSkillsClick = useCallback(() => {
     navigate(routes.view.skills())
@@ -1791,8 +1778,8 @@ function AppShellContent({
   // State to control which EditPopover is open (triggered from context menus).
   // We use controlled popovers instead of deep links so the user can type
   // their request in the popover UI before opening a new chat window.
-  // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-cli, add-source-local
-  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'labels' | 'views' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-cli' | 'add-source-local' | 'add-skill' | 'add-label' | 'automation-config' | null>(null)
+  // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-local
+  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'labels' | 'views' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-skill' | 'add-label' | 'automation-config' | null>(null)
 
   // Stores the Y position of the last right-clicked sidebar item so the EditPopover
   // appears near it rather than at a fixed location. Updated synchronously before
@@ -1905,7 +1892,7 @@ function AppShellContent({
   // Handler for "Add Source" context menu action
   // Opens the EditPopover for adding a new source
   // Optional sourceType param allows filter-aware context (from subcategory menus or filtered views)
-  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local' | 'cli') => {
+  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local') => {
     captureContextMenuPosition()
     const key = sourceType ? `add-source-${sourceType}` as const : 'add-source' as const
     setTimeout(() => setEditPopoverOpen(key), 50)
@@ -2181,17 +2168,11 @@ function AppShellContent({
     }
   }, [navState, sessionFilter, effectiveSessionStatuses, labelConfigs, viewConfigs, automationFilter])
 
-  // Build recursive sidebar items from label tree.
+  // Build recursive sidebar items from the shared display-sorted label tree.
   // Each node renders with condensed height (compact: true) since many labels expected.
   // Clicking any label navigates to its filter view; the chevron toggles expand/collapse.
   const buildLabelSidebarItems = useCallback((nodes: LabelTreeNode[]): any[] => {
-    // Sort labels alphabetically by display name at every level (parent + children)
-    const sorted = [...nodes].sort((a, b) => {
-      const nameA = (a.label?.name || a.segment).toLowerCase()
-      const nameB = (b.label?.name || b.segment).toLowerCase()
-      return nameA.localeCompare(nameB)
-    })
-    return sorted.map(node => {
+    return nodes.map(node => {
       const hasChildren = node.children.length > 0
       const isActive = sessionFilter?.kind === 'label' && sessionFilter.labelId === node.fullId
       const count = labelCounts[node.fullId] || 0
@@ -2252,6 +2233,7 @@ function AppShellContent({
           onSelectWorkspace={onSelectWorkspace}
           workspaceUnreadMap={workspaceUnreadMap}
           onWorkspaceCreated={() => onRefreshWorkspaces?.()}
+          onWorkspaceRemoved={() => onRefreshWorkspaces?.()}
           activeSessionId={effectiveSessionId}
           onNewChat={() => handleNewChat()}
           onNewWindow={() => window.electronAPI.menuNewWindow()}
@@ -2267,10 +2249,12 @@ function AppShellContent({
           onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
           onAddSessionPanel={() => handleNewChat(true)}
           onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
+          isCompact={isAutoCompact}
         />
 
       {/* === OUTER LAYOUT: Unified Panel Stack | Right Sidebar === */}
       <div
+        ref={shellRef}
         className="flex items-stretch relative"
         style={{ height: '100%', paddingRight: PANEL_EDGE_INSET, paddingBottom: PANEL_EDGE_INSET, paddingLeft: 0, gap: PANEL_GAP }}
       >
@@ -2471,19 +2455,6 @@ function AppShellContent({
                             sourceType: 'local',
                           },
                         },
-                        {
-                          id: "nav:sources:cli",
-                          title: "CLI",
-                          label: String(sourceTypeCounts.cli),
-                          icon: Terminal,
-                          variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'cli') ? "default" : "ghost",
-                          onClick: handleSourcesCliClick,
-                          contextMenu: {
-                            type: 'sources' as const,
-                            onAddSource: () => openAddSource('cli'),
-                            sourceType: 'cli',
-                          },
-                        },
                       ],
                     },
                     {
@@ -2578,7 +2549,7 @@ function AppShellContent({
           sidebarWidth={effectiveSidebarAndNavigatorHidden ? 0 : (isSidebarVisible ? sidebarWidth : 0)}
           navigatorSlot={
             <div
-              style={{ width: sessionListWidth }}
+              style={{ width: isAutoCompact ? '100%' : sessionListWidth }}
               className="h-full flex flex-col min-w-0 relative z-panel"
             >
             <PanelHeader
@@ -2924,7 +2895,7 @@ function AppShellContent({
                                   </StyledDropdownMenuItem>
                                 ) : (
                                   <FilterLabelItems
-                                    labels={labelConfigs}
+                                    labels={displayLabelConfigs}
                                     labelFilter={labelFilter}
                                     setLabelFilter={setLabelFilter}
                                     pinnedLabelId={pinnedFilters.pinnedLabelId}
@@ -3293,7 +3264,7 @@ function AppShellContent({
                   }}
                   sessionStatuses={effectiveSessionStatuses}
                   evaluateViews={evaluateViews}
-                  labels={labelConfigs}
+                  labels={displayLabelConfigs}
                   onLabelsChange={handleSessionLabelsChange}
                   groupingMode={chatGroupingMode}
                   workspaceId={activeWorkspaceId ?? undefined}
@@ -3307,9 +3278,10 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={effectiveSidebarAndNavigatorHidden ? 0 : sessionListWidth}
+          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
+          isCompact={isAutoCompact}
           isResizing={!!isResizing}
         />
 
@@ -3505,9 +3477,9 @@ function AppShellContent({
             {...getEditConfig('edit-views', activeWorkspace.rootPath)}
           />
           {/* Add Source EditPopovers - one for each variant (generic + filter-specific)
-           * editPopoverOpen can be: 'add-source', 'add-source-api', 'add-source-mcp', 'add-source-cli', 'add-source-local'
+           * editPopoverOpen can be: 'add-source', 'add-source-api', 'add-source-mcp', 'add-source-local'
            * Each variant uses its corresponding EditContextKey for filter-aware agent context */}
-          {(['add-source', 'add-source-api', 'add-source-mcp', 'add-source-cli', 'add-source-local'] as const).map((variant) => (
+          {(['add-source', 'add-source-api', 'add-source-mcp', 'add-source-local'] as const).map((variant) => (
             <EditPopover
               key={variant}
               open={editPopoverOpen === variant}
@@ -3619,6 +3591,16 @@ function AppShellContent({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Send to Workspace dialog (driven by sendToWorkspaceAtom) */}
+      <SendToWorkspaceDialog
+        open={sendToWorkspaceIds.length > 0}
+        onOpenChange={(open) => { if (!open) setSendToWorkspaceIds([]) }}
+        sessionIds={sendToWorkspaceIds}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onTransferComplete={handleTransferComplete}
+      />
 
     </AppShellProvider>
   )

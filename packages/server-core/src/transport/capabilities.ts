@@ -5,7 +5,6 @@
  */
 
 import type { RpcServer } from './types'
-import type { FileAttachment, RemoteBrowserInvokeArgs, RemoteBrowserInvokeResult } from '@craft-agent/shared/protocol'
 
 /** Capability: open a URL in the client's default browser. */
 export const CLIENT_OPEN_EXTERNAL = 'client:openExternal'
@@ -21,9 +20,6 @@ export const CLIENT_CONFIRM_DIALOG = 'client:confirmDialog'
 
 /** Capability: show a native file/folder picker on the client. */
 export const CLIENT_OPEN_FILE_DIALOG = 'client:openFileDialog'
-export const CLIENT_BROWSER_HOST_INVOKE = 'client:browserHost.invoke'
-export const CLIENT_READ_FILE_ATTACHMENT = 'client:readFileAttachment'
-export const CLIENT_SAVE_FILE = 'client:saveFile'
 
 /** All capabilities a local Electron client advertises on handshake. */
 export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
@@ -32,9 +28,6 @@ export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
   CLIENT_SHOW_IN_FOLDER,
   CLIENT_CONFIRM_DIALOG,
   CLIENT_OPEN_FILE_DIALOG,
-  CLIENT_BROWSER_HOST_INVOKE,
-  CLIENT_READ_FILE_ATTACHMENT,
-  CLIENT_SAVE_FILE,
 ]
 
 // ---------------------------------------------------------------------------
@@ -134,28 +127,4 @@ export async function requestClientOpenFileDialog(
   spec: FileDialogSpec,
 ): Promise<{ canceled: boolean; filePaths: string[] }> {
   return await server.invokeClient(clientId, CLIENT_OPEN_FILE_DIALOG, spec)
-}
-
-export async function requestClientBrowserHost(
-  server: RpcServer,
-  clientId: string,
-  request: RemoteBrowserInvokeArgs,
-): Promise<RemoteBrowserInvokeResult> {
-  return await server.invokeClient(clientId, CLIENT_BROWSER_HOST_INVOKE, request)
-}
-
-export async function requestClientReadFileAttachment(
-  server: RpcServer,
-  clientId: string,
-  path: string,
-): Promise<FileAttachment | null> {
-  return await server.invokeClient(clientId, CLIENT_READ_FILE_ATTACHMENT, path)
-}
-
-export async function requestClientSaveFile(
-  server: RpcServer,
-  clientId: string,
-  args: { suggestedName: string; base64: string },
-): Promise<{ canceled: boolean; path?: string }> {
-  return await server.invokeClient(clientId, CLIENT_SAVE_FILE, args)
 }

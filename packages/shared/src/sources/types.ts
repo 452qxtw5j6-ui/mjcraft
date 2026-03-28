@@ -211,7 +211,8 @@ export function isOAuthSource(source: LoadedSource): boolean {
 export type McpTransport = 'http' | 'sse' | 'stdio';
 
 /**
- * MCP-specific configuration.
+ * MCP-specific configuration
+ * Supports both HTTP-based and local stdio-based MCP servers.
  */
 export interface McpSourceConfig {
   /**

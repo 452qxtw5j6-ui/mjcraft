@@ -12,7 +12,7 @@
 
 import type { PermissionMode } from '../../shared/types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
-import { DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
+import { DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
 
 /**
  * All session-scoped options in one place.
@@ -35,25 +35,15 @@ export const defaultSessionOptions: SessionOptions = {
 /** Type for partial updates to session options */
 export type SessionOptionUpdates = Partial<SessionOptions>
 
-export function resolveSessionThinkingLevel(value: unknown): ThinkingLevel {
-  return normalizeThinkingLevel(value) ?? DEFAULT_THINKING_LEVEL
-}
-
-export function normalizeSessionOptions(options: Partial<SessionOptions> | undefined): SessionOptions {
-  return {
-    ...defaultSessionOptions,
-    ...options,
-    thinkingLevel: resolveSessionThinkingLevel(options?.thinkingLevel),
-  }
-}
-
 /** Helper to merge session options with updates */
 export function mergeSessionOptions(
   current: SessionOptions | undefined,
   updates: SessionOptionUpdates
 ): SessionOptions {
-  return normalizeSessionOptions({
+  return {
+    ...defaultSessionOptions,
     ...current,
     ...updates,
-  })
+  }
 }
+

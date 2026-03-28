@@ -221,6 +221,18 @@ export interface CoreBackendConfig {
   markBranchSeedApplied?: () => void;
 
   /**
+   * Callback to get branch fallback messages for backends that need a second-path
+   * recovery context when the SDK transcript cannot be resumed.
+   */
+  getBranchFallbackMessages?: () => RecoveryMessage[];
+
+  /** One-shot hidden summary to inject on the first turn of a transferred session. */
+  getTransferredSessionSummary?: () => string | null;
+
+  /** Callback invoked after transferred session summary has been injected. */
+  markTransferredSessionSummaryApplied?: () => void;
+
+  /**
    * Optional callback to resize an oversized image for API compatibility.
    * Called from PreToolUse when Read targets an image exceeding the base64 size limit.
    * Returns path to the resized temp file, or null if resize not possible.

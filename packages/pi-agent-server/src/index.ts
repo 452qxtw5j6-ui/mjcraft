@@ -47,9 +47,16 @@ import type { TextContent as PiTextContent } from '@mariozechner/pi-ai';
 // Pre-register the Bedrock provider module so the Pi SDK doesn't attempt a
 // dynamic import of "./amazon-bedrock.js" — which fails in the bundled output
 // because bun collapses everything into a single file.
+// Both @mariozechner/pi-ai AND the nested copy inside @mariozechner/pi-agent-core
+// have separate module-scoped state, so we must register with both.
 import { setBedrockProviderModule } from '@mariozechner/pi-ai';
 import { bedrockProviderModule } from '@mariozechner/pi-ai/bedrock-provider';
 setBedrockProviderModule(bedrockProviderModule);
+
+// Register for the pi-agent-core's nested pi-ai copy (separate module scope in bundle)
+import { setBedrockProviderModule as setBedrockProviderModule2 } from '@mariozechner/pi-agent-core/node_modules/@mariozechner/pi-ai/dist/providers/register-builtins.js';
+import { bedrockProviderModule as bedrockProviderModule2 } from '@mariozechner/pi-agent-core/node_modules/@mariozechner/pi-ai/bedrock-provider';
+setBedrockProviderModule2(bedrockProviderModule2);
 
 // Model resolution (extracted for testability + custom-endpoint precedence)
 import { resolvePiModel } from './model-resolution.ts';
@@ -112,7 +119,7 @@ type InboundMessage =
   | { type: 'tool_execute_response'; requestId: string; result: { content: string; isError: boolean } }
   | { type: 'pre_tool_use_response'; requestId: string; action: 'allow' | 'block' | 'modify'; input?: Record<string, unknown>; reason?: string }
   | { type: 'abort' }
-  | { type: 'mini_completion'; id: string; prompt: string; model?: string }
+  | { type: 'mini_completion'; id: string; prompt: string }
   | { type: 'ensure_session_ready'; id: string }
   | { type: 'set_model'; model: string }
   | { type: 'set_thinking_level'; level: string }
@@ -830,7 +837,7 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
 
   debugLog('[queryLlm] Starting');
 
-  // Pick secondary model. If the configured subtask/mini model uses a different provider than
+  // Pick mini model. If the configured miniModel uses a different provider than
   // what the user authenticated with (e.g. gemini-2.5-pro when only anthropic
   // credentials exist), fall back to the default summarization model which uses
   // the same provider family.
@@ -1035,7 +1042,7 @@ async function preExecuteCallLlm(input: Record<string, unknown>): Promise<LLMQue
 
 async function runMiniCompletion(prompt: string): Promise<string | null> {
   try {
-    const result = await queryLlm({ prompt, model: initConfig?.miniModel });
+    const result = await queryLlm({ prompt });
     const text = result.text || null;
     debugLog(`[runMiniCompletion] Result: ${text ? `"${text.slice(0, 200)}"` : 'null'}`);
     return text;
@@ -1195,6 +1202,27 @@ function isContextOverflowErrorMessage(message: string): boolean {
   );
 }
 
+/**
+ * Wait for any in-flight compaction to finish before sending a prompt.
+ * Prevents a race in the Pi SDK where concurrent _runAutoCompaction calls
+ * crash on a shared AbortController (see craft-agents-oss#464).
+ */
+async function waitForCompaction(session: { isCompacting: boolean }, timeoutMs = 60_000): Promise<void> {
+  if (!session.isCompacting) return;
+  debugLog('Waiting for in-flight compaction to finish before prompt...');
+  const start = Date.now();
+  while (session.isCompacting) {
+    if (Date.now() - start > timeoutMs) {
+      debugLog('Compaction wait timed out after 60s, proceeding anyway');
+      break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  if (Date.now() - start < timeoutMs) {
+    debugLog('Compaction finished, proceeding with prompt');
+  }
+}
+
 async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): Promise<void> {
   currentUserMessage = msg.message;
 
@@ -1225,6 +1253,9 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
     }
     unsubscribeEvents = session.subscribe(handleSessionEvent);
 
+    // Wait for any in-flight auto-compaction to avoid race (craft-agents-oss#464)
+    await waitForCompaction(session);
+
     // Fire prompt — use followUp when session is already streaming so the
     // message is queued instead of throwing "Agent is already processing".
     await session.prompt(msg.message, {
@@ -1241,6 +1272,7 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
       try {
         const session = await ensureSession();
         await session.compact();
+        await waitForCompaction(session);
         await session.prompt(msg.message, {
           images: msg.images && msg.images.length > 0 ? msg.images : undefined,
           streamingBehavior: 'followUp',
@@ -1328,7 +1360,7 @@ async function handleMiniCompletion(msg: Extract<InboundMessage, { type: 'mini_c
   // as 'error' messages instead of being swallowed and returned as null.
   // runMiniCompletion is kept for the summarize callback where null is acceptable.
   try {
-    const result = await queryLlm({ prompt: msg.prompt, model: msg.model ?? initConfig?.miniModel });
+    const result = await queryLlm({ prompt: msg.prompt });
     send({ type: 'mini_completion_result', id: msg.id, text: result.text || null });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1592,16 +1624,30 @@ function main(): void {
     handleShutdown();
   });
 
-  // Handle unexpected errors
+  // Handle unexpected errors — process state is unreliable after these,
+  // so we attempt to report and then exit immediately.
+  // send() is wrapped in try/catch because stdout itself may be broken
+  // (e.g. EFAULT from a closed pipe), and we must not let the error
+  // report trigger another uncaughtException (which would loop).
   process.on('uncaughtException', (error) => {
     debugLog(`Uncaught exception: ${error.message}`);
-    send({ type: 'error', message: `Uncaught exception: ${error.message}`, code: 'uncaught' });
+    try {
+      send({ type: 'error', message: `Uncaught exception: ${error.message}`, code: 'uncaught' });
+    } catch {
+      // stdout may be broken — swallow to avoid re-triggering
+    }
+    process.exit(1);
   });
 
   process.on('unhandledRejection', (reason) => {
     const msg = reason instanceof Error ? reason.message : String(reason);
     debugLog(`Unhandled rejection: ${msg}`);
-    send({ type: 'error', message: `Unhandled rejection: ${msg}`, code: 'unhandled_rejection' });
+    try {
+      send({ type: 'error', message: `Unhandled rejection: ${msg}`, code: 'unhandled_rejection' });
+    } catch {
+      // stdout may be broken — swallow to avoid re-triggering
+    }
+    process.exit(1);
   });
 }
 

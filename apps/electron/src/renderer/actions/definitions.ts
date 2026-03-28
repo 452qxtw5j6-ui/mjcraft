@@ -15,8 +15,7 @@ export const actions = {
     id: 'app.newChatInPanel',
     label: 'New Chat in Panel',
     description: 'Create a new chat session in a new panel',
-    // Cmd+T is intentionally reserved for reasoning controls in chat.
-    defaultHotkey: 'mod+shift+t',
+    defaultHotkey: 'mod+t',
     category: 'General',
   },
   'app.settings': {
@@ -157,15 +156,7 @@ export const actions = {
     scope: 'navigator',
     when: 'navigatorFocus',
   },
-  'navigator.deleteSelectedSession': {
-    id: 'navigator.deleteSelectedSession',
-    label: 'Delete Selected Session',
-    description: 'Delete the currently selected session',
-    defaultHotkey: 'mod+backspace',
-    category: 'Navigator',
-    scope: 'navigator',
-    when: 'navigatorFocus && !inputFocus',
-  },
+
   // ═══════════════════════════════════════════
   // Panels
   // ═══════════════════════════════════════════
@@ -215,16 +206,6 @@ export const actions = {
     defaultHotkey: 'mod+shift+g',
     category: 'Chat',
   },
-  'chat.openModelThinkingMenu': {
-    id: 'chat.openModelThinkingMenu',
-    label: 'Open Model and Thinking Menu',
-    description: 'Open the chat model menu and thinking level selector',
-    // Custom behavior should stay shortcut-first even if upstream changes the default trigger.
-    defaultHotkey: 'mod+t',
-    category: 'Chat',
-    scope: 'chat',
-    when: 'chatFocus',
-  },
   'chat.openLinearQuickIssue': {
     id: 'chat.openLinearQuickIssue',
     label: 'Open Linear Quick Issue',
@@ -234,15 +215,6 @@ export const actions = {
     category: 'Chat',
     scope: 'chat',
     when: 'chatFocus && !inputFocus && !menuOpen',
-  },
-  'chat.deleteCurrentSession': {
-    id: 'chat.deleteCurrentSession',
-    label: 'Delete Current Session',
-    description: 'Delete the current chat session',
-    defaultHotkey: 'mod+backspace',
-    category: 'Chat',
-    scope: 'chat',
-    when: 'chatFocus && !inputFocus',
   },
 
 } as const satisfies Record<string, ActionDefinition>

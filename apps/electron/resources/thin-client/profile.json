@@ -1,6 +1,0 @@
-{
-  "appName": "Craft Agents Client",
-  "deeplinkScheme": "craftagentsclient",
-  "defaultServerUrl": "ws://127.0.0.1:9100",
-  "connectionConfigPath": "~/.craft-agent/thin-client.json"
-}

@@ -110,10 +110,10 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       return { navigator: 'sources', details: null }
     }
 
-    // Check for type filter: sources/api, sources/mcp, sources/local, sources/cli
-    const validSourceTypes = ['api', 'mcp', 'local', 'cli']
+    // Check for type filter: sources/api, sources/mcp, sources/local
+    const validSourceTypes = ['api', 'mcp', 'local']
     if (validSourceTypes.includes(segments[1])) {
-      const sourceType = segments[1] as 'api' | 'mcp' | 'local' | 'cli'
+      const sourceType = segments[1] as 'api' | 'mcp' | 'local'
       const sourceFilter: SourceFilter = { kind: 'type', sourceType }
 
       // Check for source selection within filtered view: sources/api/source/{sourceSlug}

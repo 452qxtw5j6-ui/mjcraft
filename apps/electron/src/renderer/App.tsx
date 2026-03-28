@@ -4,13 +4,14 @@ import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
 import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
-import { defaultSessionOptions, mergeSessionOptions, normalizeSessionOptions, resolveSessionThinkingLevel } from './hooks/useSessionOptions'
+import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
 import { useEventProcessor } from './event-processor'
 import type { AgentEvent, Effect } from './event-processor'
 import { AppShell } from '@/components/app-shell/AppShell'
 import type { AppShellContextType } from '@/context/AppShellContext'
 import { OnboardingWizard, ReauthScreen } from '@/components/onboarding'
+import { WorkspacePicker } from '@/components/workspace'
 import { ResetConfirmationDialog } from '@/components/ResetConfirmationDialog'
 import { SplashScreen } from '@/components/SplashScreen'
 import { TooltipProvider } from '@craft-agent/ui'
@@ -26,10 +27,9 @@ import { NavigationProvider } from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
 import { stripMarkdown } from './utils/text'
 import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
+import { formatSessionLoadFailure, shouldTreatSessionLoadFailureAsTransportFallback } from './lib/session-load'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
 import { DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
-import { getKeybindingContext } from '@/actions/keybinding-context'
-import { isMac } from '@/lib/platform'
 import { initRendererPerf } from './lib/perf'
 import {
   initializeSessionsAtom,
@@ -66,13 +66,7 @@ import { getFileManagerName } from '@/lib/platform'
 import { ActionRegistryProvider } from '@/actions'
 import { toast } from 'sonner'
 
-type AppState = 'loading' | 'onboarding' | 'reauth' | 'ready'
-
-interface SessionStatusUndoEntry {
-  sessionId: string
-  previousState: SessionStatus
-  nextState: SessionStatus
-}
+type AppState = 'loading' | 'onboarding' | 'reauth' | 'workspace-picker' | 'ready'
 
 /** Type for the Jotai store returned by useStore() */
 type JotaiStore = ReturnType<typeof getDefaultStore>
@@ -162,6 +156,35 @@ function handleBackgroundTaskEvent(
   // 3. KillShell succeeds (shell_killed event)
 }
 
+function SessionLoadErrorScreen({
+  message,
+  onRetry,
+}: {
+  message: string
+  onRetry: () => void
+}) {
+  return (
+    <div className="flex h-full items-center justify-center p-6">
+      <div className="max-w-lg rounded-xl border border-border/50 bg-background shadow-minimal p-6 text-center">
+        <h2 className="text-lg font-semibold text-foreground">Failed to load sessions</h2>
+        <p className="mt-2 text-sm text-foreground/60">
+          Craft Agents could connect, but loading the session list failed. This is not being treated as an empty workspace to avoid hiding a real bug or data problem.
+        </p>
+        <p className="mt-3 rounded-lg bg-foreground/5 px-3 py-2 text-left text-xs text-foreground/70 break-words">
+          {message}
+        </p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-4 inline-flex h-8 items-center justify-center rounded-[8px] bg-foreground text-background px-3 text-sm font-medium hover:opacity-90 transition-opacity"
+        >
+          Retry loading sessions
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   // Initialize renderer perf tracking early (debug mode = running from source)
   // Uses useEffect with empty deps to run once on mount before any session switches
@@ -203,12 +226,27 @@ export default function App() {
   // Window's workspace ID — shared atom so Root/ThemeProvider stays in sync on switch
   const [windowWorkspaceId, setWindowWorkspaceId] = useAtom(windowWorkspaceIdAtom)
 
-  // Derive workspace slug from path for SDK skill qualification
+  // Derive workspace slug for SDK skill qualification
   const windowWorkspaceSlug = useMemo(() => {
     if (!windowWorkspaceId) return null
     const workspace = workspaces.find(w => w.id === windowWorkspaceId)
-    if (!workspace?.rootPath) return windowWorkspaceId // Fallback to ID
-    return extractWorkspaceSlugFromPath(workspace.rootPath, windowWorkspaceId)
+    return workspace?.slug ?? windowWorkspaceId
+  }, [windowWorkspaceId, workspaces])
+
+  // Get initial sessionId and focused mode from URL params (for "Open in New Window" feature)
+  const { initialSessionId, isFocusedMode } = useMemo(() => {
+    const params = new URLSearchParams(window.location.search)
+    return {
+      initialSessionId: params.get('sessionId'),
+      isFocusedMode: params.get('focused') === 'true',
+    }
+  }, [])
+
+  // Derive remote workspace ID for session matching in NavigationContext
+  const windowRemoteWorkspaceId = useMemo(() => {
+    if (!windowWorkspaceId) return null
+    const workspace = workspaces.find(w => w.id === windowWorkspaceId)
+    return workspace?.remoteServer?.remoteWorkspaceId ?? null
   }, [windowWorkspaceId, workspaces])
 
   // LLM connections with authentication status (for provider selection)
@@ -229,7 +267,6 @@ export default function App() {
   // Credential requests per session (queue to handle multiple concurrent requests)
   const [pendingCredentials, setPendingCredentials] = useState<Map<string, CredentialRequest[]>>(new Map())
   // Draft input text per session (preserved across mode switches and conversation changes)
-  const sessionStatusUndoStackRef = useRef<SessionStatusUndoEntry[]>([])
   // Using ref instead of state to avoid re-renders during typing - drafts are only
   // needed for initial value restoration and disk persistence, not reactive updates
   const sessionDraftsRef = useRef<Map<string, string>>(new Map())
@@ -246,6 +283,7 @@ export default function App() {
 
   // Splash screen state - tracks when app is fully ready (all data loaded)
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
+  const [sessionLoadError, setSessionLoadError] = useState<string | null>(null)
   const [splashExiting, setSplashExiting] = useState(false)
   const [splashHidden, setSplashHidden] = useState(false)
 
@@ -378,6 +416,58 @@ export default function App() {
     }
   }, [clearStreamingState, updateSessionDirect, syncSessionOptionsFromSession, reconcilePermissionModeState])
 
+  const loadSessionsFromServer = useCallback(async () => {
+    setSessionLoadError(null)
+
+    try {
+      const loadedSessions = await window.electronAPI.getSessions()
+
+      // Initialize per-session atoms and metadata map
+      // NOTE: No sessionsAtom used - sessions are only in per-session atoms
+      initializeSessions(loadedSessions)
+
+      // Initialize unified sessionOptions from session data
+      const optionsMap = new Map<string, SessionOptions>()
+      for (const s of loadedSessions) {
+        const hasNonDefaultMode = s.permissionMode && s.permissionMode !== 'ask'
+        const hasNonDefaultThinking = s.thinkingLevel && s.thinkingLevel !== DEFAULT_THINKING_LEVEL
+        if (hasNonDefaultMode || hasNonDefaultThinking) {
+          optionsMap.set(s.id, {
+            permissionMode: s.permissionMode ?? 'ask',
+            thinkingLevel: s.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+          })
+        }
+      }
+      setSessionOptions(optionsMap)
+
+      await Promise.allSettled(
+        loadedSessions.map((s) => reconcilePermissionModeState(s.id))
+      )
+
+      setSessionsLoaded(true)
+
+      if (initialSessionId && windowWorkspaceId) {
+        const session = loadedSessions.find(s => s.id === initialSessionId)
+        if (session) {
+          navigate(routes.view.allSessions(session.id))
+        }
+      }
+    } catch (err) {
+      console.error('[App] Failed to load sessions:', err)
+      const transportState = await window.electronAPI.getTransportConnectionState().catch(() => null)
+
+      if (shouldTreatSessionLoadFailureAsTransportFallback(transportState)) {
+        console.error('[App] Treating session load failure as transport fallback:', transportState)
+        setSessionsLoaded(true)
+        setSessionLoadError(null)
+        return
+      }
+
+      setSessionLoadError(formatSessionLoadFailure(err))
+      setSessionsLoaded(true)
+    }
+  }, [initializeSessions, initialSessionId, reconcilePermissionModeState, windowWorkspaceId])
+
   const refreshSessionListMetadataFromServer = useCallback(async (): Promise<Map<string, SessionMeta> | null> => {
     try {
       const sessions = await window.electronAPI.getSessions()
@@ -452,18 +542,21 @@ export default function App() {
 
   // Handle onboarding completion
   const handleOnboardingComplete = useCallback(async () => {
-    // Reload workspaces after onboarding
-    const ws = await window.electronAPI.getWorkspaces()
-    if (ws.length > 0) {
-      // Switch to workspace in-place (no window close/reopen)
-      await window.electronAPI.switchWorkspace(ws[0].id)
-      setWindowWorkspaceId(ws[0].id)
-      setWorkspaces(ws)
-      setAppState('ready')
-      return
+    try {
+      // Reload workspaces after onboarding
+      const ws = await window.electronAPI.getWorkspaces()
+      if (ws.length > 0) {
+        // Switch to workspace in-place (no window close/reopen)
+        await window.electronAPI.switchWorkspace(ws[0].id)
+        setWindowWorkspaceId(ws[0].id)
+        setWorkspaces(ws)
+      } else {
+        setWorkspaces(ws)
+      }
+    } catch (error) {
+      console.error('[App] Failed to load workspaces after onboarding:', error)
+      // Still transition to ready — the app can recover via reconnect
     }
-    // Fallback: no workspaces (shouldn't happen after onboarding)
-    setWorkspaces(ws)
     setAppState('ready')
   }, [])
 
@@ -492,15 +585,6 @@ export default function App() {
     setShowResetDialog(true)
   }, [])
 
-  // Get initial sessionId and focused mode from URL params (for "Open in New Window" feature)
-  const { initialSessionId, isFocusedMode } = useMemo(() => {
-    const params = new URLSearchParams(window.location.search)
-    return {
-      initialSessionId: params.get('sessionId'),
-      isFocusedMode: params.get('focused') === 'true',
-    }
-  }, [])
-
   // Check auth state and get window's workspace ID on mount
   useEffect(() => {
     const initialize = async () => {
@@ -513,7 +597,13 @@ export default function App() {
         setSetupNeeds(needs)
 
         if (needs.isFullyConfigured) {
-          setAppState('ready')
+          // If no workspace is selected (thin client without CRAFT_WORKSPACE_ID),
+          // show workspace picker before entering the main app
+          if (!wsId) {
+            setAppState('workspace-picker')
+          } else {
+            setAppState('ready')
+          }
         } else {
           // New user or needs setup - show onboarding
           setAppState('onboarding')
@@ -550,7 +640,7 @@ export default function App() {
     if (appState !== 'ready') return
 
     window.electronAPI.getWorkspaces().then(setWorkspaces)
-    window.electronAPI.getNotificationsEnabled().then(setNotificationsEnabled)
+    window.electronAPI.getNotificationsEnabled().then(setNotificationsEnabled).catch(() => {})
 
     // Show actionable toast for missing system dependencies (Windows only)
     window.electronAPI.getSystemWarnings().then((warnings) => {
@@ -565,42 +655,7 @@ export default function App() {
         })
       }
     }).catch(() => { /* non-fatal startup check */ })
-    window.electronAPI.getSessions().then(async (loadedSessions) => {
-      // Initialize per-session atoms and metadata map
-      // NOTE: No sessionsAtom used - sessions are only in per-session atoms
-      initializeSessions(loadedSessions)
-      // Initialize unified sessionOptions from session data
-      const optionsMap = new Map<string, SessionOptions>()
-      for (const s of loadedSessions) {
-        // Only store non-default options to keep the map lean
-        const hasNonDefaultMode = s.permissionMode && s.permissionMode !== 'ask'
-        const thinkingLevel = resolveSessionThinkingLevel(s.thinkingLevel)
-        const hasNonDefaultThinking = thinkingLevel !== DEFAULT_THINKING_LEVEL
-        if (hasNonDefaultMode || hasNonDefaultThinking) {
-          optionsMap.set(s.id, normalizeSessionOptions({
-            permissionMode: s.permissionMode ?? 'ask',
-            thinkingLevel,
-          }))
-        }
-      }
-      setSessionOptions(optionsMap)
-
-      // Reconcile permission mode state from backend diagnostics (mode + modeVersion)
-      await Promise.allSettled(
-        loadedSessions.map((s) => reconcilePermissionModeState(s.id))
-      )
-
-      // Mark sessions as loaded for splash screen
-      setSessionsLoaded(true)
-
-      // If window was opened with a specific session (via "Open in New Window"), select it
-      if (initialSessionId && windowWorkspaceId) {
-        const session = loadedSessions.find(s => s.id === initialSessionId)
-        if (session) {
-          navigate(routes.view.allSessions(session.id))
-        }
-      }
-    })
+    void loadSessionsFromServer()
     // Load LLM connections with authentication status
     window.electronAPI.listLlmConnectionsWithStatus().then((connections) => {
       setLlmConnections(connections)
@@ -614,7 +669,7 @@ export default function App() {
     })
     // Load app-level theme
     window.electronAPI.getAppTheme().then(setAppTheme)
-  }, [appState, initialSessionId, windowWorkspaceId, initializeSessions, resolveDefaultConnectionSlug, reconcilePermissionModeState])
+  }, [appState, loadSessionsFromServer, resolveDefaultConnectionSlug])
 
   // Subscribe to theme change events (live updates when theme.json changes)
   useEffect(() => {
@@ -950,23 +1005,6 @@ export default function App() {
     }
   }, [])
 
-  // Populate sessionOptions for a session with non-default permission mode or thinking level.
-  // Centralised helper used by all session creation paths (create, branch, event handler).
-  const populateSessionOptions = useCallback((session: Session) => {
-    const thinkingLevel = resolveSessionThinkingLevel(session.thinkingLevel)
-    const hasNonDefaultMode = session.permissionMode && session.permissionMode !== 'ask'
-    const hasNonDefaultThinking = thinkingLevel !== DEFAULT_THINKING_LEVEL
-    if (hasNonDefaultMode || hasNonDefaultThinking) {
-      setSessionOptions(prev => {
-        const next = new Map(prev)
-        next.set(session.id, normalizeSessionOptions({
-          permissionMode: session.permissionMode ?? 'ask',
-          thinkingLevel,
-        }))
-        return next
-      })
-    }
-  }, [])
   const handleCreateSession = useCallback(async (workspaceId: string, options?: import('../shared/types').CreateSessionOptions): Promise<Session> => {
     const session = await window.electronAPI.createSession(workspaceId, options)
     // Add to per-session atom and metadata map (no sessionsAtom)
@@ -1061,48 +1099,9 @@ export default function App() {
   }, [updateSessionById])
 
   const handleSessionStatusChange = useCallback((sessionId: string, state: SessionStatus) => {
-    const previousState = store.get(sessionMetaMapAtom).get(sessionId)?.sessionStatus || 'todo'
-    if (previousState === state) return
-
-    sessionStatusUndoStackRef.current.push({
-      sessionId,
-      previousState,
-      nextState: state,
-    })
-    if (sessionStatusUndoStackRef.current.length > 50) {
-      sessionStatusUndoStackRef.current.splice(0, sessionStatusUndoStackRef.current.length - 50)
-    }
-
     updateSessionById(sessionId, { sessionStatus: state })
     window.electronAPI.sessionCommand(sessionId, { type: 'setSessionStatus', state })
-  }, [store, updateSessionById])
-
-  const handleUndoSessionStatusChange = useCallback(() => {
-    const entry = sessionStatusUndoStackRef.current.pop()
-    if (!entry) return
-
-    updateSessionById(entry.sessionId, { sessionStatus: entry.previousState })
-    window.electronAPI.sessionCommand(entry.sessionId, { type: 'setSessionStatus', state: entry.previousState })
   }, [updateSessionById])
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const modPressed = isMac ? event.metaKey : event.ctrlKey
-      if (!modPressed || event.shiftKey || event.altKey || event.code !== 'KeyZ') return
-
-      const context = getKeybindingContext(event)
-      if (context.inputFocus) return
-      if (!context.navigatorFocus && !context.chatFocus) return
-      if (sessionStatusUndoStackRef.current.length === 0) return
-
-      event.preventDefault()
-      event.stopPropagation()
-      handleUndoSessionStatusChange()
-    }
-
-    window.addEventListener('keydown', handleKeyDown, true)
-    return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [handleUndoSessionStatusChange])
 
   const handleRenameSession = useCallback((sessionId: string, name: string) => {
     updateSessionById(sessionId, { name })
@@ -1268,28 +1267,21 @@ export default function App() {
    * Handles persistence and backend sync for each option type.
    */
   const handleSessionOptionsChange = useCallback((sessionId: string, updates: SessionOptionUpdates) => {
-    const normalizedUpdates = {
-      ...updates,
-      ...(updates.thinkingLevel !== undefined
-        ? { thinkingLevel: resolveSessionThinkingLevel(updates.thinkingLevel) }
-        : {}),
-    } satisfies SessionOptionUpdates
-
     setSessionOptions(prev => {
       const next = new Map(prev)
       const current = next.get(sessionId) ?? defaultSessionOptions
-      next.set(sessionId, mergeSessionOptions(current, normalizedUpdates))
+      next.set(sessionId, mergeSessionOptions(current, updates))
       return next
     })
 
     // Handle persistence/backend for specific options
-    if (normalizedUpdates.permissionMode !== undefined) {
+    if (updates.permissionMode !== undefined) {
       // Sync permission mode change with backend
-      window.electronAPI.sessionCommand(sessionId, { type: 'setPermissionMode', mode: normalizedUpdates.permissionMode })
+      window.electronAPI.sessionCommand(sessionId, { type: 'setPermissionMode', mode: updates.permissionMode })
     }
-    if (normalizedUpdates.thinkingLevel !== undefined) {
+    if (updates.thinkingLevel !== undefined) {
       // Sync thinking level change with backend (session-level, persisted)
-      window.electronAPI.sessionCommand(sessionId, { type: 'setThinkingLevel', level: normalizedUpdates.thinkingLevel })
+      window.electronAPI.sessionCommand(sessionId, { type: 'setThinkingLevel', level: updates.thinkingLevel })
     }
   }, [sessionOptions])
 
@@ -1469,8 +1461,8 @@ export default function App() {
     readFileBinary: (path) => window.electronAPI.readFileBinary(path),
   })
 
-  const transportConnectionState = useTransportConnectionState()
-  const showTransportConnectionBanner = shouldShowTransportConnectionBanner(transportConnectionState)
+  const connectionState = useTransportConnectionState()
+  const showTransportConnectionBanner = shouldShowTransportConnectionBanner(connectionState)
 
   const handleReconnectTransport = useCallback(() => {
     void window.electronAPI.reconnectTransport().catch((error) => {
@@ -1579,10 +1571,7 @@ export default function App() {
 
   // Handle workspace switch by slug (called by NavigationContext on popstate when ?ws= changes)
   const handleSwitchWorkspaceBySlug = useCallback((slug: string) => {
-    const target = workspaces.find(w => {
-      const wsSlug = extractWorkspaceSlugFromPath(w.rootPath, w.id)
-      return wsSlug === slug
-    })
+    const target = workspaces.find(w => w.slug === slug)
     if (target) {
       handleSelectWorkspace(target.id)
     }
@@ -1771,6 +1760,24 @@ export default function App() {
     )
   }
 
+  // Workspace picker — thin client with no workspace selected
+  if (appState === 'workspace-picker') {
+    return (
+      <DismissibleLayerProvider>
+        <ModalProvider>
+          <WindowCloseHandler />
+          <WorkspacePicker
+            onSelectWorkspace={async (id) => {
+              await window.electronAPI.switchWorkspace(id)
+              setWindowWorkspaceId(id)
+              setAppState('ready')
+            }}
+          />
+        </ModalProvider>
+      </DismissibleLayerProvider>
+    )
+  }
+
   // Show splash until exit animation completes
   const showSplash = !splashHidden
 
@@ -1793,6 +1800,7 @@ export default function App() {
           onAutoDeleteEmptySession={handleAutoDeleteEmptySession}
           isReady={appState === 'ready'}
           isSessionsReady={sessionsLoaded}
+          remoteWorkspaceId={windowRemoteWorkspaceId}
         >
           {/* Handle window close requests (X button, Cmd+W) - close modal first if open */}
           <WindowCloseHandler />
@@ -1807,19 +1815,26 @@ export default function App() {
 
           {/* Main UI - always rendered, splash fades away to reveal it */}
           <div className="h-full flex flex-col pt-[48px] text-foreground">
-            {showTransportConnectionBanner && transportConnectionState && (
+            {showTransportConnectionBanner && connectionState && (
               <TransportConnectionBanner
-                state={transportConnectionState}
+                state={connectionState}
                 onRetry={handleReconnectTransport}
               />
             )}
             <div className="flex-1 min-h-0">
-              <AppShell
-                contextValue={appShellContextValue}
-                defaultLayout={[20, 32, 48]}
-                menuNewChatTrigger={menuNewChatTrigger}
-                isFocusedMode={isFocusedMode}
-              />
+              {sessionLoadError ? (
+                <SessionLoadErrorScreen
+                  message={sessionLoadError}
+                  onRetry={() => { void loadSessionsFromServer() }}
+                />
+              ) : (
+                <AppShell
+                  contextValue={appShellContextValue}
+                  defaultLayout={[20, 32, 48]}
+                  menuNewChatTrigger={menuNewChatTrigger}
+                  isFocusedMode={isFocusedMode}
+                />
+              )}
             </div>
             <ResetConfirmationDialog
               open={showResetDialog}

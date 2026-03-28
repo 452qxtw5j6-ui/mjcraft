@@ -1,4 +1,4 @@
-import * as React from "react"
+import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { SessionStatusMenu } from "@/components/ui/session-status-menu"
@@ -6,7 +6,6 @@ import { getStateIcon, getStateIconStyle } from "@/config/session-status-config"
 import { useSessionListContext } from "@/context/SessionListContext"
 import type { SessionMeta } from "@/atoms/sessions"
 import { getSessionStatus } from "@/utils/session"
-import type { OpenSessionStatusMenuEventDetail } from "./open-session-status-menu-events"
 
 interface SessionStatusIconProps {
   item: SessionMeta
@@ -14,22 +13,8 @@ interface SessionStatusIconProps {
 
 export function SessionStatusIcon({ item }: SessionStatusIconProps) {
   const ctx = useSessionListContext()
-  const [open, setOpen] = React.useState(false)
+  const [open, setOpen] = useState(false)
   const status = getSessionStatus(item)
-
-  React.useEffect(() => {
-    const handleOpenStatusMenu = (event: Event) => {
-      const customEvent = event as CustomEvent<OpenSessionStatusMenuEventDetail>
-      if (customEvent.detail?.sessionId !== item.id) return
-      setOpen(true)
-      requestAnimationFrame(() => {
-        document.querySelector<HTMLInputElement>('[data-session-status-filter="true"]')?.focus()
-      })
-    }
-
-    window.addEventListener('craft:open-session-status-menu', handleOpenStatusMenu)
-    return () => window.removeEventListener('craft:open-session-status-menu', handleOpenStatusMenu)
-  }, [item.id])
 
   const handleSelect = (state: import("@/config/session-status-config").SessionStatusId) => {
     setOpen(false)

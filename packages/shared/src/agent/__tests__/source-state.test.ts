@@ -13,11 +13,7 @@ import type { LoadedSource } from '../../sources/types.ts';
 
 // Helper to create mock LoadedSource objects
 function createMockSource(
-  overrides: Partial<LoadedSource['config']> & {
-    mcp?: LoadedSource['config']['mcp'];
-    api?: LoadedSource['config']['api'];
-    cli?: LoadedSource['config']['cli'];
-  }
+  overrides: Partial<LoadedSource['config']> & { mcp?: LoadedSource['config']['mcp']; api?: LoadedSource['config']['api'] }
 ): LoadedSource {
   return {
     config: {
@@ -130,17 +126,6 @@ describe('sourceNeedsAuthentication', () => {
         const source = createMockSource({
           type: 'mcp',
           mcp: { transport: 'stdio', command: 'npx', authType: 'oauth' },
-          isAuthenticated: false,
-        });
-        expect(sourceNeedsAuthentication(source)).toBe(false);
-      });
-    });
-
-    describe('cli transport (local wrapped CLI)', () => {
-      it('should return false because top-level cli sources run locally', () => {
-        const source = createMockSource({
-          type: 'cli',
-          cli: { command: 'gws' } as any,
           isAuthenticated: false,
         });
         expect(sourceNeedsAuthentication(source)).toBe(false);

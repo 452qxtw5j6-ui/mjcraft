@@ -54,6 +54,8 @@ export interface AppShellContextType {
   enabledSources?: LoadedSource[]
   /** All skills for this workspace - provided by AppShell component (for @mentions) */
   skills?: LoadedSkill[]
+  /** Working directory of the active session — needed for project-level skill resolution */
+  activeSessionWorkingDirectory?: string
   /** All personas for this workspace */
   personas?: LoadedPersona[]
   /** All label configs (tree) for label menu and badge display */
@@ -107,7 +109,7 @@ export interface AppShellContextType {
   onOpenUrl: (url: string) => void
 
   // Workspace
-  onSelectWorkspace: (id: string, openInNewWindow?: boolean) => void
+  onSelectWorkspace: (id: string, openInNewWindow?: boolean) => void | Promise<void>
   onRefreshWorkspaces?: () => void
 
   // App actions
@@ -130,6 +132,9 @@ export interface AppShellContextType {
 
   // Right sidebar button (for page headers)
   rightSidebarButton?: React.ReactNode
+
+  // Leading action button for panel header (e.g., back button in compact mode)
+  leadingAction?: React.ReactNode
 
   /** Whether this panel is the focused panel (for multi-panel visual differentiation) */
   isFocusedPanel?: boolean

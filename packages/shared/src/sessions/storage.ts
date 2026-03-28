@@ -188,9 +188,6 @@ export async function createSession(
     labels?: string[];
     personaId?: string;
     isFlagged?: boolean;
-    sessionOrigin?: SessionConfig['sessionOrigin'];
-    notionRef?: SessionConfig['notionRef'];
-    slackRef?: SessionConfig['slackRef'];
   }
 ): Promise<SessionConfig> {
   ensureSessionsDir(workspaceRootPath);
@@ -209,9 +206,6 @@ export async function createSession(
   const session: SessionConfig = {
     id: sessionId,
     workspaceRootPath,
-    sessionOrigin: options?.sessionOrigin,
-    notionRef: options?.notionRef,
-    slackRef: options?.slackRef,
     name: options?.name,
     createdAt: now,
     lastUsedAt: now,
@@ -548,9 +542,6 @@ export async function updateSessionMetadata(
     | 'sharedId'
     | 'model'
     | 'llmConnection'
-    | 'sessionOrigin'
-    | 'notionRef'
-    | 'slackRef'
     | 'isArchived'
     | 'archivedAt'
   >>
@@ -573,9 +564,6 @@ export async function updateSessionMetadata(
   if ('sharedId' in updates) session.sharedId = updates.sharedId;
   if (updates.model !== undefined) session.model = updates.model;
   if (updates.llmConnection !== undefined) session.llmConnection = updates.llmConnection;
-  if (updates.sessionOrigin !== undefined) session.sessionOrigin = updates.sessionOrigin;
-  if ('notionRef' in updates) session.notionRef = updates.notionRef;
-  if ('slackRef' in updates) session.slackRef = updates.slackRef;
   if (updates.isArchived !== undefined) session.isArchived = updates.isArchived;
   if ('archivedAt' in updates) session.archivedAt = updates.archivedAt;
 

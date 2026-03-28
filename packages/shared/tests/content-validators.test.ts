@@ -60,34 +60,6 @@ describe('validateSourceConfigContent', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('passes for valid top-level cli source config', () => {
-    const config = JSON.stringify({
-      id: 'cli-source',
-      name: 'CLI Source',
-      slug: 'cli-source',
-      enabled: true,
-      provider: 'googleworkspace-cli',
-      type: 'cli',
-      cli: { command: 'gws', args: ['drive'] },
-    });
-    const result = validateSourceConfigContent(config);
-    expect(result.valid).toBe(true);
-  });
-
-  it('fails for legacy mcp transport cli source config', () => {
-    const config = JSON.stringify({
-      id: 'legacy-cli-source',
-      name: 'Legacy CLI Source',
-      slug: 'legacy-cli-source',
-      enabled: true,
-      provider: 'googleworkspace-cli',
-      type: 'mcp',
-      mcp: { transport: 'cli', command: 'gws', args: ['drive'] },
-    });
-    const result = validateSourceConfigContent(config);
-    expect(result.valid).toBe(false);
-  });
-
   it('fails for invalid JSON', () => {
     const result = validateSourceConfigContent('{ invalid json }');
     expect(result.valid).toBe(false);

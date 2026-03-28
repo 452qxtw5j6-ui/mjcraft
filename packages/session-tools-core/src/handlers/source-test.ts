@@ -345,12 +345,6 @@ async function testConnection(
     success = result.success;
     hasError = result.hasError;
     error = result.error;
-  } else if (source.type === 'cli') {
-    const result = testCliConnection(source);
-    lines.push(...result.lines);
-    success = result.success;
-    hasError = result.hasError;
-    error = result.error;
   } else if (source.type === 'mcp') {
     const result = await testMcpConnection(ctx, source, sourceSlug);
     lines.push(...result.lines);
@@ -369,28 +363,6 @@ async function testConnection(
   }
 
   return { lines, success, hasError, error };
-}
-
-function testCliConnection(
-  source: SourceConfig
-): { lines: string[]; success: boolean; hasError: boolean; error?: string } {
-  const lines: string[] = [];
-
-  if (!source.cli?.command) {
-    return {
-      lines: ['✗ No command configured for CLI source'],
-      success: false,
-      hasError: true,
-      error: 'No command configured',
-    };
-  }
-
-  lines.push(`ℹ CLI source command: ${source.cli.command}`);
-  if (source.cli.args?.length) {
-    lines.push(`  Base args: ${source.cli.args.join(' ')}`);
-  }
-  lines.push('  This source is wrapped as an MCP-like tool at runtime.');
-  return { lines, success: true, hasError: false };
 }
 
 async function testApiConnection(
@@ -738,6 +710,7 @@ async function testMcpConnection(
         }
         const result = await ctx.validateMcpConnection({
           url: source.mcp.url,
+          transport: source.mcp.transport,
           authType: source.mcp.authType,
           headers,
         });

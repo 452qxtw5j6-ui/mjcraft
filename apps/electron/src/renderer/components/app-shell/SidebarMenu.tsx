@@ -53,7 +53,7 @@ export interface SidebarMenuProps {
   /** Handler for "Add Automation" action - only for automations type */
   onAddAutomation?: () => void
   /** Source type filter for "Learn More" link - determines which docs page to open */
-  sourceType?: 'api' | 'mcp' | 'local' | 'cli'
+  sourceType?: 'api' | 'mcp' | 'local'
   /** Handler for "Edit Views" action - for views type */
   onConfigureViews?: () => void
   /** View ID — when set, this is an individual view (enables Delete) */
@@ -183,8 +183,6 @@ export function SidebarMenu({
       ? 'Learn More about APIs'
       : sourceType === 'mcp'
         ? 'Learn More about MCP'
-        : sourceType === 'cli'
-          ? 'Learn More about CLI Sources'
         : sourceType === 'local'
           ? 'Learn More about Local Folders'
           : 'Learn More about Sources'

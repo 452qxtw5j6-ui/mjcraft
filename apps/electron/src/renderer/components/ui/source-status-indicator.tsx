@@ -144,12 +144,11 @@ export function deriveConnectionStatus(source: {
     type?: string
     mcp?: { authType?: string; transport?: string }
     api?: { authType?: string }
-    cli?: unknown
   }
 }, localMcpEnabled = true): SourceConnectionStatus {
-  // Check if this is a local process source and local MCP is disabled
+  // Check if this is a stdio source and local MCP is disabled
   const mcp = source.config.mcp
-  if (((mcp?.transport === 'stdio') || source.config.type === 'cli') && !localMcpEnabled) {
+  if (mcp?.transport === 'stdio' && !localMcpEnabled) {
     return 'local_disabled'
   }
 
@@ -174,7 +173,7 @@ export function deriveConnectionStatus(source: {
   }
 
   // Local sources are always connected
-  if (source.config.type === 'local' || source.config.type === 'cli') {
+  if (source.config.type === 'local') {
     return 'connected'
   }
 

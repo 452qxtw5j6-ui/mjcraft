@@ -27,7 +27,6 @@ const SOURCE_STATUS_CONFIG: Record<string, { label: string; colorClass: string }
 const SOURCE_TYPE_FILTER_LABELS: Record<string, string> = {
   api: 'API',
   mcp: 'MCP',
-  cli: 'CLI',
   local: 'local folder',
 }
 

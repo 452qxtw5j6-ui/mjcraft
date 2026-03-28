@@ -10,7 +10,7 @@
  */
 
 import * as React from 'react'
-import { Globe, HardDrive, Mail, Plug, Terminal } from 'lucide-react'
+import { Globe, HardDrive, Mail, Plug } from 'lucide-react'
 import { EntityIcon, type IconComponent } from '@/components/ui/entity-icon'
 import { useEntityIcon, logoUrlCache } from '@/lib/icon-cache'
 import { McpIcon } from '@/components/icons/McpIcon'
@@ -22,7 +22,7 @@ import { SourceStatusIndicator, deriveConnectionStatus } from './source-status-i
 // Types
 // ============================================================================
 
-export type SourceType = 'mcp' | 'api' | 'gmail' | 'local' | 'cli'
+export type SourceType = 'mcp' | 'api' | 'gmail' | 'local'
 
 interface SourceAvatarProps {
   /** LoadedSource object */
@@ -47,7 +47,6 @@ const SOURCE_FALLBACKS: Record<string, IconComponent> = {
   api: Globe,
   gmail: Mail,
   local: HardDrive,
-  cli: Terminal,
 }
 
 /**

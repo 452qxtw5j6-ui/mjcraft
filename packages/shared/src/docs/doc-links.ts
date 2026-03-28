@@ -9,7 +9,6 @@ export type DocFeature =
   | 'sources'
   | 'sources-api'
   | 'sources-mcp'
-  | 'sources-cli'
   | 'sources-local'
   | 'skills'
   | 'statuses'
@@ -48,12 +47,6 @@ export const DOCS: Record<DocFeature, DocInfo> = {
     title: 'MCP Servers',
     summary:
       'Connect to Model Context Protocol servers for rich tool integrations. MCP servers provide structured access to services like GitHub, Linear, and Notion.',
-  },
-  'sources-cli': {
-    path: '/sources/overview',
-    title: 'CLI Sources',
-    summary:
-      'Wrap local CLI tools as source tools so your agent can query authenticated local commands while keeping source-level guides and permissions.',
   },
   'sources-local': {
     path: '/sources/local-filesystems',

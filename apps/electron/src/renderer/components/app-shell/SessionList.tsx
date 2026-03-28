@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react"
+import { useSetAtom } from "jotai"
 import { isToday, isYesterday, format, startOfDay } from "date-fns"
 import { useAction } from "@/actions"
 import { Inbox, Archive } from "lucide-react"
@@ -24,11 +25,10 @@ import { useFocusZone } from "@/hooks/keyboard"
 import { useEscapeInterrupt } from "@/context/EscapeInterruptContext"
 import { useNavigation, useNavigationState, routes, isSessionsNavigation } from "@/contexts/NavigationContext"
 import { useFocusContext } from "@/context/FocusContext"
-import type { SessionMeta } from "@/atoms/sessions"
+import { sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import type { ViewConfig } from "@craft-agent/shared/views"
 import type { SessionStatusId, SessionStatus } from "@/config/session-status-config"
 import { buildCollapsedGroupsScopeSuffix } from "@/utils/session-list-collapse"
-import { dispatchOpenSessionStatusMenuEvent } from "./open-session-status-menu-events"
 
 export interface SessionListRow {
   item: SessionMeta
@@ -136,6 +136,8 @@ export function SessionList({
   onNavigateToSession,
   hasPendingPrompt,
 }: SessionListProps) {
+  const setSendToWorkspace = useSetAtom(sendToWorkspaceAtom)
+
   // --- Selection (atom-backed, shared with ChatDisplay + BatchActionPanel) ---
   const {
     select: selectSession,
@@ -473,34 +475,6 @@ export function SessionList({
     enabled: () => isMultiSelectActive && !showEscapeOverlay,
   }, [isMultiSelectActive, showEscapeOverlay, interactions.selection, selectionStore.state.selected, navigateToSession])
 
-  useAction('navigator.deleteSelectedSession', () => {
-    const selectedId = selectionStore.state.selected
-    if (!selectedId) return
-    void handleDeleteWithToast(selectedId)
-  }, {
-    enabled: () => {
-      return isFocusWithinZone() && !isMultiSelectActive && !!selectionStore.state.selected && !showEscapeOverlay
-    },
-  }, [isMultiSelectActive, selectionStore.state.selected, showEscapeOverlay, handleDeleteWithToast])
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (showEscapeOverlay || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
-      if (event.code !== 'KeyS') return
-
-      const hoveredElement = document.querySelector<HTMLElement>('.session-item[data-session-id]:hover')
-      const targetSessionId = hoveredElement?.dataset.sessionId
-      if (!targetSessionId) return
-
-      event.preventDefault()
-      event.stopPropagation()
-      dispatchOpenSessionStatusMenuEvent({ sessionId: targetSessionId })
-    }
-
-    window.addEventListener('keydown', handleKeyDown, true)
-    return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [showEscapeOverlay])
-
   // --- Click handlers ---
   const handleSelectSession = useCallback((row: SessionListRow, index: number) => {
     selectSession(row.item.id, index)
@@ -593,6 +567,7 @@ export function SessionList({
     onLabelsChange,
     onSelectSessionById: handleSelectSessionById,
     onOpenInNewWindow: handleOpenInNewWindow,
+    onSendToWorkspace: (ids: string[]) => setSendToWorkspace(ids),
     onFocusZone: handleFocusZone,
     onKeyDown: handleKeyDown,
     sessionStatuses,
@@ -609,7 +584,7 @@ export function SessionList({
     onFlag, handleFlagWithToast, onUnflag, handleUnflagWithToast,
     onArchive, handleArchiveWithToast, onUnarchive, handleUnarchiveWithToast,
     onMarkUnread, handleDeleteWithToast, onLabelsChange,
-    handleSelectSessionById, handleOpenInNewWindow, handleFocusZone, handleKeyDown,
+    handleSelectSessionById, handleOpenInNewWindow, setSendToWorkspace, handleFocusZone, handleKeyDown,
     sessionStatuses, flatLabels, labels, resolvedSearchQuery,
     focusedSessionId, selectionStore.state.selected, isMultiSelectActive,
     sessionOptions, contentSearchResults, hasPendingPrompt,

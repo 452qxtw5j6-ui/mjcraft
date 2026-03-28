@@ -83,7 +83,6 @@ export function SessionStatusMenu({
     >
       <div className="border-b border-border/50 px-3 py-2">
         <CommandPrimitive.Input
-          data-session-status-filter="true"
           ref={inputRef}
           value={filter}
           onValueChange={setFilter}

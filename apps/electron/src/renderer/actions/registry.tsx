@@ -152,7 +152,6 @@ function matchesHotkey(e: KeyboardEvent, hotkey: string, action?: ActionDefiniti
     ']': 'BracketRight',
     ',': 'Comma',
     '.': 'Period',
-    'backspace': 'Backspace',
     'left': 'ArrowLeft',
     'right': 'ArrowRight',
     'up': 'ArrowUp',
@@ -190,7 +189,6 @@ function formatHotkeyDisplay(hotkey: string): string {
     if (part === 'shift') return isMac ? '⇧' : 'Shift'
     if (part === 'alt') return isMac ? '⌥' : 'Alt'
     if (part === 'escape') return 'Esc'
-    if (part === 'backspace') return isMac ? '⌫' : 'Backspace'
     if (part === 'tab') return 'Tab'
     if (part === 'left') return '←'
     if (part === 'right') return '→'

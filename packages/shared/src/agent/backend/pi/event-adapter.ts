@@ -59,6 +59,9 @@ export class PiEventAdapter extends BaseEventAdapter {
   // Model context window for usage_update events
   private contextWindow: number | undefined;
 
+  // Mini model ID for call_llm display override (Pi ignores model param, always uses miniModel)
+  private miniModel: string | undefined;
+
   // Track last usage for emitting with complete event
   private lastUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { total: number } } | undefined;
 
@@ -71,6 +74,15 @@ export class PiEventAdapter extends BaseEventAdapter {
    */
   setContextWindow(cw: number): void {
     this.contextWindow = cw;
+  }
+
+  /**
+   * Set the mini model ID for call_llm display override.
+   * Pi ignores the model param in call_llm — always uses miniModel.
+   * This ensures the UI shows the actual model used.
+   */
+  setMiniModel(model: string | undefined): void {
+    this.miniModel = model;
   }
 
   /**
@@ -235,6 +247,12 @@ export class PiEventAdapter extends BaseEventAdapter {
         // Normalize Pi field names to Claude Code format for UI compatibility
         // (diff stats, diff overlay, document routing all expect Claude Code format)
         const args = this.normalizeToolInput(toolName, (event.args ?? {}) as Record<string, unknown>);
+
+        // For call_llm, Pi ignores the model param and always uses miniModel.
+        // Override the displayed model so the UI shows the actual model used.
+        if (toolName.includes('call_llm') && this.miniModel) {
+          args.model = this.miniModel;
+        }
 
         // Canonical metadata from subprocess event payload (interceptor/bridge-authoritative path).
         const eventMeta = this.extractToolMetadataFromEvent(event);

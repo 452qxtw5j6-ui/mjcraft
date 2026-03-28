@@ -34,8 +34,7 @@ export const SERVER_BUILD_ERRORS = {
  */
 export type McpServerConfig =
   | { type: 'http' | 'sse'; url: string; headers?: Record<string, string> }
-  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
-  | { type: 'cli'; command: string; args?: string[]; env?: Record<string, string>; cwd?: string; timeoutMs?: number };
+  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string>; cwd?: string };
 
 /**
  * Source with its credential pre-loaded

@@ -33,6 +33,8 @@ import {
   type CliDomainNamespace,
 } from '../../config/cli-domains.ts';
 import { FEATURE_FLAGS } from '../../feature-flags.ts';
+import { AGENTS_PLUGIN_NAME } from '../../skills/types.ts';
+import { GLOBAL_AGENT_SKILLS_DIR, PROJECT_AGENT_SKILLS_DIR } from '../../skills/storage.ts';
 import {
   shouldAllowToolInMode,
   isApiEndpointAllowed,
@@ -192,19 +194,20 @@ export function expandToolPaths(
  * Ensure skill names are fully-qualified with the correct plugin prefix.
  *
  * The SDK resolves skills as `pluginName:skillSlug` where the plugin name is
- * read from `.claude-plugin/plugin.json` `name` field.
- *
- * Craft resolves skills from the official workspace skills directory only:
+ * read from `.claude-plugin/plugin.json` `name` field. Skills can live in 3 tiers:
  *   1. Workspace: {workspaceRoot}/skills/{slug}/ → plugin name from plugin.json
+ *   2. Project:   {workingDir}/.agents/skills/{slug}/ → plugin name = ".agents"
+ *   3. Global:    ~/.agents/skills/{slug}/ → plugin name = ".agents"
  *
  * This function resolves the bare slug to the correct plugin prefix by checking
- * whether the workspace contains the skill. It also handles re-qualifying
- * skills that were incorrectly qualified by the UI.
+ * which directory actually contains the skill. It also handles re-qualifying
+ * skills that were incorrectly qualified by the UI (which always uses the
+ * workspace slug, even for global/project skills).
  *
  * @param input - The Skill tool input ({ skill: string, args?: string })
  * @param workspaceSlug - The workspace slug (from .claude-plugin/plugin.json name)
  * @param workspaceRootPath - Absolute path to the workspace root
- * @param workingDirectory - Unused. Kept for API compatibility.
+ * @param workingDirectory - Absolute path to the current working directory (optional)
  * @param onDebug - Optional debug callback
  * @returns SkillQualificationResult with modified flag and updated input
  */
@@ -247,7 +250,7 @@ export function qualifySkillName(
 
 /**
  * Resolve a skill slug to its fully-qualified plugin:slug name by checking
- * whether the official workspace skills directory contains the skill.
+ * which plugin directory actually contains the skill.
  */
 function resolveSkillPlugin(
   bareSlug: string,
@@ -255,11 +258,21 @@ function resolveSkillPlugin(
   workspaceRootPath: string,
   workingDirectory?: string,
 ): string {
-  void workingDirectory;
+  // Priority order matches loadAllSkills: project (highest) > workspace > global (lowest)
 
-  // Workspace: {workspaceRoot}/skills/{slug}/SKILL.md
+  // 1. Project: {workingDir}/.agents/skills/{slug}/SKILL.md
+  if (workingDirectory && existsSync(join(workingDirectory, PROJECT_AGENT_SKILLS_DIR, bareSlug, 'SKILL.md'))) {
+    return `${AGENTS_PLUGIN_NAME}:${bareSlug}`;
+  }
+
+  // 2. Workspace: {workspaceRoot}/skills/{slug}/SKILL.md
   if (existsSync(join(workspaceRootPath, 'skills', bareSlug, 'SKILL.md'))) {
     return `${workspaceSlug}:${bareSlug}`;
+  }
+
+  // 3. Global: ~/.agents/skills/{slug}/SKILL.md
+  if (existsSync(join(GLOBAL_AGENT_SKILLS_DIR, bareSlug, 'SKILL.md'))) {
+    return `${AGENTS_PLUGIN_NAME}:${bareSlug}`;
   }
 
   // Fallback: assume workspace plugin (original behavior)

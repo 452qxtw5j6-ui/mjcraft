@@ -16,7 +16,6 @@ files:
   - "!dist/renderer/src/**"
   - "!**/*.map"
   - package.json
-  - resources/**/*
   # Include bundled MCP servers (bridge + session) for Codex sessions
   - resources/bridge-mcp-server/**/*
   - resources/session-mcp-server/**/*
@@ -107,8 +106,6 @@ mac:
         - "!vendor/ripgrep/arm64-linux/**"
         - "!vendor/ripgrep/x64-linux/**"
         - "!vendor/ripgrep/x64-win32/**"
-    - from: ../../packages/shared/src/agent/powershell-parser.ps1
-      to: app/resources/powershell-parser.ps1
   # Exclude binaries for other platforms
   files:
     - "!**/vendor/codex/linux-*/**"
@@ -118,15 +115,15 @@ mac:
     - "!**/resources/bin/win32-*/**"
     - "!**/resources/bin/linux-*/**"
   # Use predictable naming for macOS packages (applies to zip; dmg uses its own config below)
-  artifactName: "Craft-Agent-${arch}.${ext}"
+  artifactName: "Craft-Agents-${arch}.${ext}"
   # Code signing & notarization (disabled by default for local builds)
   # To enable: set CSC_LINK, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
   # notarize:
   #   teamId: ${APPLE_TEAM_ID}
 
 dmg:
-  # Use predictable naming: Craft-Agent-arm64.dmg, Craft-Agent-x64.dmg
-  artifactName: "Craft-Agent-${arch}.dmg"
+  # Use predictable naming: Craft-Agents-arm64.dmg, Craft-Agents-x64.dmg
+  artifactName: "Craft-Agents-${arch}.dmg"
   # Custom background (multi-resolution TIFF with 1x+2x for retina support)
   background: resources/dmg-background.tiff
   # Use app icon as the mounted volume icon in Finder
@@ -150,8 +147,8 @@ win:
     - target: nsis
       arch:
         - x64
-  # Use predictable naming: Craft-Agent-x64.exe
-  artifactName: "Craft-Agent-${arch}.${ext}"
+  # Use predictable naming: Craft-Agents-x64.exe
+  artifactName: "Craft-Agents-${arch}.${ext}"
   files:
     # Exclude binaries for other platforms
     - "!**/vendor/codex/darwin-*/**"
@@ -179,8 +176,6 @@ win:
         - "!vendor/ripgrep/x64-darwin/**"
         - "!vendor/ripgrep/arm64-linux/**"
         - "!vendor/ripgrep/x64-linux/**"
-    - from: ../../packages/shared/src/agent/powershell-parser.ps1
-      to: app/resources/powershell-parser.ps1
     - from: vendor/bun/bun.exe
       to: vendor/bun/bun.exe
     - from: vendor/codex/win32-x64
@@ -205,7 +200,7 @@ linux:
     - target: AppImage
       arch:
         - x64
-  artifactName: "Craft-Agent-${arch}.${ext}"
+  artifactName: "Craft-Agents-${arch}.${ext}"
   extraResources:
     - from: node_modules/@anthropic-ai/claude-agent-sdk
       to: app/node_modules/@anthropic-ai/claude-agent-sdk
@@ -214,8 +209,6 @@ linux:
         - "!vendor/ripgrep/arm64-darwin/**"
         - "!vendor/ripgrep/x64-darwin/**"
         - "!vendor/ripgrep/x64-win32/**"
-    - from: ../../packages/shared/src/agent/powershell-parser.ps1
-      to: app/resources/powershell-parser.ps1
   # Exclude binaries for other platforms
   files:
     - "!**/vendor/codex/darwin-*/**"
