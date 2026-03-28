@@ -109,6 +109,10 @@ export const CHANNEL_MAP = {
   onMenuNewChat: listener(RPC_CHANNELS.menu.NEW_CHAT),
   onMenuOpenSettings: listener(RPC_CHANNELS.menu.OPEN_SETTINGS),
   onMenuKeyboardShortcuts: listener(RPC_CHANNELS.menu.KEYBOARD_SHORTCUTS),
+  onMenuFocusSidebar: listener(RPC_CHANNELS.menu.FOCUS_SIDEBAR),
+  onMenuFocusNavigator: listener(RPC_CHANNELS.menu.FOCUS_NAVIGATOR),
+  onMenuFocusChat: listener(RPC_CHANNELS.menu.FOCUS_CHAT),
+  onMenuDeleteCurrentSession: listener(RPC_CHANNELS.menu.DELETE_CURRENT_SESSION),
   onMenuToggleFocusMode: listener(RPC_CHANNELS.menu.TOGGLE_FOCUS_MODE),
   onMenuToggleSidebar: listener(RPC_CHANNELS.menu.TOGGLE_SIDEBAR),
 

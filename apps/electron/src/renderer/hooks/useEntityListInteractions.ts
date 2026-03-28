@@ -30,6 +30,8 @@ export interface UseEntityListInteractionsOptions<T> {
     onActivate?: (item: T, index: number) => void
     /** Called when arrow keys move to a new item */
     onNavigate?: (item: T, index: number) => void
+    /** Called when Delete/Backspace is pressed on the active item */
+    onDelete?: (item: T, index: number) => void
     /** Whether keyboard navigation is enabled (default: true) */
     enabled?: boolean
     /** Keep DOM focus elsewhere (e.g. search input) while navigating (default: false) */
@@ -186,6 +188,10 @@ export function useEntityListInteractions<T>({
     keyboardOpts?.onActivate?.(item, index)
   }, [multiSelectEnabled, isMultiSelectActive, getId, keyboardOpts?.onActivate]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const handleDelete = useCallback((item: T, index: number) => {
+    keyboardOpts?.onDelete?.(item, index)
+  }, [keyboardOpts?.onDelete])
+
   const handleExtendSelection = useCallback((toIndex: number) => {
     if (multiSelectEnabled) {
       range(toIndex)
@@ -205,6 +211,7 @@ export function useEntityListInteractions<T>({
     wrap: true,
     onNavigate: handleNavigate,
     onActivate: handleActivate,
+    onDelete: handleDelete,
     enabled: keyboardOpts?.enabled ?? true,
     moveFocus: !(keyboardOpts?.virtualFocus ?? false),
     onExtendSelection: multiSelectEnabled ? handleExtendSelection : undefined,

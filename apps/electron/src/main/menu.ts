@@ -86,7 +86,6 @@ export async function rebuildMenu(): Promise<void> {
         {
           label: 'Settings...',
           accelerator: 'CmdOrCtrl+,',
-          registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => sendToRenderer(RPC_CHANNELS.menu.OPEN_SETTINGS)
         },
         { type: 'separator' as const },
@@ -105,13 +104,11 @@ export async function rebuildMenu(): Promise<void> {
         {
           label: 'New Chat',
           accelerator: 'CmdOrCtrl+N',
-          registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => sendToRenderer(RPC_CHANNELS.menu.NEW_CHAT)
         },
         {
           label: 'New Window',
           accelerator: 'CmdOrCtrl+Shift+N',
-          registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => {
             const focused = BrowserWindow.getFocusedWindow()
             if (focused) {
@@ -121,6 +118,11 @@ export async function rebuildMenu(): Promise<void> {
               }
             }
           }
+        },
+        {
+          label: 'Delete Current Session',
+          accelerator: 'CmdOrCtrl+Backspace',
+          click: () => sendToRenderer(RPC_CHANNELS.menu.DELETE_CURRENT_SESSION)
         },
         { type: 'separator' as const },
         isMac ? { role: 'close' as const } : { role: 'quit' as const }
@@ -237,7 +239,6 @@ export async function rebuildMenu(): Promise<void> {
         {
           label: 'Keyboard Shortcuts',
           accelerator: 'CmdOrCtrl+/',
-          registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => sendToRenderer(RPC_CHANNELS.menu.KEYBOARD_SHORTCUTS)
         }
       ]
@@ -282,7 +283,6 @@ function toElectronMenuItem(item: MenuItem): Electron.MenuItemConstructorOptions
     return {
       label: item.label,
       accelerator: item.shortcut,
-      registerAccelerator: false,  // Action registry handles the keyboard shortcut
       click: () => sendToRenderer(item.ipcChannel as MenuBroadcastChannel),
     }
   }

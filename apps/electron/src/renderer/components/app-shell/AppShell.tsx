@@ -563,6 +563,7 @@ function AppShellContent({
     y: typeof window !== 'undefined' ? Math.round(window.innerHeight / 4) : 180,
   }))
   const lastPointerPositionRef = React.useRef(linearQuickIssueAnchor)
+  const linearQuickIssueReturnZoneRef = React.useRef<typeof currentZone>(null)
 
   // Check for unseen release notes on mount
   useEffect(() => {
@@ -1074,7 +1075,7 @@ function AppShellContent({
   }, [navState, navigate])
 
   // Focus zone management
-  const { focusZone, focusNextZone, focusPreviousZone } = useFocusContext()
+  const { currentZone, focusZone, focusNextZone, focusPreviousZone } = useFocusContext()
 
   // Register focus zones
   const { zoneRef: sidebarRef, isFocused: sidebarFocused } = useFocusZone({ zoneId: 'sidebar' })
@@ -1167,12 +1168,30 @@ function AppShellContent({
   useAction('chat.prevSearchMatch', () => chatDisplayRef.current?.goToPrevMatch(), {
     enabled: () => searchActive && (chatMatchInfo.count ?? 0) > 0
   })
+  const isEditableActiveElement = useCallback(() => {
+    const activeElement = document.activeElement as HTMLElement | null
+    return activeElement?.tagName === 'TEXTAREA' ||
+      activeElement?.tagName === 'INPUT' ||
+      activeElement?.isContentEditable === true
+  }, [])
+
   useAction('chat.openLinearQuickIssue', () => {
+    linearQuickIssueReturnZoneRef.current = currentZone
     setLinearQuickIssueAnchor(lastPointerPositionRef.current)
     setLinearQuickIssueOpen(true)
   }, {
     enabled: () => !!activeWorkspace && !hasOpenOverlay()
-  }, [activeWorkspace])
+  }, [activeWorkspace, currentZone])
+  useAction('chat.deleteCurrentSession', () => {
+    if (!effectiveSessionId) return
+
+    const returnZone = currentZone ?? 'chat'
+    void contextValue.onDeleteSession(effectiveSessionId).finally(() => {
+      focusZone(returnZone, { intent: 'programmatic', moveFocus: false })
+    })
+  }, {
+    enabled: () => !!effectiveSessionId && !hasOpenOverlay()
+  }, [currentZone, effectiveSessionId, contextValue.onDeleteSession, focusZone])
 
   // ESC to stop processing - requires double-press within 1 second
   // First press shows warning overlay, second press interrupts
@@ -1660,6 +1679,40 @@ function AppShellContent({
     return cleanup
   }, [])
 
+  React.useEffect(() => {
+    const cleanup = window.electronAPI.onMenuFocusSidebar?.(() => {
+      focusZone('sidebar', { intent: 'keyboard' })
+    })
+    return cleanup
+  }, [focusZone])
+
+  React.useEffect(() => {
+    const cleanup = window.electronAPI.onMenuFocusNavigator?.(() => {
+      focusZone('navigator', { intent: 'keyboard' })
+    })
+    return cleanup
+  }, [focusZone])
+
+  React.useEffect(() => {
+    const cleanup = window.electronAPI.onMenuFocusChat?.(() => {
+      focusZone('chat', { intent: 'keyboard' })
+    })
+    return cleanup
+  }, [focusZone])
+
+  React.useEffect(() => {
+    const cleanup = window.electronAPI.onMenuDeleteCurrentSession?.(() => {
+      const blockedByEditable = isEditableActiveElement()
+      if (!effectiveSessionId || blockedByEditable) return
+
+      const returnZone = currentZone ?? 'chat'
+      void contextValue.onDeleteSession(effectiveSessionId).finally(() => {
+        focusZone(returnZone, { intent: 'programmatic', moveFocus: false })
+      })
+    })
+    return cleanup
+  }, [currentZone, effectiveSessionId, contextValue.onDeleteSession, focusZone, isEditableActiveElement])
+
   // Listen for sidebar toggle from menu (View → Toggle Sidebar)
   React.useEffect(() => {
     const cleanup = window.electronAPI.onMenuToggleSidebar?.(() => {
@@ -1804,7 +1857,9 @@ function AppShellContent({
 
     const activeElement = document.activeElement as HTMLElement | null
     activeElement?.blur?.()
-    focusZone('chat', { intent: 'programmatic', moveFocus: false })
+    const returnZone = linearQuickIssueReturnZoneRef.current ?? 'chat'
+    focusZone(returnZone, { intent: 'programmatic', moveFocus: false })
+    linearQuickIssueReturnZoneRef.current = null
   }, [focusZone])
 
   // Captures the bounding rect of the currently-open context menu trigger (the button).

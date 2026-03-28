@@ -92,6 +92,14 @@ export function SessionItem({
       buttonProps={{
         ...itemProps,
         onKeyDown: (e: React.KeyboardEvent) => {
+          const isDeleteShortcut = (e.metaKey || e.ctrlKey) && (e.key === 'Backspace' || e.key === 'Delete')
+          if (isDeleteShortcut) {
+            e.preventDefault()
+            e.stopPropagation()
+            void ctx.onDelete(item.id)
+            return
+          }
+
           ;(itemProps as { onKeyDown: (event: React.KeyboardEvent) => void }).onKeyDown(e)
           ctx.onKeyDown(e, item)
         },

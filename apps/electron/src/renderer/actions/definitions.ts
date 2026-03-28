@@ -156,6 +156,16 @@ export const actions = {
     scope: 'navigator',
     when: 'navigatorFocus',
   },
+  'navigator.deleteSelectedSession': {
+    id: 'navigator.deleteSelectedSession',
+    label: 'Delete Selected Session',
+    description: 'Delete the currently selected session',
+    defaultHotkey: 'mod+backspace',
+    physicalKey: 'Backspace',
+    category: 'Navigator',
+    scope: 'navigator',
+    when: 'navigatorFocus && !inputFocus',
+  },
 
   // ═══════════════════════════════════════════
   // Panels
@@ -214,7 +224,17 @@ export const actions = {
     physicalKey: 'KeyC',
     category: 'Chat',
     scope: 'chat',
-    when: 'chatFocus && !inputFocus && !menuOpen',
+    when: 'chatFocus && !inputFocus && !menuOpen || navigatorFocus && !inputFocus && !menuOpen',
+  },
+  'chat.deleteCurrentSession': {
+    id: 'chat.deleteCurrentSession',
+    label: 'Delete Current Session',
+    description: 'Delete the current chat session',
+    defaultHotkey: 'mod+backspace',
+    physicalKey: 'Backspace',
+    category: 'Chat',
+    scope: 'chat',
+    when: 'chatFocus && !inputFocus',
   },
 
 } as const satisfies Record<string, ActionDefinition>

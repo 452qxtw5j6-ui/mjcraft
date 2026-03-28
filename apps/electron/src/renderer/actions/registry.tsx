@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useCallback, useRef, useEffect } from 'react'
 import { actions, type ActionId } from './definitions'
 import type { ActionDefinition, ActionHandler } from './types'
-import { isMac } from '@/lib/platform'
 import { getKeybindingContext, evaluateWhen } from './keybinding-context'
+import { formatHotkeyDisplay, matchesHotkey } from './keybinding-utils'
 
 interface ActionRegistryContextType {
   // Register a handler for an action
@@ -130,72 +130,4 @@ export function useActionRegistry() {
     throw new Error('useActionRegistry must be used within ActionRegistryProvider')
   }
   return context
-}
-
-// ─────────────────────────────────────────────
-// Utility functions
-// ─────────────────────────────────────────────
-
-function matchesHotkey(e: KeyboardEvent, hotkey: string, action?: ActionDefinition): boolean {
-  const parts = hotkey.toLowerCase().split('+')
-  const key = parts[parts.length - 1]
-  const needsMod = parts.includes('mod')
-  const needsShift = parts.includes('shift')
-  const needsAlt = parts.includes('alt')
-
-  const modPressed = isMac ? e.metaKey : e.ctrlKey
-  const logicalKeyMatches = e.key.toLowerCase() === key
-
-  // Handle special keys via physical code where logical values can vary by layout.
-  const specialKeys: Record<string, string> = {
-    '[': 'BracketLeft',
-    ']': 'BracketRight',
-    ',': 'Comma',
-    '.': 'Period',
-    'left': 'ArrowLeft',
-    'right': 'ArrowRight',
-    'up': 'ArrowUp',
-    'down': 'ArrowDown',
-    'escape': 'Escape',
-    'tab': 'Tab',
-  }
-
-  const specialCode = specialKeys[key]
-
-  // Important: for text shortcuts (A-Z/0-9), match logical key only.
-  // Mixing in physical code (e.g. KeyQ) causes AZERTY/QWERTZ collisions such as
-  // Cmd+A incorrectly matching a Cmd+Q binding.
-  const codeMatches = specialCode
-    ? e.code === specialCode
-    : logicalKeyMatches
-
-  const physicalCodeMatches = action?.physicalKey
-    ? e.code === action.physicalKey
-    : false
-
-  // Check modifier requirements
-  const modCorrect = needsMod ? modPressed : !modPressed
-  const shiftCorrect = needsShift ? e.shiftKey : !e.shiftKey
-  const altCorrect = needsAlt ? e.altKey : !e.altKey
-
-  return (codeMatches || physicalCodeMatches) && modCorrect && shiftCorrect && altCorrect
-}
-
-function formatHotkeyDisplay(hotkey: string): string {
-  const parts = hotkey.toLowerCase().split('+')
-
-  const symbols = parts.map(part => {
-    if (part === 'mod') return isMac ? '⌘' : 'Ctrl'
-    if (part === 'shift') return isMac ? '⇧' : 'Shift'
-    if (part === 'alt') return isMac ? '⌥' : 'Alt'
-    if (part === 'escape') return 'Esc'
-    if (part === 'tab') return 'Tab'
-    if (part === 'left') return '←'
-    if (part === 'right') return '→'
-    if (part === '[') return '['
-    if (part === ']') return ']'
-    return part.toUpperCase()
-  })
-
-  return isMac ? symbols.join('') : symbols.join('+')
 }

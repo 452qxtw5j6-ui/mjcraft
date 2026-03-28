@@ -435,6 +435,12 @@ export function SessionList({
         }
         onFocusChatInput?.(row.item.id)
       }, [selectionStore.state, navigateToSession, onFocusChatInput]),
+      onDelete: useCallback((row: SessionListRow) => {
+        if (isMultiSelectActive || showEscapeOverlay) return
+        void handleDeleteWithToast(row.item.id).finally(() => {
+          focusZone('navigator', { intent: 'programmatic', moveFocus: false })
+        })
+      }, [isMultiSelectActive, showEscapeOverlay, handleDeleteWithToast, focusZone]),
       enabled: isKeyboardEligible,
       virtualFocus: searchActive ?? false,
     },
@@ -474,6 +480,17 @@ export function SessionList({
   }, {
     enabled: () => isMultiSelectActive && !showEscapeOverlay,
   }, [isMultiSelectActive, showEscapeOverlay, interactions.selection, selectionStore.state.selected, navigateToSession])
+  useAction('navigator.deleteSelectedSession', () => {
+    const selectedId = selectionStore.state.selected
+    if (!selectedId) return
+    void handleDeleteWithToast(selectedId).finally(() => {
+      focusZone('navigator', { intent: 'programmatic', moveFocus: false })
+    })
+  }, {
+    enabled: () => {
+      return isFocused && !isMultiSelectActive && !!selectionStore.state.selected && !showEscapeOverlay
+    },
+  }, [focusZone, isFocused, isMultiSelectActive, selectionStore.state.selected, showEscapeOverlay, handleDeleteWithToast])
 
   // --- Click handlers ---
   const handleSelectSession = useCallback((row: SessionListRow, index: number) => {

@@ -318,14 +318,23 @@ export class WindowManager {
 
     // Detect Cmd/Ctrl+W before close events so renderer can distinguish close source.
     // Intent is short-lived to avoid stale classification.
-    window.webContents.on('before-input-event', (_event, input) => {
+    window.webContents.on('before-input-event', (event, input) => {
       if (!input || input.type !== 'keyDown') return
       const key = input.key?.toLowerCase?.()
-      if (key !== 'w') return
 
-      const isCloseShortcut = process.platform === 'darwin'
+      const isCommandModifier = process.platform === 'darwin'
         ? !!input.meta
         : !!input.control
+
+      if (isCommandModifier && (key === 'backspace' || key === 'delete')) {
+        event.preventDefault()
+        this.pushToWindow(window, RPC_CHANNELS.menu.DELETE_CURRENT_SESSION)
+        return
+      }
+
+      if (key !== 'w') return
+
+      const isCloseShortcut = isCommandModifier
 
       if (!isCloseShortcut) return
 

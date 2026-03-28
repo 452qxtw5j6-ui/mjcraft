@@ -362,6 +362,10 @@ export interface ElectronAPI {
   onMenuNewChat(callback: () => void): () => void
   onMenuOpenSettings(callback: () => void): () => void
   onMenuKeyboardShortcuts(callback: () => void): () => void
+  onMenuFocusSidebar(callback: () => void): () => void
+  onMenuFocusNavigator(callback: () => void): () => void
+  onMenuFocusChat(callback: () => void): () => void
+  onMenuDeleteCurrentSession(callback: () => void): () => void
   onMenuToggleFocusMode(callback: () => void): () => void
   onMenuToggleSidebar(callback: () => void): () => void
 
