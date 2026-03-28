@@ -17,7 +17,7 @@
 import http from 'node:http';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
-import { mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { mkdirSync, readdirSync, statSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 // Pi SDK
@@ -200,6 +200,55 @@ type OutboundMessage =
 let piSession: AgentSession | null = null;
 let piModelRegistry: PiModelRegistry | null = null;
 let moduleAuthStorage: PiAuthStorage | null = null;
+
+function getDesktopAlignedCompactionSettings(
+  modelId: string | undefined,
+  piAuthProvider: string | undefined,
+): { enabled: true; reserveTokens: number; keepRecentTokens: number } | null {
+  if (getDesktopAlignedContextWindow(modelId, piAuthProvider) === null) {
+    return null;
+  }
+
+  const contextWindow = getDesktopAlignedContextWindow(modelId, piAuthProvider)!;
+  const autoCompactTokenLimit = 850_000;
+  return {
+    enabled: true,
+    reserveTokens: Math.max(0, contextWindow - autoCompactTokenLimit),
+    keepRecentTokens: 20_000,
+  };
+}
+
+function getDesktopAlignedContextWindow(
+  modelId: string | undefined,
+  piAuthProvider: string | undefined,
+): number | null {
+  const bareModelId = modelId?.startsWith('pi/') ? modelId.slice(3) : modelId;
+  if (piAuthProvider !== 'openai-codex' || bareModelId !== 'gpt-5.4') {
+    return null;
+  }
+  return 1_050_000;
+}
+
+function writeSessionSettings(agentDir: string, modelId: string | undefined, piAuthProvider: string | undefined): void {
+  const compaction = getDesktopAlignedCompactionSettings(modelId, piAuthProvider);
+  if (!compaction) return;
+
+  const settingsPath = join(agentDir, 'settings.json');
+  let nextSettings: Record<string, unknown> = {};
+
+  if (existsSync(settingsPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
+      nextSettings = parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      nextSettings = {};
+    }
+  }
+
+  nextSettings.compaction = compaction;
+  writeFileSync(settingsPath, `${JSON.stringify(nextSettings, null, 2)}\n`, 'utf-8');
+  debugLog(`Wrote session settings.json with compaction.reserveTokens=${compaction.reserveTokens} keepRecentTokens=${compaction.keepRecentTokens}`);
+}
 let unsubscribeEvents: (() => void) | null = null;
 
 // Init config (set on 'init' message)
@@ -538,6 +587,7 @@ async function ensureSession(): Promise<AgentSession> {
   if (initConfig.sessionPath) {
     const agentDir = initConfig.agentDir || join(initConfig.sessionPath, '.pi-agent');
     mkdirSync(agentDir, { recursive: true });
+    writeSessionSettings(agentDir, initConfig.model, initConfig.piAuth?.provider);
     sessionOptions.agentDir = agentDir;
 
     // Session resume: use a per-Craft-session directory so the Pi SDK can
@@ -583,7 +633,10 @@ async function ensureSession(): Promise<AgentSession> {
     try {
       const piModel = resolvePiModel(modelRegistry, initConfig.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint());
       if (piModel) {
-        sessionOptions.model = piModel;
+        const contextWindowOverride = getDesktopAlignedContextWindow(initConfig.model, initConfig.piAuth?.provider);
+        sessionOptions.model = contextWindowOverride !== null
+          ? { ...piModel, contextWindow: contextWindowOverride }
+          : piModel;
         setInterceptorApiHints(piModel as { api?: string; provider?: string; baseUrl?: string });
       } else {
         setInterceptorApiHints(undefined);

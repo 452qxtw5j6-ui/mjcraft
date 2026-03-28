@@ -13,4 +13,10 @@ describe('models-pi filtering', () => {
     const ids = models.map(m => m.id);
     expect(ids.some(id => id.startsWith('pi/gpt-4'))).toBe(false);
   });
+
+  it('overrides gpt-5.4 context window to match the Codex desktop app', () => {
+    const models = getPiModelsForAuthProvider('openai-codex');
+    const model = models.find(m => m.id === 'pi/gpt-5.4');
+    expect(model?.contextWindow).toBe(1_050_000);
+  });
 });

@@ -24,7 +24,19 @@ import type { ModelDefinition } from './models.ts';
 /**
  * Convert a Pi SDK Model to our ModelDefinition format.
  */
-function piModelToDefinition(m: Model<Api>): ModelDefinition {
+function getPiContextWindowOverride(piAuthProvider: string | undefined, modelId: string): number | undefined {
+  // Temporary local override:
+  // Pi 0.57.0 exposes openai-codex/gpt-5.4 at 272k, while the same upstream
+  // catalog includes GPT-5.4 variants with the same 1.05M context window
+  // that the current Codex desktop app reports locally.
+  // Keep Craft's displayed/tracked context value aligned with Codex desktop.
+  if (piAuthProvider === 'openai-codex' && modelId === 'gpt-5.4') {
+    return 1_050_000;
+  }
+  return undefined;
+}
+
+function piModelToDefinition(m: Model<Api>, piAuthProvider?: string): ModelDefinition {
   const lastPart = m.name.split(/[\s-]/).pop() ?? m.name;
   const shortName = m.name.length > 20 ? lastPart : m.name;
 
@@ -34,7 +46,7 @@ function piModelToDefinition(m: Model<Api>): ModelDefinition {
     shortName,
     description: `${m.provider} model via Craft Agents Backend`,
     provider: 'pi',
-    contextWindow: m.contextWindow,
+    contextWindow: getPiContextWindowOverride(piAuthProvider, m.id) ?? m.contextWindow,
     supportsThinking: m.reasoning,
   };
 }
@@ -81,7 +93,7 @@ export function getPiModelsForAuthProvider(piAuthProvider: string): ModelDefinit
     if (models.length > 0) {
       return models
         .filter(m => !isExcludedPiModel(m.id))
-        .map(piModelToDefinition);
+        .map(m => piModelToDefinition(m, piAuthProvider));
     }
   } catch {
     // Provider not recognized by SDK — fall through
@@ -99,7 +111,7 @@ export function getAllPiModels(): ModelDefinition[] {
       const models = getModels(provider);
       allModels.push(...models
         .filter(m => !isExcludedPiModel(m.id))
-        .map(piModelToDefinition)
+        .map(m => piModelToDefinition(m, provider))
       );
     } catch {
       // Skip providers that fail
