@@ -1773,6 +1773,7 @@ export class PiAgent extends BaseAgent {
         this.config.session?.workingDirectory,
         this.config.systemPromptPreset,
         'Craft Agents Backend', // backendName
+        undefined, // includeCoAuthoredBy
         promptCapabilities,
         loadPersonaPromptForInjection(
           this.config.workspace.rootPath,

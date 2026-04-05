@@ -139,6 +139,9 @@ export interface AppShellContextType {
   /** Whether this panel is the focused panel (for multi-panel visual differentiation) */
   isFocusedPanel?: boolean
 
+  /** Whether the shell is currently in compact/narrow mode */
+  isCompactMode?: boolean
+
   // Session list search state (for ChatDisplay highlighting)
   /** Current search query from session list - used to highlight matches in ChatDisplay */
   sessionListSearchQuery?: string
@@ -149,7 +152,7 @@ export interface AppShellContextType {
   /** Ref to ChatDisplay for navigation between matches */
   chatDisplayRef?: React.RefObject<ChatDisplayHandle>
   /** Callback when ChatDisplay match info changes (for immediate UI updates) */
-  onChatMatchInfoChange?: (info: { count: number; index: number }) => void
+  onChatMatchInfoChange?: (info: { sessionId: string | null; count: number; index: number; isHighlighting: boolean }) => void
 
   // Automation management
   /** Test an automation by ID — executes its actions and returns results */

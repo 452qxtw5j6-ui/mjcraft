@@ -172,6 +172,29 @@
         "@types/ws": "^8.18.1",
       },
     },
+    "apps/marketing": {
+      "name": "@craft-agent/marketing",
+      "version": "0.8.1",
+      "dependencies": {
+        "@craft-agent/ui": "workspace:*",
+        "@paper-design/shaders-react": "^0.0.70",
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1",
+        "react-router-dom": "^7.13.0",
+        "shiki": "^3.21.0",
+        "three": "^0.170.0",
+      },
+      "devDependencies": {
+        "@tailwindcss/vite": "^4.1.18",
+        "@types/react": "^18.3.0",
+        "@types/react-dom": "^18.3.0",
+        "@types/three": "^0.170.0",
+        "@vitejs/plugin-react": "^5.1.2",
+        "tailwindcss": "^4.1.18",
+        "typescript": "^5.0.0",
+        "vite": "^6.2.4",
+      },
+    },
     "apps/viewer": {
       "name": "@craft-agent/viewer",
       "version": "0.8.1",
@@ -212,6 +235,29 @@
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.2.19",
         "@modelcontextprotocol/sdk": ">=1.0.0",
+      },
+    },
+    "packages/craft-agents-commands": {
+      "name": "@craft-agent/craft-agents-commands",
+      "version": "0.8.1",
+      "dependencies": {
+        "@craft-agent/shared": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "@types/node": "^25.0.8",
+      },
+    },
+    "packages/craft-cli": {
+      "name": "@craft-agent/craft-cli",
+      "version": "0.8.1",
+      "dependencies": {
+        "@craft-agent/craft-agents-commands": "workspace:*",
+        "@craft-agent/shared": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "@types/node": "^25.0.8",
       },
     },
     "packages/pi-agent-server": {
@@ -258,6 +304,7 @@
         "@craft-agent/core": "workspace:*",
         "@craft-agent/shared": "workspace:*",
         "@mariozechner/pi-ai": "0.56.2",
+        "jose": "^6.0.0",
         "sharp": "0.34.5",
         "ws": "^8.19.0",
       },
@@ -3493,6 +3540,12 @@
 
     "@craft-agent/cli/@types/node": ["@types/node@22.19.6", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-qm+G8HuG6hOHQigsi7VGuLjUVu6TtBo/F05zvX04Mw2uCg9Dv0Qxy3Qw7j41SidlTcl5D/5yg0SEZqOB+EqZnQ=="],
 
+    "@craft-agent/craft-agents-commands/@types/bun": ["@types/bun@1.3.11", "", { "dependencies": { "bun-types": "1.3.11" } }, "sha512-5vPne5QvtpjGpsGYXiFyycfpDF2ECyPcTSsFBMa0fraoxiQyMJ3SmuQIGhzPg2WJuWxVBoxWJ2kClYTcw/4fAg=="],
+
+    "@craft-agent/craft-cli/@types/bun": ["@types/bun@1.3.11", "", { "dependencies": { "bun-types": "1.3.11" } }, "sha512-5vPne5QvtpjGpsGYXiFyycfpDF2ECyPcTSsFBMa0fraoxiQyMJ3SmuQIGhzPg2WJuWxVBoxWJ2kClYTcw/4fAg=="],
+
+    "@craft-agent/marketing/@paper-design/shaders-react": ["@paper-design/shaders-react@0.0.70", "", { "dependencies": { "@paper-design/shaders": "0.0.70" }, "peerDependencies": { "@types/react": "^18 || ^19", "react": "^18 || ^19" }, "optionalPeers": ["@types/react"] }, "sha512-9DkZXcyehorsZzyWnYV3OOO1i7rF7a5CkasjKJ1h1tLlY3JJLUEX9W+gZz7JgWHyvCimUu0OSq1sbHTb2OntRw=="],
+
     "@craft-agent/pi-agent-server/@mariozechner/pi-ai": ["@mariozechner/pi-ai@0.56.2", "", { "dependencies": { "@anthropic-ai/sdk": "^0.73.0", "@aws-sdk/client-bedrock-runtime": "^3.983.0", "@google/genai": "^1.40.0", "@mistralai/mistralai": "1.14.1", "@sinclair/typebox": "^0.34.41", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "chalk": "^5.6.2", "openai": "6.26.0", "partial-json": "^0.1.7", "proxy-agent": "^6.5.0", "undici": "^7.19.1", "zod-to-json-schema": "^3.24.6" }, "bin": { "pi-ai": "dist/cli.js" } }, "sha512-7cPhumqo/Ke7W4Lng5RyGmBWuhK0G9Z7JVfTl00m11snk5G+MYtNeqpi7VHZ5yW1K0DLsTAY9Mi2KLghaFImiA=="],
 
     "@craft-agent/pi-agent-server/@mariozechner/pi-coding-agent": ["@mariozechner/pi-coding-agent@0.56.2", "", { "dependencies": { "@mariozechner/jiti": "^2.6.2", "@mariozechner/pi-agent-core": "^0.56.2", "@mariozechner/pi-ai": "^0.56.2", "@mariozechner/pi-tui": "^0.56.2", "@silvia-odwyer/photon-node": "^0.3.4", "chalk": "^5.5.0", "cli-highlight": "^2.1.11", "diff": "^8.0.2", "extract-zip": "^2.0.1", "file-type": "^21.1.1", "glob": "^13.0.1", "hosted-git-info": "^9.0.2", "ignore": "^7.0.5", "marked": "^15.0.12", "minimatch": "^10.2.3", "proper-lockfile": "^4.1.2", "strip-ansi": "^7.1.0", "undici": "^7.19.1", "yaml": "^2.8.2" }, "optionalDependencies": { "@mariozechner/clipboard": "^0.3.2" }, "bin": { "pi": "dist/cli.js" } }, "sha512-svK9zg5f+I4yko57MzdfBQBqZpFT1Hr8nZ3o7nYMTuIFcf2vABylA8lNI57Avjg38js1PToc6jXXFa/3JWqELg=="],
@@ -3958,6 +4011,12 @@
     "@craft-agent/cli/@types/bun/bun-types": ["bun-types@1.3.11", "", { "dependencies": { "@types/node": "*" } }, "sha512-1KGPpoxQWl9f6wcZh57LvrPIInQMn2TQ7jsgxqpRzg+l0QPOFvJVH7HmvHo/AiPgwXy+/Thf6Ov3EdVn1vOabg=="],
 
     "@craft-agent/cli/@types/node/undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
+
+    "@craft-agent/craft-agents-commands/@types/bun/bun-types": ["bun-types@1.3.11", "", { "dependencies": { "@types/node": "*" } }, "sha512-1KGPpoxQWl9f6wcZh57LvrPIInQMn2TQ7jsgxqpRzg+l0QPOFvJVH7HmvHo/AiPgwXy+/Thf6Ov3EdVn1vOabg=="],
+
+    "@craft-agent/craft-cli/@types/bun/bun-types": ["bun-types@1.3.11", "", { "dependencies": { "@types/node": "*" } }, "sha512-1KGPpoxQWl9f6wcZh57LvrPIInQMn2TQ7jsgxqpRzg+l0QPOFvJVH7HmvHo/AiPgwXy+/Thf6Ov3EdVn1vOabg=="],
+
+    "@craft-agent/marketing/@paper-design/shaders-react/@paper-design/shaders": ["@paper-design/shaders@0.0.70", "", {}, "sha512-d9LQcmPoEm3+Y6Vuz7cvsnSelfTM5QD63yQ3ddLM7QGYfoSjbQiU38kzjA4O3oCQ6zv23o/IGvGA8k9S/L+kZw=="],
 
     "@craft-agent/pi-agent-server/@mariozechner/pi-ai/ajv": ["ajv@8.17.1", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-B/gBuNg5SiMTrPkC+A2+cW0RszwxYmn6VYxB/inlBStS5nx6xHIt/ehKRhIMhqusl7a8LjQoZnjCs5vhwxOQ1g=="],
 

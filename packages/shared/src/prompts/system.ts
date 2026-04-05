@@ -1,4 +1,4 @@
-import { formatPreferencesForPrompt } from '../config/preferences.ts';
+import { formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
 import { debug } from '../utils/debug.ts';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, relative, basename } from 'path';
@@ -71,12 +71,43 @@ export function findProjectContextFile(directory: string): string | null {
   return null;
 }
 
+// ── Context file cache ──────────────────────────────────────────────────
+// The glob walk is expensive (~7s in large monorepos). The result (a list of
+// file paths like "CLAUDE.md", "apps/electron/CLAUDE.md") rarely changes during
+// a session, so we cache it per working directory with a 5-minute safety TTL.
+// Explicit invalidation happens on working directory changes.
+
+const contextFileCache = new Map<string, { files: string[]; ts: number }>();
+const CONTEXT_FILE_CACHE_TTL = 5 * 60_000; // 5 minutes
+
+/** Invalidate the cached context file list for a directory (or all directories). */
+export function invalidateContextFileCache(directory?: string): void {
+  if (directory) {
+    contextFileCache.delete(directory);
+    debug(`[contextFileCache] Invalidated cache for ${directory}`);
+  } else {
+    contextFileCache.clear();
+    debug(`[contextFileCache] Cleared all cached entries`);
+  }
+}
+
 /**
  * Find all project context files (AGENTS.md or CLAUDE.md) recursively in a directory.
  * Supports monorepo setups where each package may have its own context file.
  * Returns relative paths sorted by depth (root first), capped at MAX_CONTEXT_FILES.
+ *
+ * Results are cached per directory. Call invalidateContextFileCache() on working
+ * directory changes. A 5-minute TTL acts as a safety net for cache staleness.
  */
 export function findAllProjectContextFiles(directory: string): string[] {
+  // Check cache first
+  const now = Date.now();
+  const cached = contextFileCache.get(directory);
+  if (cached && now - cached.ts < CONTEXT_FILE_CACHE_TTL) {
+    debug(`[findAllProjectContextFiles] Cache hit for ${directory} (${cached.files.length} files)`);
+    return cached.files;
+  }
+
   try {
     // Build glob ignore patterns from excluded directories
     const ignorePatterns = EXCLUDED_DIRECTORIES.map((dir) => `**/${dir}/**`);
@@ -91,6 +122,7 @@ export function findAllProjectContextFiles(directory: string): string[] {
     });
 
     if (matches.length === 0) {
+      contextFileCache.set(directory, { files: [], ts: now });
       return [];
     }
 
@@ -107,6 +139,7 @@ export function findAllProjectContextFiles(directory: string): string[] {
     const capped = sorted.slice(0, MAX_CONTEXT_FILES);
 
     debug(`[findAllProjectContextFiles] Found ${matches.length} files, returning ${capped.length}`);
+    contextFileCache.set(directory, { files: capped, ts: now });
     return capped;
   } catch (error) {
     debug(`[findAllProjectContextFiles] Error searching directory:`, error);
@@ -258,8 +291,12 @@ export interface SystemPromptOptions {
   workingDirectory?: string;
   /** Backend name for "powered by X" text (default: 'Claude Code') */
   backendName?: string;
+  /** Whether to include the Co-Authored-By git trailer guidance */
+  includeCoAuthoredBy?: boolean;
   /** Prompt-only guidance toggles for backend/runtime-specific workflows */
   promptCapabilities?: PromptGuidanceCapabilities;
+  /** Optional persona block appended to the system prompt */
+  personaPrompt?: string;
 }
 
 export interface PromptGuidanceCapabilities {
@@ -330,6 +367,9 @@ Use config_validate to verify changes match the expected schema.
  * @param workingDirectory - Working directory for context file discovery
  * @param preset - System prompt preset ('default' | 'mini' | custom string)
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
+ * @param includeCoAuthoredBy - Whether to include git trailer guidance
+ * @param promptCapabilities - Prompt-only workflow guidance toggles
+ * @param personaPrompt - Optional persona block injected into the prompt
  */
 export function getSystemPrompt(
   pinnedPreferencesPrompt?: string,
@@ -338,6 +378,7 @@ export function getSystemPrompt(
   workingDirectory?: string,
   preset?: SystemPromptPreset | string,
   backendName?: string,
+  includeCoAuthoredBy?: boolean,
   promptCapabilities?: PromptGuidanceCapabilities,
   personaPrompt?: string,
 ): string {
@@ -363,6 +404,7 @@ export function getSystemPrompt(
   const basePrompt = getCraftAssistantPrompt(
     workspaceRootPath,
     backendName,
+    includeCoAuthoredBy,
     resolvePromptGuidanceProfile({ backendName }).capabilities,
     promptCapabilities,
   );
@@ -444,6 +486,7 @@ function getCraftAgentEnvironmentMarker(): string {
  *
  * @param workspaceRootPath - Root path of the workspace
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
+ * @param includeCoAuthoredBy - Whether to include the Co-Authored-By git trailer instruction (default: true)
  */
 function resolvePromptGuidanceCapabilities(
   defaults: Required<PromptGuidanceCapabilities>,
@@ -479,12 +522,6 @@ export function resolvePromptGuidanceProfile(
     };
   } else if (input.providerType === 'pi' || input.providerType === 'pi_compat') {
     profile = 'pi-runtime';
-    defaults = {
-      submitPlanGuide: true,
-      mcpNamingGuide: true,
-      sourceManagementGuide: true,
-      livePlanningGuide: false,
-    };
   }
 
   return {
@@ -605,6 +642,7 @@ The \`session\` MCP server provides tools for managing external sources:
 function getCraftAssistantPrompt(
   workspaceRootPath?: string,
   backendName: string = 'Claude Code',
+  includeCoAuthoredBy: boolean = true,
   defaultCapabilities: Required<PromptGuidanceCapabilities> = resolvePromptGuidanceProfile({ backendName }).capabilities,
   promptCapabilities?: PromptGuidanceCapabilities,
 ): string {
@@ -723,15 +761,14 @@ When you learn information about the user (their name, timezone, location, langu
 
 !!IMPORTANT!!. You must refer to yourself as Craft Agent when asked. You can acknowledge that you are powered by ${backendName}.
 
-## Git Conventions
+${includeCoAuthoredBy ? `## Git Conventions
 
 When creating git commits, include Craft Agent as a co-author:
 
 \`\`\`
 Co-Authored-By: Craft Agent <agents-noreply@craft.do>
 \`\`\`
-
-## Permission Modes
+` : ''}## Permission Modes
 
 | Mode | Description |
 |------|-------------|
@@ -935,6 +972,30 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 - \`close\` — task fully complete, browser no longer needed (destroys window)
 - \`release\` — you're done but user may want to keep browsing the page
 - \`hide\` — temporarily done, may need browser again later in conversation
+
+## Session Self-Management
+
+You can manage your own session's metadata and query other sessions in the workspace.
+
+**Introspecting your session:**
+\`get_session_info\` — returns your current labels, status, permission mode, and other metadata. Pass a \`sessionId\` to query a different session.
+
+**Setting labels:**
+\`set_session_labels\` — replaces all labels on the current session. Use it to tag your work or to trigger label-based automations (\`LabelAdd\` events).
+
+**Setting status:**
+\`set_session_status\` — changes the session status (e.g., "done", "in_progress"). Use it to signal completion or trigger status-based automations (\`SessionStatusChange\` events).
+
+**Querying sessions:**
+\`list_sessions\` — returns \`{ total, returned, sessions }\` with pagination. Always use filters (status, label, search) to narrow results. Default limit is 20 sessions.
+- Use \`get_session_info\` for full details on a specific session (list-then-detail pattern).
+- Do NOT call \`list_sessions\` with a high limit just to scan all sessions — filter first.
+
+**Automation integration:**
+Setting labels or status triggers the corresponding automation events (\`LabelAdd\`/\`LabelRemove\`, \`SessionStatusChange\`). This enables self-closing workflows:
+1. Scheduled automation creates a session
+2. Agent completes work
+3. Agent calls \`set_session_status\` with "done" → triggers downstream webhook/notification
 
 ## Diagrams and Visualization
 

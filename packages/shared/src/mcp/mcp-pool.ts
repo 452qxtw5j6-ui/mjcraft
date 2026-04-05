@@ -52,6 +52,8 @@ export interface ProxyToolDef {
 export interface McpToolResult {
   content: string;
   isError: boolean;
+  /** Source slug for error attribution (set on failure) */
+  sourceSlug?: string;
 }
 
 /**
@@ -378,10 +380,13 @@ export class McpClientPool {
     for (const slug of targetSlugs) {
       const tools = this.toolCache.get(slug) || [];
       for (const tool of tools) {
+        // Strip $schema — AJV (Pi agent) fails on unregistered meta-schema URIs.
+        // Same pattern as getToolDefsAsJsonSchema() in tool-defs.ts.
+        const { $schema, ...cleanSchema } = (tool.inputSchema as Record<string, unknown>) || {};
         defs.push({
           name: `mcp__${slug}__${tool.name}`,
           description: tool.description || `Tool from ${slug}`,
-          inputSchema: (tool.inputSchema as Record<string, unknown>) || { type: 'object', properties: {} },
+          inputSchema: Object.keys(cleanSchema).length > 0 ? cleanSchema : { type: 'object', properties: {} },
         });
       }
     }
@@ -413,6 +418,7 @@ export class McpClientPool {
       return {
         content: `MCP client for source "${slug}" is not connected.`,
         isError: true,
+        sourceSlug: slug,
       };
     }
 
@@ -476,6 +482,7 @@ export class McpClientPool {
       return {
         content: `MCP tool "${originalName}" (source: ${slug}) failed: ${err instanceof Error ? err.message : String(err)}`,
         isError: true,
+        sourceSlug: slug,
       };
     }
   }
