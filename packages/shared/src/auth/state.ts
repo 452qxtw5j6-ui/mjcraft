@@ -97,6 +97,48 @@ export interface SetupNeeds {
 // When a refresh is in progress, other callers wait for it to complete
 let refreshInProgress: Promise<TokenResult> | null = null;
 
+type ClaudeOAuthCredentials = {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  source?: 'native' | 'cli';
+};
+
+async function getClaudeOAuthCredentialsForConnection(
+  manager: ReturnType<typeof getCredentialManager>,
+  connectionSlug: string
+): Promise<ClaudeOAuthCredentials | null> {
+  const legacy = await manager.getClaudeOAuthCredentials();
+  const llmOAuth = await manager.getLlmOAuth(connectionSlug);
+  if (llmOAuth?.accessToken) {
+    const canBackfillFromLegacy = legacy?.accessToken === llmOAuth.accessToken;
+    const merged = {
+      accessToken: llmOAuth.accessToken,
+      refreshToken: llmOAuth.refreshToken ?? (canBackfillFromLegacy ? legacy?.refreshToken : undefined),
+      expiresAt: llmOAuth.expiresAt ?? (canBackfillFromLegacy ? legacy?.expiresAt : undefined),
+      source: canBackfillFromLegacy ? legacy?.source : undefined,
+    };
+
+    if (
+      canBackfillFromLegacy &&
+      (
+        (merged.refreshToken && !llmOAuth.refreshToken) ||
+        (merged.expiresAt && !llmOAuth.expiresAt)
+      )
+    ) {
+      await manager.setLlmOAuth(connectionSlug, {
+        accessToken: merged.accessToken,
+        refreshToken: merged.refreshToken,
+        expiresAt: merged.expiresAt,
+      });
+    }
+
+    return merged;
+  }
+
+  return legacy;
+}
+
 /**
  * Perform the actual token refresh (internal, called only when holding mutex)
  * Returns TokenResult with accessToken and optional migrationRequired info
@@ -202,8 +244,8 @@ export async function performTokenRefresh(
 export async function getValidClaudeOAuthToken(connectionSlug: string): Promise<TokenResult> {
   const manager = getCredentialManager();
 
-  // Try to get credentials from our store
-  const creds = await manager.getClaudeOAuthCredentials();
+  // Prefer connection-scoped OAuth, then fall back to the legacy global slot.
+  const creds = await getClaudeOAuthCredentialsForConnection(manager, connectionSlug);
 
   if (!creds || !creds.accessToken) {
     return { accessToken: null };
@@ -225,7 +267,7 @@ export async function getValidClaudeOAuthToken(connectionSlug: string): Promise<
           // Ignore errors from the other refresh attempt
         }
         // Re-read credentials after waiting (they may have been updated)
-        const updatedCreds = await manager.getClaudeOAuthCredentials();
+        const updatedCreds = await getClaudeOAuthCredentialsForConnection(manager, connectionSlug);
         if (updatedCreds?.accessToken && !isTokenExpired(updatedCreds.expiresAt)) {
           const expiresAtDate = updatedCreds.expiresAt ? new Date(updatedCreds.expiresAt).toISOString() : 'never';
           debug(`[auth] Got refreshed token from concurrent refresh (expires: ${expiresAtDate})`);
@@ -356,3 +398,7 @@ export function getSetupNeeds(state: AuthState, setupDeferred?: boolean): SetupN
 export function _resetRefreshMutex(): void {
   refreshInProgress = null;
 }
+
+export const _testOnly = {
+  getClaudeOAuthCredentialsForConnection,
+};

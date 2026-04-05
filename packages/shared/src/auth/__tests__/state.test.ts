@@ -11,6 +11,7 @@ import {
   getSetupNeeds,
   performTokenRefresh,
   _resetRefreshMutex,
+  _testOnly,
   type AuthState,
   type TokenResult,
   type MigrationInfo,
@@ -25,11 +26,17 @@ function createMockCredentialManager(initialCreds?: {
   refreshToken?: string;
   expiresAt?: number;
   source?: 'native' | 'cli';
+}, initialLlmOAuth?: {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
 }) {
   let storedCreds = initialCreds;
+  let storedLlmOAuth = initialLlmOAuth;
 
   return {
     getClaudeOAuthCredentials: async () => storedCreds ?? null,
+    getLlmOAuth: async (_connectionSlug?: string) => storedLlmOAuth ?? null,
     setClaudeOAuthCredentials: async (creds: {
       accessToken: string;
       refreshToken?: string;
@@ -37,6 +44,13 @@ function createMockCredentialManager(initialCreds?: {
       source?: 'native' | 'cli';
     }) => {
       storedCreds = creds;
+    },
+    setLlmOAuth: async (_connectionSlug: string, creds: {
+      accessToken: string;
+      refreshToken?: string;
+      expiresAt?: number;
+    }) => {
+      storedLlmOAuth = creds;
     },
     getApiKey: async () => null,
   };
@@ -249,6 +263,104 @@ describe('performTokenRefresh', () => {
       expect(failedNativeResult.accessToken).toBeNull();
       expect(failedNativeResult.migrationRequired).toBeUndefined();
     });
+  });
+});
+
+describe('getClaudeOAuthCredentialsForConnection', () => {
+  it('should prefer connection-scoped OAuth over legacy Claude OAuth', async () => {
+    const manager = createMockCredentialManager(
+      {
+        accessToken: 'legacy-token',
+        refreshToken: 'legacy-refresh',
+        expiresAt: Date.now() + 60_000,
+        source: 'native',
+      },
+      {
+        accessToken: 'connection-token',
+        refreshToken: 'connection-refresh',
+        expiresAt: Date.now() + 120_000,
+      },
+    );
+
+    const creds = await _testOnly.getClaudeOAuthCredentialsForConnection(
+      manager as never,
+      'claude-max',
+    );
+
+    expect(creds?.accessToken).toBe('connection-token');
+    expect(creds?.refreshToken).toBe('connection-refresh');
+    expect(creds?.source).toBeUndefined();
+  });
+
+  it('should backfill missing refresh metadata from legacy Claude OAuth when access tokens match', async () => {
+    const expiresAt = Date.now() + 60_000;
+    const manager = createMockCredentialManager(
+      {
+        accessToken: 'shared-token',
+        refreshToken: 'legacy-refresh',
+        expiresAt,
+        source: 'native',
+      },
+      {
+        accessToken: 'shared-token',
+      },
+    );
+
+    const creds = await _testOnly.getClaudeOAuthCredentialsForConnection(
+      manager as never,
+      'claude-max',
+    );
+
+    expect(creds?.accessToken).toBe('shared-token');
+    expect(creds?.refreshToken).toBe('legacy-refresh');
+    expect(creds?.expiresAt).toBe(expiresAt);
+    expect(creds?.source).toBe('native');
+
+    const repairedLlm = await manager.getLlmOAuth('claude-max');
+    expect(repairedLlm?.refreshToken).toBe('legacy-refresh');
+    expect(repairedLlm?.expiresAt).toBe(expiresAt);
+  });
+
+  it('should not backfill legacy refresh metadata when access tokens differ', async () => {
+    const manager = createMockCredentialManager(
+      {
+        accessToken: 'legacy-token',
+        refreshToken: 'legacy-refresh',
+        expiresAt: Date.now() + 60_000,
+        source: 'native',
+      },
+      {
+        accessToken: 'connection-token',
+      },
+    );
+
+    const creds = await _testOnly.getClaudeOAuthCredentialsForConnection(
+      manager as never,
+      'claude-max',
+    );
+
+    expect(creds?.accessToken).toBe('connection-token');
+    expect(creds?.refreshToken).toBeUndefined();
+    expect(creds?.expiresAt).toBeUndefined();
+    expect(creds?.source).toBeUndefined();
+  });
+
+  it('should fall back to legacy Claude OAuth when connection-scoped OAuth is missing', async () => {
+    const manager = createMockCredentialManager({
+      accessToken: 'legacy-token',
+      refreshToken: 'legacy-refresh',
+      expiresAt: Date.now() + 60_000,
+      source: 'native',
+    });
+
+    const creds = await _testOnly.getClaudeOAuthCredentialsForConnection(
+      manager as never,
+      'claude-max',
+    );
+
+    expect(creds?.accessToken).toBe('legacy-token');
+    expect(creds?.refreshToken).toBe('legacy-refresh');
+    expect(creds?.source).toBe('native');
   });
 });
 

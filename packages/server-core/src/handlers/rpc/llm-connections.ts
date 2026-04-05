@@ -8,7 +8,7 @@ import {
   validateStoredBackendConnection,
 } from '@craft-agent/shared/agent/backend'
 import { getModelRefreshService } from '@craft-agent/server-core/model-fetchers'
-import { parseTestConnectionError, createBuiltInConnection, validateModelList, piAuthProviderDisplayName, validateSetupTestInput, setupTestRequiresApiKey } from '@craft-agent/server-core/domain'
+import { parseTestConnectionError, createBuiltInConnection, validateModelList, piAuthProviderDisplayName, validateSetupTestInput, setupTestRequiresApiKey, mergeOAuthCredentialUpdate } from '@craft-agent/server-core/domain'
 import { getWorkspaceOrThrow, buildBackendHostRuntimeContext } from '@craft-agent/server-core/handlers'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -241,7 +241,11 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       if (setup.credential && !isMasked) {
         const authType = pendingConnection.authType
         if (authType === 'oauth') {
-          await manager.setLlmOAuth(setup.slug, { accessToken: setup.credential })
+          const existingOAuth = await manager.getLlmOAuth(setup.slug)
+          await manager.setLlmOAuth(
+            setup.slug,
+            mergeOAuthCredentialUpdate(existingOAuth, setup.credential),
+          )
           deps.platform.logger?.info('Saved OAuth access token to LLM connection')
         } else {
           await manager.setLlmApiKey(setup.slug, setup.credential)

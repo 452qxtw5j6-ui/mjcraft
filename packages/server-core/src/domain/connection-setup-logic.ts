@@ -12,6 +12,13 @@ import {
   getDefaultModelForConnection,
 } from '@craft-agent/shared/config'
 
+export interface ExistingOAuthCredentialSnapshot {
+  accessToken: string
+  refreshToken?: string
+  expiresAt?: number
+  idToken?: string
+}
+
 // ============================================================
 // Error Parsing
 // ============================================================
@@ -250,4 +257,32 @@ export function validateModelList(
   }
 
   return { valid: true }
+}
+
+/**
+ * Preserve refresh metadata when setup re-saves the same OAuth access token.
+ *
+ * The onboarding flow exchanges the authorization code first, which stores the
+ * full OAuth payload. The subsequent connection setup step may then write the
+ * same access token again with no refresh metadata attached. Without this
+ * merge, we silently drop the refresh token and force re-auth on expiry.
+ */
+export function mergeOAuthCredentialUpdate(
+  existing: ExistingOAuthCredentialSnapshot | null,
+  accessToken: string,
+): ExistingOAuthCredentialSnapshot {
+  if (!existing) {
+    return { accessToken }
+  }
+
+  if (existing.accessToken !== accessToken) {
+    return { accessToken }
+  }
+
+  return {
+    accessToken,
+    refreshToken: existing.refreshToken,
+    expiresAt: existing.expiresAt,
+    idToken: existing.idToken,
+  }
 }

@@ -655,6 +655,17 @@ export class ClaudeAgent extends BaseAgent {
     const result = await resolveAuthEnvVars(connection, slug, manager, getValidClaudeOAuthToken);
 
     if (!result.success) {
+      // Anthropic OAuth can still succeed via the SDK's own persisted auth state
+      // even when Craft's connection-scoped token store is empty. Avoid emitting
+      // a user-visible hard error before the backend has actually failed.
+      if (
+        connection.providerType === 'anthropic' &&
+        connection.authType === 'oauth' &&
+        result.warning?.startsWith('Failed to get OAuth token for:')
+      ) {
+        return { authInjected: false };
+      }
+
       return { authInjected: false, authWarning: result.warning, authWarningLevel: 'error' };
     }
 

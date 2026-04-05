@@ -3,6 +3,7 @@ import {
   validateSetupTestInput,
   isLoopbackBaseUrl,
   setupTestRequiresApiKey,
+  mergeOAuthCredentialUpdate,
 } from './connection-setup-logic'
 
 describe('validateSetupTestInput', () => {
@@ -43,5 +44,32 @@ describe('setup test API key requirements', () => {
   it('allows keyless setup tests for loopback endpoints', () => {
     expect(setupTestRequiresApiKey('http://localhost:11434/v1')).toBe(false)
     expect(setupTestRequiresApiKey('http://127.0.0.1:11434/v1')).toBe(false)
+  })
+})
+
+describe('mergeOAuthCredentialUpdate', () => {
+  it('preserves refresh metadata when the same access token is re-saved', () => {
+    expect(mergeOAuthCredentialUpdate({
+      accessToken: 'same-token',
+      refreshToken: 'refresh-token',
+      expiresAt: 123456789,
+      idToken: 'id-token',
+    }, 'same-token')).toEqual({
+      accessToken: 'same-token',
+      refreshToken: 'refresh-token',
+      expiresAt: 123456789,
+      idToken: 'id-token',
+    })
+  })
+
+  it('does not carry old refresh metadata onto a different access token', () => {
+    expect(mergeOAuthCredentialUpdate({
+      accessToken: 'old-token',
+      refreshToken: 'refresh-token',
+      expiresAt: 123456789,
+      idToken: 'id-token',
+    }, 'new-token')).toEqual({
+      accessToken: 'new-token',
+    })
   })
 })
