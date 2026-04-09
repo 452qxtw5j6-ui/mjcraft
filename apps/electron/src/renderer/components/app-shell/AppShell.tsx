@@ -851,7 +851,7 @@ function AppShellContent({
     automationPendingDelete, pendingDeleteAutomation, setAutomationPendingDelete,
     handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, confirmDeleteAutomation,
     getAutomationHistory, handleReplayAutomation,
-  } = useAutomations(activeWorkspaceId, activeWorkspace?.rootPath)
+  } = useAutomations(activeWorkspaceId)
 
   // Whether local MCP servers are enabled (affects stdio source status)
   const [localMcpEnabled, setLocalMcpEnabled] = React.useState(true)

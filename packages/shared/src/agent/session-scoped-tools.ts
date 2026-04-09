@@ -17,7 +17,6 @@
 
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { getSessionPlansPath, getSessionPath } from '../sessions/storage.ts';
-import { debug } from '../utils/debug.ts';
 import { DOC_REFS } from '../docs/index.ts';
 import { createClaudeContext } from './claude-context.ts';
 import { basename } from 'node:path';
@@ -58,100 +57,21 @@ export type {
 export type { BrowserPaneFns } from './browser-tools.ts';
 
 // ============================================================
-// Session-Scoped Tool Callbacks
+// Session-Scoped Tool Callbacks (re-exported from dedicated registry module)
 // ============================================================
 
-/**
- * Callbacks that can be registered per-session
- */
-export interface SessionScopedToolCallbacks {
-  /**
-   * Called when a plan is submitted via SubmitPlan tool.
-   * Receives the path to the plan markdown file.
-   */
-  onPlanSubmitted?: (planPath: string) => void;
+// Re-export for all downstream consumers (index.ts, claude-agent.ts, pi-agent.ts, etc.)
+export {
+  type SessionScopedToolCallbacks,
+  registerSessionScopedToolCallbacks,
+  mergeSessionScopedToolCallbacks,
+  unregisterSessionScopedToolCallbacks,
+  getSessionScopedToolCallbacks,
+} from './session-scoped-tool-callback-registry.ts';
 
-  /**
-   * Called when authentication is requested via OAuth/credential tools.
-   * The auth UI should be shown and execution paused.
-   */
-  onAuthRequest?: (request: AuthRequest) => void;
-
-  /**
-   * Agent-native LLM query callback for call_llm tool (OAuth path).
-   * Each agent backend sets this to its own queryLlm implementation.
-   */
-  queryFn?: (request: LLMQueryRequest) => Promise<LLMQueryResult>;
-
-  /**
-   * Callback for spawn_session tool — creates an independent session and sends initial prompt.
-   * Each agent backend delegates to its onSpawnSession callback.
-   */
-  spawnSessionFn?: SpawnSessionFn;
-
-  /**
-   * Browser pane functions for browser_* tools.
-   * Set by the Electron session manager — wraps BrowserPaneManager
-   * with the session's bound browser instance.
-   */
-  browserPaneFns?: BrowserPaneFns;
-
-  /** Set labels on a session (defaults to current). */
-  setSessionLabelsFn?: (sessionId: string | undefined, labels: string[]) => void | Promise<void>;
-  /** Set status on a session (defaults to current). */
-  setSessionStatusFn?: (sessionId: string | undefined, status: string) => void | Promise<void>;
-  /** Get detailed info about a session (defaults to current). */
-  getSessionInfoFn?: (sessionId?: string) => import('@craft-agent/session-tools-core').SessionInfo | null;
-  /** List sessions in the workspace with pagination. */
-  listSessionsFn?: (options?: import('@craft-agent/session-tools-core').ListSessionsOptions) => import('@craft-agent/session-tools-core').ListSessionsResult;
-  /** Resolve label display names to IDs. */
-  resolveLabelsFn?: (labels: string[]) => import('@craft-agent/session-tools-core').ResolvedLabelsResult;
-  /** Resolve a status display name to its ID. */
-  resolveStatusFn?: (status: string) => import('@craft-agent/session-tools-core').ResolvedStatusResult;
-}
-
-// Registry of callbacks keyed by sessionId
-const sessionScopedToolCallbackRegistry = new Map<string, SessionScopedToolCallbacks>();
-
-/**
- * Register callbacks for a specific session
- */
-export function registerSessionScopedToolCallbacks(
-  sessionId: string,
-  callbacks: SessionScopedToolCallbacks
-): void {
-  sessionScopedToolCallbackRegistry.set(sessionId, callbacks);
-  debug('session-scoped-tools', `Registered callbacks for session ${sessionId}`);
-}
-
-/**
- * Merge additional callbacks into an existing session's callback set.
- * Used by the Electron session manager to add browser pane functions
- * after the agent has already registered its core callbacks.
- */
-export function mergeSessionScopedToolCallbacks(
-  sessionId: string,
-  callbacks: Partial<SessionScopedToolCallbacks>
-): void {
-  const existing = sessionScopedToolCallbackRegistry.get(sessionId) ?? {};
-  sessionScopedToolCallbackRegistry.set(sessionId, { ...existing, ...callbacks });
-  debug('session-scoped-tools', `Merged callbacks for session ${sessionId}`);
-}
-
-/**
- * Unregister callbacks for a session
- */
-export function unregisterSessionScopedToolCallbacks(sessionId: string): void {
-  sessionScopedToolCallbackRegistry.delete(sessionId);
-  debug('session-scoped-tools', `Unregistered callbacks for session ${sessionId}`);
-}
-
-/**
- * Get callbacks for a session
- */
-export function getSessionScopedToolCallbacks(sessionId: string): SessionScopedToolCallbacks | undefined {
-  return sessionScopedToolCallbackRegistry.get(sessionId);
-}
+// Local imports for use within this file's factory function
+import { getSessionScopedToolCallbacks } from './session-scoped-tool-callback-registry.ts';
+import { attachSessionSelfManagementBindings } from './session-self-management-bindings.ts';
 
 /** Backend-executed session tools currently supported by the Claude adapter layer. */
 export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
@@ -319,31 +239,10 @@ export function getSessionScopedTools(
         const callbacks = getSessionScopedToolCallbacks(sessionId);
         callbacks?.onAuthRequest?.(request as AuthRequest);
       },
-      setSessionLabels: async (sid: string | undefined, labels: string[]) => {
-        const callbacks = getSessionScopedToolCallbacks(sessionId);
-        await callbacks?.setSessionLabelsFn?.(sid, labels);
-      },
-      setSessionStatus: async (sid: string | undefined, status: string) => {
-        const callbacks = getSessionScopedToolCallbacks(sessionId);
-        await callbacks?.setSessionStatusFn?.(sid, status);
-      },
-      getSessionInfo: (sid?: string) => {
-        const callbacks = getSessionScopedToolCallbacks(sessionId);
-        return callbacks?.getSessionInfoFn?.(sid ?? sessionId) ?? null;
-      },
-      listSessions: (options) => {
-        const callbacks = getSessionScopedToolCallbacks(sessionId);
-        return callbacks?.listSessionsFn?.(options) ?? { total: 0, returned: 0, sessions: [] };
-      },
-      resolveLabels: (labels) => {
-        const callbacks = getSessionScopedToolCallbacks(sessionId);
-        return callbacks?.resolveLabelsFn?.(labels) ?? { resolved: labels, unknown: [], available: [] };
-      },
-      resolveStatus: (status) => {
-        const callbacks = getSessionScopedToolCallbacks(sessionId);
-        return callbacks?.resolveStatusFn?.(status) ?? { resolved: status, available: [] };
-      },
     });
+
+    // Attach session self-management bindings (lazy getters from callback registry)
+    attachSessionSelfManagementBindings(ctx, sessionId);
 
     // Helper to create a tool from the canonical registry.
     // The `as any` on schema bridges a Zod generic-variance issue when .shape

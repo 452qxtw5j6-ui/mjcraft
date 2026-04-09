@@ -32,7 +32,7 @@ import {
   isAutomationsNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
-import { sourceSelection, skillSelection } from '@/hooks/useEntitySelection'
+import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import type { SessionStatusId } from '@/config/session-status-config'
 import { SourceInfoPage, ChatPage } from '@/pages'
@@ -41,6 +41,7 @@ import { getSettingsPageComponent } from '@/pages/settings/settings-pages'
 import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
+import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
 
 export interface MainContentPanelProps {
   /** Whether both sidebar and navigator are hidden (focus mode / CMD+.) */
@@ -64,6 +65,7 @@ export function MainContentPanel({
   const navState = navStateOverride ?? globalNavState
   const {
     activeWorkspaceId,
+    workspaces,
     onSessionStatusChange,
     onArchiveSession,
     onSessionLabelsChange,
@@ -118,12 +120,35 @@ export function MainContentPanel({
   // Source multi-select state
   const isSourceMultiSelectActive = sourceSelection.useIsMultiSelectActive()
   const sourceSelectionCount = sourceSelection.useSelectionCount()
+  const selectedSourceIds = sourceSelection.useSelectedIds()
   const { clearMultiSelect: clearSourceSelection } = sourceSelection.useSelection()
 
   // Skill multi-select state
   const isSkillMultiSelectActive = skillSelection.useIsMultiSelectActive()
   const skillSelectionCount = skillSelection.useSelectionCount()
+  const selectedSkillIds = skillSelection.useSelectedIds()
   const { clearMultiSelect: clearSkillSelection } = skillSelection.useSelection()
+
+  // Automation multi-select state
+  const isAutomationMultiSelectActive = automationSelection.useIsMultiSelectActive()
+  const automationSelectionCount = automationSelection.useSelectionCount()
+  const selectedAutomationIds = automationSelection.useSelectedIds()
+  const { clearMultiSelect: clearAutomationSelection } = automationSelection.useSelection()
+
+  // Send to Workspace dialog state (shared across resource types)
+  const [sendDialogOpen, setSendDialogOpen] = useState(false)
+  const [sendResourceType, setSendResourceType] = useState<SendResourceType>('source')
+  const [sendResourceIds, setSendResourceIds] = useState<string[]>([])
+  const [sendResourceLabel, setSendResourceLabel] = useState('')
+  const hasOtherWorkspaces = workspaces.length > 1
+
+  const openSendDialog = useCallback((type: SendResourceType, ids: Set<string>) => {
+    const count = ids.size
+    setSendResourceType(type)
+    setSendResourceIds([...ids])
+    setSendResourceLabel(`${count} ${type}${count !== 1 ? 's' : ''}`)
+    setSendDialogOpen(true)
+  }, [])
 
   const selectedMetas = useMemo(() => {
     const metas: SessionMeta[] = []
@@ -186,10 +211,20 @@ export function MainContentPanel({
     })
   }, [selectedMetas, onSessionLabelsChange])
 
-  // Wrap content with StoplightProvider so PanelHeaders auto-compensate in focused mode
+  // Wrap content with StoplightProvider so PanelHeaders auto-compensate in focused mode.
+  // Also renders the Send to Workspace dialog (portal-based, so it overlays regardless of position).
   const wrapWithStoplight = (content: React.ReactNode) => (
     <StoplightProvider value={isSidebarAndNavigatorHidden}>
       {content}
+      <SendResourceToWorkspaceDialog
+        open={sendDialogOpen}
+        onOpenChange={setSendDialogOpen}
+        resourceType={sendResourceType}
+        resourceIds={sendResourceIds}
+        resourceLabel={sendResourceLabel}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId || ''}
+      />
     </StoplightProvider>
   )
 
@@ -211,6 +246,7 @@ export function MainContentPanel({
           <MultiSelectPanel
             count={sourceSelectionCount}
             entityName="Source"
+            onSendToWorkspace={hasOtherWorkspaces ? () => openSendDialog('source', selectedSourceIds) : undefined}
             onClearSelection={clearSourceSelection}
           />
         </Panel>
@@ -244,6 +280,7 @@ export function MainContentPanel({
           <MultiSelectPanel
             count={skillSelectionCount}
             entityName="Skill"
+            onSendToWorkspace={hasOtherWorkspaces ? () => openSendDialog('skill', selectedSkillIds) : undefined}
             onClearSelection={clearSkillSelection}
           />
         </Panel>
@@ -270,8 +307,20 @@ export function MainContentPanel({
     )
   }
 
-  // Automations navigator - show automation info or empty state
+  // Automations navigator - show automation info, multi-select panel, or empty state
   if (isAutomationsNavigation(navState)) {
+    if (isAutomationMultiSelectActive) {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <MultiSelectPanel
+            count={automationSelectionCount}
+            entityName="Automation"
+            onSendToWorkspace={hasOtherWorkspaces ? () => openSendDialog('automation', selectedAutomationIds) : undefined}
+            onClearSelection={clearAutomationSelection}
+          />
+        </Panel>
+      )
+    }
     if (navState.details) {
       const automation = automations.find(h => h.id === navState.details!.automationId)
       if (automation) {

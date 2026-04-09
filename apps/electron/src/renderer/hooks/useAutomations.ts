@@ -15,10 +15,10 @@ import { toast } from 'sonner'
 import { automationsAtom } from '@/atoms/automations'
 import { parseAutomationsConfig, type AutomationListItem, type TestResult, type ExecutionEntry } from '@/components/automations/types'
 
-async function loadAutomationsFromDisk(rootPath: string): Promise<AutomationListItem[]> {
-  const automationsPath = `${rootPath}/automations.json`
-  const content = await window.electronAPI.readFile(automationsPath)
-  return parseAutomationsConfig(JSON.parse(content))
+async function loadAutomationsFromServer(workspaceId: string): Promise<AutomationListItem[]> {
+  const json = await window.electronAPI.getAutomations(workspaceId)
+  if (!json) return [] // No automations configured yet
+  return parseAutomationsConfig(json)
 }
 
 export interface UseAutomationsResult {
@@ -38,7 +38,6 @@ export interface UseAutomationsResult {
 
 export function useAutomations(
   activeWorkspaceId: string | null | undefined,
-  activeWorkspaceRootPath: string | undefined,
 ): UseAutomationsResult {
   const [automations, setAutomations] = useState<AutomationListItem[]>([])
   const [automationTestResults, setAutomationTestResults] = useState<Record<string, TestResult>>({})
@@ -50,26 +49,24 @@ export function useAutomations(
     setAutomationsAtom(automations)
   }, [automations, setAutomationsAtom])
 
-  // Load automations from disk and hydrate lastExecutedAt from history in one step.
+  // Load automations from server and hydrate lastExecutedAt from history in one step.
   // This avoids the race where a config reload wipes timestamps before the
   // history effect can re-merge them.
   const loadAndHydrate = useCallback(async () => {
-    if (!activeWorkspaceRootPath) return
+    if (!activeWorkspaceId) return
     try {
-      const items = await loadAutomationsFromDisk(activeWorkspaceRootPath)
-      if (activeWorkspaceId) {
-        try {
-          const map = await window.electronAPI.getAutomationLastExecuted(activeWorkspaceId)
-          for (const item of items) {
-            item.lastExecutedAt = map[item.id] ?? item.lastExecutedAt
-          }
-        } catch { /* history unavailable — timestamps stay undefined */ }
-      }
+      const items = await loadAutomationsFromServer(activeWorkspaceId)
+      try {
+        const map = await window.electronAPI.getAutomationLastExecuted(activeWorkspaceId)
+        for (const item of items) {
+          item.lastExecutedAt = map[item.id] ?? item.lastExecutedAt
+        }
+      } catch { /* history unavailable — timestamps stay undefined */ }
       setAutomations(items)
     } catch {
       setAutomations([])
     }
-  }, [activeWorkspaceRootPath, activeWorkspaceId])
+  }, [activeWorkspaceId])
 
   // Initial load
   useEffect(() => {
@@ -78,10 +75,10 @@ export function useAutomations(
 
   // Subscribe to live automations updates (when automations.json changes on disk)
   useEffect(() => {
-    if (!activeWorkspaceRootPath) return
+    if (!activeWorkspaceId) return
     const cleanup = window.electronAPI.onAutomationsChanged(() => { loadAndHydrate() })
     return () => { cleanup() }
-  }, [activeWorkspaceRootPath, loadAndHydrate])
+  }, [activeWorkspaceId, loadAndHydrate])
 
   // Shared lookup — avoids repeating automations.find() in every callback
   const findAutomation = useCallback((id: string) => automations.find(h => h.id === id), [automations])
