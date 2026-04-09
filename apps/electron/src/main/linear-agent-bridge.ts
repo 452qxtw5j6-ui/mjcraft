@@ -178,7 +178,9 @@ interface LinearIssueSnapshot {
   description: string
   url: string
   teamId?: string
+  stateId?: string
   stateName?: string
+  stateType?: string
   teamStates: Array<{ id: string; name: string; type?: string }>
   comments: string[]
 }
@@ -656,6 +658,17 @@ function buildLinearAuthorizationHeader(accessToken: string): string {
 
 function buildCallbackUrl(publicBaseUrl: string, callbackPath: string): string {
   return `${publicBaseUrl.replace(/\/+$/, '')}${sanitizeWebhookPath(callbackPath)}`
+}
+
+function normalizeStateName(name: string | undefined): string {
+  return (name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+}
+
+function isReviewLikeStateName(name: string | undefined): boolean {
+  const normalized = normalizeStateName(name)
+  return normalized.includes('review')
 }
 
 function htmlResponse(title: string, body: string): string {
@@ -1450,7 +1463,7 @@ export class LinearAgentBridgeService {
           description
           url
           team { id states(first: 50) { nodes { id name type } } }
-          state { name }
+          state { id name type }
           comments(first: 20) { nodes { body } }
         }
       }
@@ -1464,7 +1477,7 @@ export class LinearAgentBridgeService {
         description?: string | null
         url: string
         team?: { id?: string; states?: { nodes?: Array<{ id: string; name: string; type?: string | null }> } } | null
-        state?: { name?: string | null } | null
+        state?: { id?: string | null; name?: string | null; type?: string | null } | null
         comments?: { nodes?: Array<{ body?: string | null }> } | null
       } | null
     }).issue
@@ -1478,7 +1491,9 @@ export class LinearAgentBridgeService {
       description: issue.description || '',
       url: issue.url,
       teamId: issue.team?.id || undefined,
+      stateId: issue.state?.id || undefined,
       stateName: issue.state?.name || undefined,
+      stateType: issue.state?.type || undefined,
       teamStates: (issue.team?.states?.nodes ?? []).map(state => ({
         id: state.id,
         name: state.name,
@@ -1574,9 +1589,32 @@ export class LinearAgentBridgeService {
     if (!issue) return null
     const preferredNames = ['Needs Review', 'Human Review', 'In Review', 'Review']
     for (const name of preferredNames) {
-      const match = issue.teamStates.find(state => state.name === name)
+      const match = issue.teamStates.find(state => normalizeStateName(state.name) === normalizeStateName(name))
       if (match) return match.id
     }
+    const fuzzyMatch = issue.teamStates.find(state => isReviewLikeStateName(state.name))
+    if (fuzzyMatch) return fuzzyMatch.id
+    return null
+  }
+
+  private resolveInProgressStateId(issue: LinearIssueSnapshot | null | undefined): string | null {
+    if (!issue) return null
+    const preferredNames = ['In Progress', 'In progress', 'Started', 'Working', 'Doing']
+    for (const name of preferredNames) {
+      const match = issue.teamStates.find(state => normalizeStateName(state.name) === normalizeStateName(name))
+      if (match) return match.id
+    }
+
+    const fuzzyMatch = issue.teamStates.find((state) => {
+      const normalized = normalizeStateName(state.name)
+      return !isReviewLikeStateName(state.name)
+        && (normalized.includes('progress') || normalized.includes('doing') || normalized.includes('working'))
+    })
+    if (fuzzyMatch) return fuzzyMatch.id
+
+    const startedMatch = issue.teamStates.find(state => state.type === 'started' && !isReviewLikeStateName(state.name))
+    if (startedMatch) return startedMatch.id
+
     return null
   }
 
@@ -1584,10 +1622,33 @@ export class LinearAgentBridgeService {
     if (!issue) return null
     const preferredNames = ['Done', 'Completed', 'Closed']
     for (const name of preferredNames) {
-      const match = issue.teamStates.find(state => state.name === name)
+      const match = issue.teamStates.find(state => normalizeStateName(state.name) === normalizeStateName(name))
       if (match) return match.id
     }
+    const completedMatch = issue.teamStates.find(state => state.type === 'completed')
+    if (completedMatch) return completedMatch.id
     return null
+  }
+
+  private async syncIssueToInProgress(
+    agentConfig: LinearBridgeAgentConfig,
+    issue: LinearIssueSnapshot | null,
+    event: LinearBridgeNormalizedEvent,
+    stageType: 'craft-stage' | 'codex-stage',
+  ): Promise<void> {
+    if (!issue?.id) return
+    const inProgressStateId = this.resolveInProgressStateId(issue)
+    if (!inProgressStateId || issue.stateId === inProgressStateId) return
+
+    await this.moveIssueToState(agentConfig, issue.id, inProgressStateId)
+    await this.appendEvent({
+      type: stageType,
+      slug: agentConfig.slug,
+      agentSessionId: event.agentSessionId,
+      issueIdentifier: issue.identifier,
+      stage: 'issue_moved_to_in_progress',
+      stateId: inProgressStateId,
+    })
   }
 
   private async createIssueComment(agentConfig: LinearBridgeAgentConfig, issueId: string, body: string): Promise<void> {
@@ -1725,9 +1786,12 @@ export class LinearAgentBridgeService {
       issueIdentifier: issue?.identifier ?? event.issueIdentifier,
       stage: 'issue_snapshot_loaded',
       issueId: issue?.id ?? event.issueId,
+      stateId: issue?.stateId,
       stateName: issue?.stateName,
+      stateType: issue?.stateType,
       commentCount: issue?.comments.length ?? 0,
     })
+    await this.syncIssueToInProgress(agentConfig, issue, event, 'craft-stage')
     const mapKey = buildSessionMapKey(agentConfig.slug, event.agentSessionId)
     const sessionMap = await this.readSessionMap()
     const existingEntry = sessionMap.mappings[mapKey]
@@ -1861,8 +1925,16 @@ export class LinearAgentBridgeService {
 
     if (issue?.id) {
       const reviewStateId = this.resolveReviewStateId(issue)
-      if (reviewStateId) {
+      if (reviewStateId && issue.stateId !== reviewStateId) {
         await this.moveIssueToState(agentConfig, issue.id, reviewStateId)
+        await this.appendEvent({
+          type: 'craft-stage',
+          slug: agentConfig.slug,
+          agentSessionId: event.agentSessionId,
+          issueIdentifier: issue.identifier,
+          stage: 'issue_moved_to_review',
+          stateId: reviewStateId,
+        })
       }
     }
 
@@ -1904,7 +1976,9 @@ export class LinearAgentBridgeService {
       issueIdentifier: issue?.identifier ?? event.issueIdentifier,
       stage: 'issue_snapshot_loaded',
       issueId: issue?.id ?? event.issueId,
+      stateId: issue?.stateId,
       stateName: issue?.stateName,
+      stateType: issue?.stateType,
       commentCount: issue?.comments.length ?? 0,
     })
     await this.appendEvent({
@@ -1916,6 +1990,7 @@ export class LinearAgentBridgeService {
       issueId: issue?.id ?? event.issueId,
     })
     await this.withIssueLock(issue?.id ?? event.issueId, async () => {
+      await this.syncIssueToInProgress(agentConfig, issue, event, 'codex-stage')
       await this.appendEvent({
         type: 'codex-stage',
         slug: agentConfig.slug,

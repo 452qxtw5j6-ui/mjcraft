@@ -627,6 +627,91 @@ describe('linear-agent bridge helpers', () => {
     expect(issueComments).toBe(1)
   })
 
+  it('moves Craft issues to in progress before work and in review after replying', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-craft-state-sync-'))
+    tempDirs.push(workspaceRoot)
+
+    let sentMessage = false
+    const movedStates: string[] = []
+    const service = new LinearAgentBridgeService({
+      workspaceId: 'ws-test',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        async createSession() {
+          return { id: 'session-1' }
+        },
+        async getSession() {
+          if (!sentMessage) return null
+          return {
+            id: 'session-1',
+            messages: [
+              {
+                id: 'assistant-1',
+                role: 'assistant',
+                content: 'Final bridge reply',
+                isIntermediate: false,
+              },
+            ],
+          }
+        },
+        async sendMessage() {
+          sentMessage = true
+        },
+      },
+    })
+
+    ;(service as any).appendEvent = async () => {}
+    ;(service as any).safeUpdateExternalUrl = async () => {}
+    ;(service as any).updateSessionMap = async () => {}
+    ;(service as any).safeCreateActivity = async () => true
+    ;(service as any).readConfig = async () => ({
+      publicBaseUrl: '',
+    })
+    ;(service as any).fetchIssueSnapshot = async () => ({
+      id: 'issue-1',
+      identifier: 'MJA-103',
+      title: 'Bridge state sync',
+      description: '',
+      url: 'https://linear.app/acme/issue/MJA-103',
+      stateId: 'state-backlog',
+      stateName: 'Backlog',
+      stateType: 'backlog',
+      comments: [],
+      teamStates: [
+        { id: 'state-backlog', name: 'Backlog', type: 'backlog' },
+        { id: 'state-progress', name: 'In Progress', type: 'started' },
+        { id: 'state-review', name: 'In Review', type: 'started' },
+      ],
+    })
+    ;(service as any).moveIssueToState = async (_agentConfig: any, _issueId: string, stateId: string) => {
+      movedStates.push(stateId)
+    }
+
+    await (service as any).handleCraftTarget({
+      slug: 'craft',
+      enabled: true,
+      webhookPath: '/craft',
+      target: {
+        kind: 'craft',
+        namePrefix: 'Linear',
+        permissionMode: 'allow-all',
+        model: 'claude-opus-4-6',
+        thinkingLevel: 'medium',
+        workingDirectory: 'user_default',
+      },
+    }, {
+      action: 'created',
+      eventType: 'AgentSessionEvent',
+      agentSessionId: 'agent-session-4',
+      prompt: 'Investigate the issue',
+      issueId: 'issue-1',
+      issueIdentifier: 'MJA-103',
+      webhookTimestamp: Date.now(),
+    })
+
+    expect(movedStates).toEqual(['state-progress', 'state-review'])
+  })
+
   it('uses stored OAuth tokens for agent-session mutations even when an API token is configured', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-oauth-priority-'))
     tempDirs.push(workspaceRoot)
@@ -777,5 +862,94 @@ describe('linear-agent bridge helpers', () => {
 
     expect(activityCalls).toBe(0)
     expect(issueComments).toBe(1)
+  })
+
+  it('moves Codex issues to in progress before execution and in review on completion', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'linear-agent-codex-state-sync-'))
+    tempDirs.push(workspaceRoot)
+
+    const movedStates: string[] = []
+    const service = new LinearAgentBridgeService({
+      workspaceId: 'ws-test',
+      workspaceRootPath: workspaceRoot,
+      sessionManager: {
+        async createSession() {
+          return { id: 'session-1' }
+        },
+        async getSession() {
+          return null
+        },
+        async sendMessage() {},
+      },
+    })
+
+    ;(service as any).appendEvent = async () => {}
+    ;(service as any).writeRunRecord = async () => {}
+    ;(service as any).updateSessionMap = async () => {}
+    ;(service as any).safeUpdateExternalUrl = async () => {}
+    ;(service as any).materializeIssueWorkspace = async () => {}
+    ;(service as any).buildBridgeCodexEnv = async () => ({ CODEX_HOME: '/tmp/codex-home' })
+    ;(service as any).createIssueComment = async () => {}
+    ;(service as any).fetchIssueSnapshot = async () => ({
+      id: 'issue-1',
+      identifier: 'MJA-203',
+      title: 'Bridge state sync',
+      description: '',
+      url: 'https://linear.app/acme/issue/MJA-203',
+      stateId: 'state-backlog',
+      stateName: 'Backlog',
+      stateType: 'backlog',
+      comments: [],
+      teamStates: [
+        { id: 'state-backlog', name: 'Backlog', type: 'backlog' },
+        { id: 'state-started', name: 'Started', type: 'started' },
+        { id: 'state-review', name: 'Needs Review', type: 'started' },
+      ],
+    })
+    ;(service as any).moveIssueToState = async (_agentConfig: any, _issueId: string, stateId: string) => {
+      movedStates.push(stateId)
+    }
+    ;(service as any).deps.runCommand = async () => ({
+      exitCode: 0,
+      stdout: [
+        JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
+        JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'STATUS: completed\n\nFinal Codex reply' } }),
+        JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 2 } }),
+      ].join('\n'),
+      stderr: '',
+    })
+
+    await (service as any).handleCodexTarget({
+      codexBin: 'codex',
+    }, {
+      slug: 'codex',
+      enabled: true,
+      webhookPath: '/codex',
+      target: {
+        kind: 'codex',
+        workspacePath: '.',
+        model: 'gpt-5.4',
+        codexConfig: { reasoningEffort: 'medium' },
+        results: {
+          addAgentResponse: true,
+          addIssueComment: true,
+          moveToReviewOnCompleted: true,
+          moveToDoneOnCompletedIfNoReview: false,
+          appendArtifactLinksSection: false,
+          addLabels: [],
+          createFollowupIssueOnBlocked: false,
+        },
+      },
+    }, {
+      action: 'created',
+      eventType: 'AgentSessionEvent',
+      agentSessionId: 'agent-session-codex-2',
+      prompt: 'Investigate the issue',
+      issueId: 'issue-1',
+      issueIdentifier: 'MJA-203',
+      webhookTimestamp: Date.now(),
+    })
+
+    expect(movedStates).toEqual(['state-started', 'state-review'])
   })
 })
