@@ -207,6 +207,20 @@ let moduleClientResolver: ((webContentsId: number) => string | undefined) | null
 let linearAgentBridgeService: LinearAgentBridgeService | null = null
 let telegramAgentBridgeService: TelegramAgentBridgeService | null = null
 
+function selectBridgeWorkspace() {
+  const configuredWorkspaces = getWorkspaces()
+  const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
+  const activeWorkspace = activeWorkspaceId
+    ? configuredWorkspaces.find(ws => ws.id === activeWorkspaceId)
+    : undefined
+
+  return activeWorkspace && !activeWorkspace.remoteServer
+    ? activeWorkspace
+    : configuredWorkspaces.find(ws => !ws.remoteServer)
+      || activeWorkspace
+      || configuredWorkspaces[0]
+}
+
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
 
@@ -893,12 +907,7 @@ app.whenReady().then(async () => {
     }
 
     try {
-      const configuredWorkspaces = getWorkspaces()
-      const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
-      const integrationWorkspace =
-        (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
-        || configuredWorkspaces.find(ws => !!ws.remoteServer)
-        || configuredWorkspaces[0]
+      const integrationWorkspace = selectBridgeWorkspace()
 
       if (integrationWorkspace && sessionManager) {
         linearAgentBridgeService = new LinearAgentBridgeService({
@@ -919,12 +928,7 @@ app.whenReady().then(async () => {
     }
 
     try {
-      const configuredWorkspaces = getWorkspaces()
-      const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
-      const integrationWorkspace =
-        (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
-        || configuredWorkspaces.find(ws => !!ws.remoteServer)
-        || configuredWorkspaces[0]
+      const integrationWorkspace = selectBridgeWorkspace()
 
       if (integrationWorkspace && sessionManager) {
         telegramAgentBridgeService = new TelegramAgentBridgeService({

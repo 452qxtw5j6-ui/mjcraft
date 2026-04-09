@@ -30,6 +30,7 @@ import { enableDebug } from '@craft-agent/shared/utils/debug'
 import { bootstrapServer, startHealthHttpServer, generateServerToken } from '@craft-agent/server-core/bootstrap'
 import { validateSession, createWebuiHandler, nodeHttpAdapter } from '@craft-agent/server-core/webui'
 import type { WebuiHandler } from '@craft-agent/server-core/webui'
+import { getWorkspaces, loadStoredConfig } from '@craft-agent/shared/config'
 
 // --generate-token: print a crypto-random token and exit
 if (process.argv.includes('--generate-token')) {
@@ -120,6 +121,23 @@ const serverToken = process.env.CRAFT_SERVER_TOKEN
 
 let webuiHandler: WebuiHandler | null = null
 let webuiNodeHandler: ReturnType<typeof nodeHttpAdapter> | undefined
+let linearAgentBridgeService: { start: () => Promise<void>; stop: () => Promise<void> } | null = null
+
+function selectBridgeWorkspace() {
+  const configuredWorkspaces = getWorkspaces()
+  const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
+  const activeWorkspace = activeWorkspaceId
+    ? configuredWorkspaces.find(ws => ws.id === activeWorkspaceId)
+    : undefined
+
+  // Bridge-created Craft sessions must live in a real local workspace, not a
+  // thin-client remote workspace stub that only exists for client routing.
+  return activeWorkspace && !activeWorkspace.remoteServer
+    ? activeWorkspace
+    : configuredWorkspaces.find(ws => !ws.remoteServer)
+      || activeWorkspace
+      || configuredWorkspaces[0]
+}
 
 // Health check is injected lazily — the session manager isn't ready until
 // after bootstrap completes, but the handler captures the closure.
@@ -239,6 +257,35 @@ if (webuiHandler) {
   })
 }
 
+try {
+  const integrationWorkspace = selectBridgeWorkspace()
+
+  if (integrationWorkspace) {
+    const { LinearAgentBridgeService } = await import('../../../apps/electron/src/main/linear-agent-bridge.ts')
+    linearAgentBridgeService = new LinearAgentBridgeService({
+      workspaceId: integrationWorkspace.id,
+      workspaceRootPath: integrationWorkspace.rootPath,
+      sessionManager: instance.sessionManager as any,
+      deps: {
+        logger: {
+          info: (...args: unknown[]) => console.log(...args),
+          warn: (...args: unknown[]) => console.warn(...args),
+          error: (...args: unknown[]) => console.error(...args),
+        },
+      },
+    })
+    await linearAgentBridgeService.start()
+  }
+} catch (error) {
+  console.error('[linear-agent] bridge startup failed; continuing without bridge:', error)
+  if (linearAgentBridgeService) {
+    await linearAgentBridgeService.stop().catch((stopError) => {
+      console.warn('[linear-agent] failed to stop bridge after startup failure:', stopError)
+    })
+  }
+  linearAgentBridgeService = null
+}
+
 // Start HTTP health endpoint if CRAFT_HEALTH_PORT is set
 const healthPort = parseInt(process.env.CRAFT_HEALTH_PORT ?? '0', 10)
 const healthServer = await startHealthHttpServer({
@@ -281,6 +328,12 @@ if (!isLocalBind && instance.protocol === 'ws') {
 const shutdown = async () => {
   webuiHandler?.dispose()
   healthServer?.stop()
+  if (linearAgentBridgeService) {
+    await linearAgentBridgeService.stop().catch((error) => {
+      console.warn('[linear-agent] failed to stop bridge during shutdown:', error)
+    })
+    linearAgentBridgeService = null
+  }
   await instance.stop()
   process.exit(0)
 }
