@@ -100,6 +100,7 @@ import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating } from './a
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
 import { LinearAgentBridgeService } from './linear-agent-bridge'
+import { TelegramAgentBridgeService } from './telegram-agent-bridge'
 
 function applyLegacyUserDataCompatibility(): void {
   const candidate = app.isPackaged
@@ -204,6 +205,7 @@ let oauthFlowStore: OAuthFlowStore | null = null
 let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
 let linearAgentBridgeService: LinearAgentBridgeService | null = null
+let telegramAgentBridgeService: TelegramAgentBridgeService | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
@@ -916,6 +918,32 @@ app.whenReady().then(async () => {
       linearAgentBridgeService = null
     }
 
+    try {
+      const configuredWorkspaces = getWorkspaces()
+      const activeWorkspaceId = loadStoredConfig()?.activeWorkspaceId
+      const integrationWorkspace =
+        (activeWorkspaceId && configuredWorkspaces.find(ws => ws.id === activeWorkspaceId))
+        || configuredWorkspaces.find(ws => !!ws.remoteServer)
+        || configuredWorkspaces[0]
+
+      if (integrationWorkspace && sessionManager) {
+        telegramAgentBridgeService = new TelegramAgentBridgeService({
+          workspaceId: integrationWorkspace.id,
+          workspaceRootPath: integrationWorkspace.rootPath,
+          sessionManager,
+        })
+        await telegramAgentBridgeService.start()
+      }
+    } catch (error) {
+      mainLog.error('Telegram agent bridge startup failed; continuing without bridge:', error)
+      if (telegramAgentBridgeService) {
+        await telegramAgentBridgeService.stop().catch((stopError) => {
+          mainLog.warn('Failed to stop Telegram bridge after startup failure:', stopError)
+        })
+      }
+      telegramAgentBridgeService = null
+    }
+
     // Run credential health check at startup to detect issues early
     // (corruption, machine migration, missing credentials for default connection)
     // Skip in thin-client mode — credentials are managed by the remote server.
@@ -1070,6 +1098,13 @@ app.on('before-quit', async (event) => {
         mainLog.warn('Failed to stop Linear bridge during shutdown:', error)
       })
       linearAgentBridgeService = null
+    }
+
+    if (telegramAgentBridgeService) {
+      await telegramAgentBridgeService.stop().catch((error) => {
+        mainLog.warn('Failed to stop Telegram bridge during shutdown:', error)
+      })
+      telegramAgentBridgeService = null
     }
 
     // Stop all model refresh timers

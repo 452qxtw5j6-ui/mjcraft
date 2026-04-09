@@ -38,15 +38,21 @@
 html, body, #root {
   overflow: hidden;
   max-width: 100%;
+  min-height: 100dvh;
+}
+
+#root {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 48px);
 }
 
 body {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
-/* 120% zoom on mobile viewports for better readability */
-@media (max-width: 768px) {
-  html {
-    zoom: 1.2;
-  }
-}
+/* Let the shared renderer's compact/mobile rules control density.
+   Global page zoom makes iPhone layouts feel oversized and misaligned. */

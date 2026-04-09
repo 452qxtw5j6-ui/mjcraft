@@ -19,6 +19,39 @@ import { serializeEnvelope, deserializeEnvelope } from './codec'
 // Pending request state
 // ---------------------------------------------------------------------------
 
+function createEnvelopeId(): string {
+  const cryptoObj = globalThis.crypto
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function') {
+    return cryptoObj.randomUUID()
+  }
+
+  const bytes = new Uint8Array(16)
+  if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+    cryptoObj.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256)
+    }
+  }
+
+  // RFC 4122 v4 bit layout for compatibility with server/client logs.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0'))
+  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10, 16).join('')}`
+}
+
+function isSocketOpen(ws: WebSocket | null): ws is WebSocket {
+  if (!ws) return false
+
+  const openState = typeof WebSocket !== 'undefined' && typeof WebSocket.OPEN === 'number'
+    ? WebSocket.OPEN
+    : 1
+
+  return ws.readyState === openState
+}
+
 interface PendingRequest {
   resolve: (value: any) => void
   reject: (error: Error) => void
@@ -178,7 +211,7 @@ export class WsRpcClient implements RpcClient {
         return
       }
 
-      const id = crypto.randomUUID()
+      const id = createEnvelopeId()
       const timeout = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error(`Request timeout: ${channel} (${this.requestTimeout}ms)`))
@@ -397,7 +430,7 @@ export class WsRpcClient implements RpcClient {
 
       // Send handshake (includes reconnection info if available)
       const handshake: MessageEnvelope = {
-        id: crypto.randomUUID(),
+        id: createEnvelopeId(),
         type: 'handshake',
         protocolVersion: PROTOCOL_VERSION,
         workspaceId: this.workspaceId,
@@ -804,7 +837,7 @@ export class WsRpcClient implements RpcClient {
 
   /** Best-effort send that skips closing/closed sockets and swallows send races. */
   private trySendEnvelope(ws: WebSocket | null, envelope: MessageEnvelope): boolean {
-    if (!ws || ws.readyState !== ws.OPEN) return false
+    if (!isSocketOpen(ws)) return false
 
     try {
       ws.send(serializeEnvelope(envelope))
@@ -820,7 +853,7 @@ export class WsRpcClient implements RpcClient {
     this.ackTimer = setInterval(() => {
       if (this.connected && this.lastSeenSeq > 0) {
         const ack: MessageEnvelope = {
-          id: crypto.randomUUID(),
+          id: createEnvelopeId(),
           type: 'sequence_ack',
           lastSeq: this.lastSeenSeq,
         }

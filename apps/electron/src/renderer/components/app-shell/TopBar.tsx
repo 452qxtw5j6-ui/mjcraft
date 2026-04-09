@@ -242,14 +242,14 @@ export function TopBar({
 
   return (
     <div
-      className="fixed top-0 left-0 right-0 h-[48px] z-panel titlebar-drag-region"
+      className="fixed left-0 right-0 h-[48px] z-panel titlebar-drag-region"
+      style={{ top: 'env(safe-area-inset-top, 0px)' }}
     >
       <div className="flex h-full w-full items-center justify-between gap-2">
       {/* === LEFT: Sidebar + Menu + Navigation + Workspace === */}
       {/* Keep this container draggable. Only individual interactive controls should use titlebar-no-drag. */}
       <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-0.5" style={{ paddingLeft: menuLeftPadding }}>
         <div className="flex items-center gap-0.5">
-        {!isCompact && (
         <Tooltip>
           <TooltipTrigger asChild>
             <TopBarButton onClick={onToggleSidebar} aria-label="Toggle sidebar">
@@ -258,7 +258,6 @@ export function TopBar({
           </TooltipTrigger>
           <TooltipContent side="bottom">Toggle Sidebar</TooltipContent>
         </Tooltip>
-        )}
 
         {/* Craft Menu */}
         <DropdownMenu>
@@ -408,11 +407,12 @@ export function TopBar({
       </div>
 
       {/* === RIGHT: Browser strip + add + help === */}
-      {!isCompact && (
       <div ref={rightSlotRef} className="flex min-w-0 shrink-0 items-center justify-end gap-1" style={{ paddingRight: 12 }}>
+        {!isCompact && (
         <div className="min-w-0">
           <BrowserTabStrip activeSessionId={activeSessionId} maxVisibleBadges={maxVisibleBrowserBadges} />
         </div>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <TopBarButton aria-label="Add panel menu" className="ml-1 h-[26px] w-[26px] rounded-lg">
@@ -472,7 +472,6 @@ export function TopBar({
           </StyledDropdownMenuContent>
         </DropdownMenu>
       </div>
-      )}
       </div>
     </div>
   )
