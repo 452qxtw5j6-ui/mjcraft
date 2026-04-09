@@ -230,12 +230,30 @@ export class RoutedClient implements RpcClient {
     // stale recovery logic to refresh sessions that changed while no client
     // was watching this workspace.
     if (newClient !== this.localClient) {
-      const unsub = newClient.onConnectionStateChanged((state) => {
-        if (state.status === 'connected') {
+      let unsub: (() => void) | null = null
+      let disconnectAfterImmediateConnect = false
+
+      unsub = newClient.onConnectionStateChanged((state) => {
+        if (state.status !== 'connected') return
+
+        // Some client implementations synchronously invoke the listener during
+        // registration, so the unsubscribe handle may not exist yet.
+        if (unsub) {
           unsub()
+          unsub = null
+        } else {
+          disconnectAfterImmediateConnect = true
+        }
+
+        if (typeof (newClient as { emitReconnected?: (isStale: boolean) => void }).emitReconnected === 'function') {
           newClient.emitReconnected(true)
         }
       })
+
+      if (disconnectAfterImmediateConnect && unsub) {
+        unsub()
+        unsub = null
+      }
     }
   }
 
