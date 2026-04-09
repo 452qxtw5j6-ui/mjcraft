@@ -13,6 +13,7 @@
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import type { SpawnSessionFn } from './spawn-session-tool.ts';
 import type { BrowserPaneFns } from './browser-tools.ts';
+import type { ActivateSourceFn } from './activate-source-tool.ts';
 import type { AuthRequest } from '@craft-agent/session-tools-core';
 import { debug } from '../utils/debug.ts';
 
@@ -50,6 +51,12 @@ export interface SessionScopedToolCallbacks {
    * with the session's bound browser instance.
    */
   browserPaneFns?: BrowserPaneFns;
+
+  /**
+   * Activate an existing source for the current session.
+   * Backend implementations may interrupt and retry the current turn after success.
+   */
+  activateSourceFn?: ActivateSourceFn;
 
   /** Set labels on a session (defaults to current). */
   setSessionLabelsFn?: (sessionId: string | undefined, labels: string[]) => void | Promise<void>;

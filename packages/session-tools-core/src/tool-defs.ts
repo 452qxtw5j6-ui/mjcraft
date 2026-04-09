@@ -153,6 +153,10 @@ export const BrowserToolSchema = z.object({
   ]).describe('Browser command as a string (e.g., "click @e1") or array (e.g., ["evaluate", "var x = 1; x + 2"]). Array mode preserves semicolons and whitespace in arguments.'),
 });
 
+export const ActivateSourceSchema = z.object({
+  sourceSlug: z.string().describe('Source slug to activate for the current session'),
+});
+
 export const SpawnSessionSchema = z.object({
   help: z.boolean().optional().describe('If true, returns available connections, models, and sources instead of creating a session'),
   prompt: z.string().optional().describe('Instructions for the new session (required when not in help mode)'),
@@ -392,6 +396,10 @@ Examples:
 - \`close\` — close and destroy the browser window
 - \`hide\` — hide the window while preserving state`,
 
+  activate_source: `Activate an existing source for the current session.
+
+Use this when a source in \`<sources>\` is clearly relevant but inactive. After activation, the current turn should be retried so the newly available source tools can be used.`,
+
   call_llm: `Invoke a secondary LLM for focused subtasks. Use for:
 - Cost optimization: use a smaller model for simple tasks (summarization, classification)
 - Structured output: JSON schema compliance via prompt instructions
@@ -500,6 +508,7 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   // Browser tool (backend-specific — requires BrowserPaneManager in Electron)
   // Single CLI-like tool that handles all browser actions via command string.
   { name: 'browser_tool', description: TOOL_DESCRIPTIONS.browser_tool, inputSchema: BrowserToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  { name: 'activate_source', description: TOOL_DESCRIPTIONS.activate_source, inputSchema: ActivateSourceSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
   // Session self-management tools (registry — use context callbacks to reach SessionManager)
   { name: 'set_session_labels', description: TOOL_DESCRIPTIONS.set_session_labels, inputSchema: SetSessionLabelsSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionLabels },
   { name: 'set_session_status', description: TOOL_DESCRIPTIONS.set_session_status, inputSchema: SetSessionStatusSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionStatus },

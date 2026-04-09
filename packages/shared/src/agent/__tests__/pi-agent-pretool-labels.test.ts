@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { PiAgent } from '../pi-agent.ts'
 import type { BackendConfig } from '../backend/types.ts'
+import type { LoadedSource } from '../../sources/types.ts'
 
 let origFlag: string | undefined
 
@@ -66,6 +67,53 @@ describe('PiAgent pre-tool labels guard', () => {
     expect(response?.type).toBe('pre_tool_use_response')
     expect(response?.action).toBe('block')
     expect(String(response?.reason ?? '')).toContain('craft-agent label --help')
+
+    agent.destroy()
+  })
+
+  it('preserves the current user message when auto-activating a source', async () => {
+    const agent = new PiAgent(createConfig())
+
+    const sent: Array<Record<string, unknown>> = []
+    ;(agent as any).send = (message: Record<string, unknown>) => {
+      sent.push(message)
+    }
+    ;(agent as any).emitAutomationEvent = async () => {}
+    ;(agent as any).currentUserMessage = 'linear에서 열린 이슈 찾아줘'
+    ;(agent as any).onSourceActivationRequest = async () => true
+
+    const source: LoadedSource = {
+      config: {
+        id: 'linear-cli-test',
+        slug: 'linear-cli',
+        name: 'Linear CLI',
+        enabled: true,
+        provider: 'linear',
+        type: 'cli',
+      },
+      guide: null,
+      manifest: null,
+      folderPath: '/tmp/ws-root/sources/linear-cli',
+      workspaceRootPath: '/tmp/ws-root',
+      workspaceId: 'ws-test',
+    }
+
+    agent.setAllSources([source])
+
+    await (agent as any).handlePreToolUseRequest({
+      requestId: 'req-2',
+      toolName: 'mcp__linear-cli__issues_search',
+      input: { query: 'open issues' },
+    })
+
+    const queued = ((agent as any).eventQueue as { queue?: Array<Record<string, unknown>> }).queue ?? []
+    expect(queued.length).toBeGreaterThan(0)
+    expect(queued[0]?.type).toBe('source_activated')
+    expect(queued[0]?.originalMessage).toBe('linear에서 열린 이슈 찾아줘')
+
+    const response = sent.at(-1)
+    expect(response?.type).toBe('pre_tool_use_response')
+    expect(response?.action).toBe('allow')
 
     agent.destroy()
   })

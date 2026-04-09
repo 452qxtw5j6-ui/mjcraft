@@ -50,6 +50,7 @@ export type {
   McpSourceConfig,
   ApiSourceConfig,
   LocalSourceConfig,
+  CliSourceConfig,
   SourceConfig,
   ConnectionStatus,
 } from './types.ts';
@@ -202,6 +203,7 @@ export {
   RenderTemplateSchema,
   // Browser tool schema
   BrowserToolSchema,
+  ActivateSourceSchema,
   // Developer feedback schema
   SendDeveloperFeedbackSchema,
   // Descriptions

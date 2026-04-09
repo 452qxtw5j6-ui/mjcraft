@@ -22,4 +22,11 @@ describe('system prompt guidance', () => {
     expect(prompt).toContain('The subtask needs file/shell tools (for example, Read or Bash)')
     expect(prompt).not.toContain('The subtask needs tools (Read, Bash, Grep)')
   })
+
+  it('tells the agent to treat relevant inactive sources as activation candidates', () => {
+    const prompt = getSystemPrompt(undefined, undefined, '/tmp/workspace', '/tmp/workspace')
+
+    expect(prompt).toContain('If a source is **inactive but clearly relevant**, treat it as a candidate for activation')
+    expect(prompt).toContain('do not claim it is unavailable while it still exists in `<sources>`')
+  })
 })

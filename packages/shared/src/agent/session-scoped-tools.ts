@@ -34,6 +34,7 @@ import {
 import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
 import { createBrowserTools, type BrowserPaneFns } from './browser-tools.ts';
+import { createActivateSourceTool } from './activate-source-tool.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
 import { getBrowserToolEnabled } from '../config/storage.ts';
 
@@ -78,6 +79,7 @@ export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
+  'activate_source',
 ]);
 
 /**
@@ -285,6 +287,15 @@ export function getSessionScopedTools(
         getSpawnSessionFn: () => {
           const callbacks = getSessionScopedToolCallbacks(sessionId);
           return callbacks?.spawnSessionFn;
+        },
+      }),
+    );
+
+    tools.push(
+      createActivateSourceTool({
+        getActivateSourceFn: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.activateSourceFn;
         },
       }),
     );

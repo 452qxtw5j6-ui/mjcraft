@@ -20,6 +20,18 @@ import type { SourceManagerConfig } from './types.ts';
 /** Slugs exempt from guide.md prerequisite (internal sources) */
 const GUIDE_EXEMPT_SLUGS = new Set(['session', 'craft-agents-docs']);
 
+function getCompactCapabilityHint(source: LoadedSource): string | null {
+  if (source.manifest?.capabilitiesHint?.length) {
+    return source.manifest.capabilitiesHint.slice(0, 2).join('; ');
+  }
+
+  if (source.manifest?.operations?.length) {
+    return source.manifest.operations.slice(0, 3).map((op) => op.name).join(', ');
+  }
+
+  return source.config.tagline ?? null;
+}
+
 function requiresGuideBeforeToolUse(source: LoadedSource): boolean {
   if (!source.guide?.raw || GUIDE_EXEMPT_SLUGS.has(source.config.slug)) {
     return false;
@@ -220,9 +232,13 @@ export class SourceManager {
           : sourceNeedsAuthentication(s)
             ? 'needs auth'
             : 'inactive';
-        return `${s.config.slug} (${reason})`;
+        const hint = getCompactCapabilityHint(s);
+        return hint
+          ? `${s.config.slug} (${reason}; ${hint})`
+          : `${s.config.slug} (${reason})`;
       });
       parts.push(`Inactive: ${inactiveList.join(', ')}`);
+      parts.push('To use an inactive source that clearly matches the request, call mcp__session__activate_source with its slug instead of probing the directory with Bash.');
     }
 
     // Persistent reminder: if any active source has a guide, remind the LLM every message

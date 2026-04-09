@@ -98,6 +98,7 @@ import { extractWorkspaceSlug } from '../utils/workspace.ts';
 import { LLM_QUERY_TIMEOUT_MS, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
 import { saveBinaryResponse } from '../utils/binary-detection.ts';
+import type { ActivateSourceFn } from './activate-source-tool.ts';
 
 // ============================================================
 // PiAgent Implementation
@@ -108,6 +109,7 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
+  'activate_source',
 ]);
 
 /**
@@ -203,6 +205,8 @@ export class PiAgent extends BaseAgent {
 
   // Current user message (for context in summarization)
   private currentUserMessage: string = '';
+  // Pending source activation requested via activate_source session tool.
+  private pendingActivatedSourceFromTool: { sourceSlug: string; originalMessage: string } | null = null;
 
   // Pool reference for convenience (from this.config.mcpPool)
   private get mcpPool(): McpClientPool | undefined { return this.config.mcpPool; }
@@ -1106,7 +1110,7 @@ export class PiAgent extends BaseAgent {
             this.eventQueue.enqueue({
               type: 'source_activated' as const,
               sourceSlug,
-              originalMessage: '',
+              originalMessage: this.currentUserMessage,
             });
           } catch (err) {
             const reason = sourceExists
@@ -1392,6 +1396,24 @@ export class PiAgent extends BaseAgent {
         }
       }
 
+      if (toolName === 'activate_source') {
+        const callbacks = getSessionScopedToolCallbacks(this._sessionId);
+        const activateSourceFn = callbacks?.activateSourceFn;
+        if (!activateSourceFn) {
+          return { content: 'activate_source is not available in this context.', isError: true };
+        }
+
+        const sourceSlug = args.sourceSlug as string | undefined;
+        if (!sourceSlug) {
+          return { content: 'activate_source requires sourceSlug.', isError: true };
+        }
+
+        const activated = await activateSourceFn(sourceSlug);
+        return activated
+          ? { content: `Source '${sourceSlug}' activated for the current session.`, isError: false }
+          : { content: `Source '${sourceSlug}' could not be activated.`, isError: true };
+      }
+
       const def = SESSION_TOOL_REGISTRY.get(toolName);
       if (!def) {
         return { content: `Unknown session tool: ${toolName}`, isError: true };
@@ -1431,7 +1453,16 @@ export class PiAgent extends BaseAgent {
     const toolName = msg.toolName as string;
     const isError = msg.isError as boolean;
     this.debug(`Session tool completed: ${toolName} (isError=${isError})`);
-    // Callbacks already handled by executeSessionTool() — no-op.
+    if (toolName === 'activate_source' && !isError && this.pendingActivatedSourceFromTool) {
+      const pending = this.pendingActivatedSourceFromTool;
+      this.pendingActivatedSourceFromTool = null;
+      this.eventQueue.enqueue({
+        type: 'source_activated' as const,
+        sourceSlug: pending.sourceSlug,
+        originalMessage: pending.originalMessage,
+      });
+      this.forceAbort(AbortReason.SourceActivated);
+    }
   }
 
   /**
@@ -1715,6 +1746,17 @@ export class PiAgent extends BaseAgent {
         onPlanSubmitted: (planPath) => this.onPlanSubmitted?.(planPath),
         onAuthRequest: (request) => this.onAuthRequest?.(request),
         queryFn: (request) => this.queryLlm(request),
+        activateSourceFn: (async (sourceSlug: string) => {
+          if (!this.onSourceActivationRequest) return false;
+          const activated = await this.onSourceActivationRequest(sourceSlug);
+          if (activated) {
+            this.pendingActivatedSourceFromTool = {
+              sourceSlug,
+              originalMessage: this.currentUserMessage,
+            };
+          }
+          return activated;
+        }) as ActivateSourceFn,
       });
     }
 

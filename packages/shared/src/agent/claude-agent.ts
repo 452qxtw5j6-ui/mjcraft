@@ -35,6 +35,7 @@ import {
   getLastPlanFilePath,
   clearPlanFileState,
   registerSessionScopedToolCallbacks,
+  mergeSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
   getSessionScopedTools,
   cleanupSessionScopedTools,
@@ -473,6 +474,10 @@ export class ClaudeAgent extends BaseAgent {
   private lastStderrOutput: string[] = [];
   /** Pending steer message — injected via additionalContext on next PreToolUse */
   private pendingSteerMessage: string | null = null;
+  /** Current user message for turn-scoped callbacks such as activate_source. */
+  private currentUserMessage: string = '';
+  /** Pending source activation retry request emitted after aborting the current turn. */
+  private pendingSourceActivated: { sourceSlug: string; originalMessage: string } | null = null;
 
   /**
    * Get the session ID for mode operations.
@@ -618,6 +623,18 @@ export class ClaudeAgent extends BaseAgent {
       },
       queryFn: (request) => this.queryLlm(request),
       spawnSessionFn: (input) => this.preExecuteSpawnSession(input),
+      activateSourceFn: async (sourceSlug: string) => {
+        if (!this.onSourceActivationRequest) return false;
+        const activated = await this.onSourceActivationRequest(sourceSlug);
+        if (activated) {
+          this.pendingSourceActivated = {
+            sourceSlug,
+            originalMessage: this.currentUserMessage,
+          };
+          this.forceAbort(AbortReason.SourceActivated);
+        }
+        return activated;
+      },
     });
 
     // Start config watcher for hot-reloading source changes
@@ -785,11 +802,13 @@ export class ClaudeAgent extends BaseAgent {
     attachments?: FileAttachment[],
     options?: ChatOptions
   ): AsyncGenerator<AgentEvent> {
+    this.currentUserMessage = userMessage;
     // Extract options (ChatOptions interface from AgentBackend)
     const _isRetry = options?.isRetry ?? false;
 
     // Clear any leftover steer from a previous turn (safety net — should already be null)
     this.pendingSteerMessage = null;
+    this.pendingSourceActivated = null;
 
     try {
       const sessionId = this.config.session?.id || `temp-${Date.now()}`;
@@ -1138,11 +1157,16 @@ export class ClaudeAgent extends BaseAgent {
                     try {
                       const activated = await this.onSourceActivationRequest(sourceSlug);
                       if (activated) {
-                        this.onDebug?.(`Source "${sourceSlug}" auto-enabled successfully, tools available next turn`);
+                        this.onDebug?.(`Source "${sourceSlug}" auto-enabled successfully, interrupting turn for auto-retry`);
+                        this.pendingSourceActivated = {
+                          sourceSlug,
+                          originalMessage: userMessage,
+                        };
+                        this.forceAbort(AbortReason.SourceActivated);
                         return {
                           continue: false,
                           decision: 'block' as const,
-                          reason: `STOP. Source "${sourceSlug}" has been activated successfully. The tools will be available on the next turn. Do NOT try other tool names or approaches. Respond to the user now: tell them the source is now active and ask them to send their request again.`,
+                          reason: `[ERROR] Source "${sourceSlug}" was activated. Stop this turn immediately so the request can be retried with the newly available tools.`,
                         };
                       } else {
                         return {
@@ -1652,6 +1676,15 @@ This is a branched conversation. All prior messages in this conversation are par
           if (reason === AbortReason.UserStop) {
             yield { type: 'status', message: 'Interrupted' };
           }
+          const pendingSourceActivated = this.pendingSourceActivated as { sourceSlug: string; originalMessage: string } | null;
+          if (reason === AbortReason.SourceActivated && pendingSourceActivated) {
+            yield {
+              type: 'source_activated' as const,
+              sourceSlug: pendingSourceActivated.sourceSlug,
+              originalMessage: pendingSourceActivated.originalMessage,
+            };
+            this.pendingSourceActivated = null;
+          }
           yield { type: 'complete' };
           return;
         }
@@ -1989,6 +2022,7 @@ This is a branched conversation. All prior messages in this conversation are par
       yield { type: 'complete' };
     } finally {
       this.currentQuery = null;
+      this.pendingSourceActivated = null;
 
       // If a steer message was never delivered (no PreToolUse fired), notify the session
       // layer so it can re-queue the message for the next turn.
