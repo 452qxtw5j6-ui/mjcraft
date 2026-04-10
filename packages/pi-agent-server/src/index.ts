@@ -47,16 +47,11 @@ import type { TextContent as PiTextContent } from '@mariozechner/pi-ai';
 // Pre-register the Bedrock provider module so the Pi SDK doesn't attempt a
 // dynamic import of "./amazon-bedrock.js" — which fails in the bundled output
 // because bun collapses everything into a single file.
-// Both @mariozechner/pi-ai AND the nested copy inside @mariozechner/pi-agent-core
-// have separate module-scoped state, so we must register with both.
+// With the current Pi SDK (0.66.1 here), pi-ai is deduped (single hoisted
+// copy), so one registration covers both pi-ai and pi-agent-core module scopes.
 import { setBedrockProviderModule } from '@mariozechner/pi-ai';
 import { bedrockProviderModule } from '@mariozechner/pi-ai/bedrock-provider';
 setBedrockProviderModule(bedrockProviderModule);
-
-// Register for the pi-agent-core's nested pi-ai copy (separate module scope in bundle)
-import { setBedrockProviderModule as setBedrockProviderModule2 } from '@mariozechner/pi-agent-core/node_modules/@mariozechner/pi-ai/dist/providers/register-builtins.js';
-import { bedrockProviderModule as bedrockProviderModule2 } from '@mariozechner/pi-agent-core/node_modules/@mariozechner/pi-ai/bedrock-provider';
-setBedrockProviderModule2(bedrockProviderModule2);
 
 // Model resolution (extracted for testability + custom-endpoint precedence)
 import { resolvePiModel } from './model-resolution.ts';
@@ -514,7 +509,7 @@ function createAuthenticatedRegistry(): {
     debugLog('Injected API key into auth storage (legacy fallback)');
   }
 
-  const modelRegistry = new PiModelRegistry(authStorage);
+  const modelRegistry = PiModelRegistry.inMemory(authStorage);
 
   // Register custom endpoint models dynamically via Pi SDK's registerProvider API.
   // This makes arbitrary OpenAI/Anthropic-compatible endpoints work through the Pi SDK
@@ -633,11 +628,22 @@ async function ensureSession(): Promise<AgentSession> {
     try {
       const piModel = resolvePiModel(modelRegistry, initConfig.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint());
       if (piModel) {
-        const contextWindowOverride = getDesktopAlignedContextWindow(initConfig.model, initConfig.piAuth?.provider);
-        sessionOptions.model = contextWindowOverride !== null
-          ? { ...piModel, contextWindow: contextWindowOverride }
-          : piModel;
-        setInterceptorApiHints(piModel as { api?: string; provider?: string; baseUrl?: string });
+        // Guard against cross-provider fallback mismatches, then preserve the
+        // desktop-specific context window override for GPT-5.4 Codex sessions.
+        const resolvedProvider = (piModel as any)?.provider;
+        const isCompatible = !initConfig.piAuth ||
+          resolvedProvider === initConfig.piAuth.provider ||
+          resolvedProvider === 'custom-endpoint';
+        if (isCompatible) {
+          const contextWindowOverride = getDesktopAlignedContextWindow(initConfig.model, initConfig.piAuth?.provider);
+          sessionOptions.model = contextWindowOverride !== null
+            ? { ...piModel, contextWindow: contextWindowOverride }
+            : piModel;
+          setInterceptorApiHints(piModel as { api?: string; provider?: string; baseUrl?: string });
+        } else {
+          debugLog(`Model ${initConfig.model} resolved to incompatible provider ${resolvedProvider} (expected ${initConfig.piAuth!.provider}), skipping`);
+          setInterceptorApiHints(undefined);
+        }
       } else {
         setInterceptorApiHints(undefined);
       }
@@ -659,14 +665,11 @@ async function ensureSession(): Promise<AgentSession> {
   const { session } = await createAgentSession(sessionOptions);
   piSession = session;
 
-  // HACK: Pi SDK's createAgentSession ignores our wrapped tool objects — it
-  // extracts only tool names and creates its own internal instances via
-  // createAllTools(). Our wrapSingleTool permission/summarization hooks are
-  // silently discarded. Inject our wrapped tools via the internal
-  // _baseToolsOverride property and rebuild the runtime.
-  //
-  // Pinned to @mariozechner/pi-coding-agent@0.53.x — will break on SDK updates.
-  // TODO: Upstream a public API for custom tool injection.
+  // Pi SDK's createAgentSession ignores custom AgentTool objects passed via
+  // `tools` — it only accepts its own internal Tool type and creates instances
+  // internally. Inject our wrapped tools (with permission hooks) and proxy
+  // tools via _baseToolsOverride, then rebuild the runtime so the session
+  // actually uses them.
   const sessionInternal = piSession as any;
   if (typeof sessionInternal._buildRuntime !== 'function') {
     throw new Error(
@@ -835,6 +838,12 @@ function buildProxyTools(): AgentTool<any>[] {
       .replace(/_/g, ' ')
       .replace(/([a-z])([A-Z])/g, '$1 $2'),
     description: def.description,
+    // Pi SDK omits tools without promptSnippet from the system prompt's
+    // "Available tools" section, making them invisible to the LLM.
+    // Derive a snippet from the description so proxy tools are listed.
+    promptSnippet: def.description.length > 200
+      ? def.description.slice(0, 197) + '...'
+      : def.description,
     parameters: def.inputSchema,
     execute: async (
       toolCallId: string,
@@ -970,9 +979,9 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
 
     // Set system prompt
     if (request.systemPrompt) {
-      ephemeralSession.agent.setSystemPrompt(request.systemPrompt);
+      ephemeralSession.agent.state.systemPrompt = request.systemPrompt;
     } else {
-      ephemeralSession.agent.setSystemPrompt('Reply with ONLY the requested text. No explanation.');
+      ephemeralSession.agent.state.systemPrompt = 'Reply with ONLY the requested text. No explanation.';
     }
 
     // Collect response text and errors from events
@@ -1297,7 +1306,7 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
 
     // Set system prompt
     if (msg.systemPrompt) {
-      session.agent.setSystemPrompt(msg.systemPrompt);
+      session.agent.state.systemPrompt = msg.systemPrompt;
     }
 
     // Wire up event handler

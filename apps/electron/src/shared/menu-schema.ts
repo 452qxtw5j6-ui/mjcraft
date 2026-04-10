@@ -6,6 +6,10 @@
  * - Renderer: transforms to React dropdown components
  *
  * Single source of truth for labels, shortcuts, icons, and IPC channels.
+ *
+ * NOTE: All labels are i18n keys (e.g., "menu.edit"), NOT resolved strings.
+ * Consumers must call t(item.labelKey) or i18n.t(item.labelKey) at render/build time.
+ * This avoids stale translations from module-level i18n.t() calls.
  */
 
 import { RPC_CHANNELS } from './types'
@@ -17,7 +21,7 @@ import { RPC_CHANNELS } from './types'
 export interface MenuItemAction {
   type: 'action'
   id: string
-  label: string
+  labelKey: string              // i18n key — resolve with t() at render time
   /** Link to the action registry (e.g., 'view.toggleSidebar').
    *  Enables future: derive display shortcuts from registry + propagate user overrides. */
   actionId?: string
@@ -31,7 +35,7 @@ export interface MenuItemAction {
 export interface MenuItemRole {
   type: 'role'
   role: string                  // Electron role: 'undo', 'copy', etc.
-  label: string                 // Label for renderer
+  labelKey: string              // i18n key — resolve with t() at render time
   shortcutDisplayMac?: string
   shortcutDisplayOther?: string
   icon: string
@@ -46,7 +50,7 @@ export type MenuItem = MenuItemAction | MenuItemRole | MenuItemSeparator
 
 export interface MenuSection {
   id: string
-  label: string
+  labelKey: string              // i18n key — resolve with t() at render time
   icon: string
   items: MenuItem[]
 }
@@ -57,13 +61,13 @@ export interface MenuSection {
 
 export const EDIT_MENU: MenuSection = {
   id: 'edit',
-  label: 'Edit',
+  labelKey: 'menu.edit',
   icon: 'Pencil',
   items: [
     {
       type: 'role',
       role: 'undo',
-      label: 'Undo',
+      labelKey: 'menu.undo',
       icon: 'Undo2',
       shortcutDisplayMac: '⌘Z',
       shortcutDisplayOther: 'Ctrl+Z',
@@ -72,7 +76,7 @@ export const EDIT_MENU: MenuSection = {
     {
       type: 'role',
       role: 'redo',
-      label: 'Redo',
+      labelKey: 'menu.redo',
       icon: 'Redo2',
       shortcutDisplayMac: '⌘⇧Z',
       shortcutDisplayOther: 'Ctrl+Shift+Z',
@@ -82,7 +86,7 @@ export const EDIT_MENU: MenuSection = {
     {
       type: 'role',
       role: 'cut',
-      label: 'Cut',
+      labelKey: 'menu.cut',
       icon: 'Scissors',
       shortcutDisplayMac: '⌘X',
       shortcutDisplayOther: 'Ctrl+X',
@@ -91,7 +95,7 @@ export const EDIT_MENU: MenuSection = {
     {
       type: 'role',
       role: 'copy',
-      label: 'Copy',
+      labelKey: 'menu.copy',
       icon: 'Copy',
       shortcutDisplayMac: '⌘C',
       shortcutDisplayOther: 'Ctrl+C',
@@ -100,7 +104,7 @@ export const EDIT_MENU: MenuSection = {
     {
       type: 'role',
       role: 'paste',
-      label: 'Paste',
+      labelKey: 'menu.paste',
       icon: 'ClipboardPaste',
       shortcutDisplayMac: '⌘V',
       shortcutDisplayOther: 'Ctrl+V',
@@ -110,7 +114,7 @@ export const EDIT_MENU: MenuSection = {
     {
       type: 'role',
       role: 'selectAll',
-      label: 'Select All',
+      labelKey: 'menu.selectAll',
       icon: 'TextSelect',
       shortcutDisplayMac: '⌘A',
       shortcutDisplayOther: 'Ctrl+A',
@@ -121,13 +125,13 @@ export const EDIT_MENU: MenuSection = {
 
 export const VIEW_MENU: MenuSection = {
   id: 'view',
-  label: 'View',
+  labelKey: 'menu.view',
   icon: 'Eye',
   items: [
     {
       type: 'role',
       role: 'zoomIn',
-      label: 'Zoom In',
+      labelKey: 'menu.zoomIn',
       icon: 'ZoomIn',
       shortcutDisplayMac: '⌘+',
       shortcutDisplayOther: 'Ctrl++',
@@ -136,7 +140,7 @@ export const VIEW_MENU: MenuSection = {
     {
       type: 'role',
       role: 'zoomOut',
-      label: 'Zoom Out',
+      labelKey: 'menu.zoomOut',
       icon: 'ZoomOut',
       shortcutDisplayMac: '⌘-',
       shortcutDisplayOther: 'Ctrl+-',
@@ -145,7 +149,7 @@ export const VIEW_MENU: MenuSection = {
     {
       type: 'role',
       role: 'resetZoom',
-      label: 'Reset Zoom',
+      labelKey: 'menu.resetZoom',
       icon: 'RotateCcw',
       shortcutDisplayMac: '⌘0',
       shortcutDisplayOther: 'Ctrl+0',
@@ -156,7 +160,7 @@ export const VIEW_MENU: MenuSection = {
       type: 'action',
       id: 'toggleFocusMode',
       actionId: 'view.toggleFocusMode',
-      label: 'Toggle Focus Mode',
+      labelKey: 'menu.toggleFocusMode',
       shortcut: 'CmdOrCtrl+.',
       shortcutDisplayMac: '⌘.',
       shortcutDisplayOther: 'Ctrl+.',
@@ -167,7 +171,7 @@ export const VIEW_MENU: MenuSection = {
       type: 'action',
       id: 'toggleSidebar',
       actionId: 'view.toggleSidebar',
-      label: 'Toggle Sidebar',
+      labelKey: 'menu.toggleSidebar',
       shortcut: 'CmdOrCtrl+B',
       shortcutDisplayMac: '⌘B',
       shortcutDisplayOther: 'Ctrl+B',
@@ -179,7 +183,7 @@ export const VIEW_MENU: MenuSection = {
       type: 'action',
       id: 'focusSidebar',
       actionId: 'nav.focusSidebar',
-      label: 'Focus Sidebar',
+      labelKey: 'shortcuts.action.focusSidebar',
       shortcut: 'CmdOrCtrl+1',
       shortcutDisplayMac: '⌘1',
       shortcutDisplayOther: 'Ctrl+1',
@@ -190,7 +194,7 @@ export const VIEW_MENU: MenuSection = {
       type: 'action',
       id: 'focusNavigator',
       actionId: 'nav.focusNavigator',
-      label: 'Focus Navigator',
+      labelKey: 'shortcuts.action.focusNavigator',
       shortcut: 'CmdOrCtrl+2',
       shortcutDisplayMac: '⌘2',
       shortcutDisplayOther: 'Ctrl+2',
@@ -201,7 +205,7 @@ export const VIEW_MENU: MenuSection = {
       type: 'action',
       id: 'focusChat',
       actionId: 'nav.focusChat',
-      label: 'Focus Chat',
+      labelKey: 'shortcuts.action.focusChat',
       shortcut: 'CmdOrCtrl+3',
       shortcutDisplayMac: '⌘3',
       shortcutDisplayOther: 'Ctrl+3',
@@ -213,13 +217,13 @@ export const VIEW_MENU: MenuSection = {
 
 export const WINDOW_MENU: MenuSection = {
   id: 'window',
-  label: 'Window',
+  labelKey: 'menu.window',
   icon: 'AppWindow',
   items: [
     {
       type: 'role',
       role: 'minimize',
-      label: 'Minimize',
+      labelKey: 'menu.minimize',
       icon: 'Minimize2',
       shortcutDisplayMac: '⌘M',
       shortcutDisplayOther: '',
@@ -228,7 +232,7 @@ export const WINDOW_MENU: MenuSection = {
     {
       type: 'role',
       role: 'zoom',
-      label: 'Maximize',
+      labelKey: 'menu.maximize',
       icon: 'Maximize2',
       ipcChannel: RPC_CHANNELS.menu.MAXIMIZE,
     },
@@ -250,9 +254,9 @@ import { SETTINGS_PAGES, type SettingsSubpage } from './settings-registry'
 
 export interface SettingsMenuItem {
   id: SettingsSubpage
-  label: string
+  labelKey: string    // i18n key - resolve with t() at render time
   icon: string        // Lucide icon name for AppMenu
-  description: string // Shown in SettingsNavigator
+  descriptionKey: string // i18n key - resolve with t() at render time
 }
 
 /**
@@ -279,9 +283,9 @@ const SETTINGS_ICONS: Record<SettingsSubpage, string> = {
 export const SETTINGS_ITEMS: SettingsMenuItem[] = SETTINGS_PAGES
   .map(page => ({
     id: page.id,
-    label: page.label,
+    labelKey: page.labelKey,
     icon: SETTINGS_ICONS[page.id],
-    description: page.description,
+    descriptionKey: page.descriptionKey,
   }))
 
 // ─────────────────────────────────────────────────────────────────────────────
