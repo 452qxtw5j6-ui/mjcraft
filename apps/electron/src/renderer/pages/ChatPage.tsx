@@ -54,10 +54,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     onInputChange,
     enabledSources,
     skills,
-    personas,
     labels,
     onSessionLabelsChange,
-    onSessionPersonaChange,
     enabledModes,
     sessionStatuses,
     onSessionSourcesChange,
@@ -558,7 +556,6 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
         isFlagged: sessionMeta.isFlagged,
         workingDirectory: sessionMeta.workingDirectory,
         enabledSourceSlugs: sessionMeta.enabledSourceSlugs,
-        personaId: sessionMeta.personaId,
       }
 
       return (
@@ -588,10 +585,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
                 onInputChange={handleInputChange}
                 sources={enabledSources}
                 skills={skills}
-                personas={personas}
                 sessionStatuses={sessionStatuses}
                 onSessionStatusChange={handleSessionStatusChange}
-                onPersonaChange={(personaId) => onSessionPersonaChange?.(sessionId, personaId) ?? Promise.resolve()}
                 workspaceId={activeWorkspaceId || undefined}
                 onSourcesChange={(slugs) => onSessionSourcesChange?.(sessionId, slugs)}
                 workingDirectory={sessionMeta.workingDirectory}
@@ -661,12 +656,10 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             onInputChange={handleInputChange}
             sources={enabledSources}
             skills={skills}
-            personas={personas}
             labels={labels}
             onLabelsChange={(newLabels) => onSessionLabelsChange?.(sessionId, newLabels)}
             sessionStatuses={sessionStatuses}
             onSessionStatusChange={handleSessionStatusChange}
-            onPersonaChange={(personaId) => onSessionPersonaChange?.(sessionId, personaId) ?? Promise.resolve()}
             workspaceId={activeWorkspaceId || undefined}
             onSourcesChange={(slugs) => onSessionSourcesChange?.(sessionId, slugs)}
             workingDirectory={workingDirectory}

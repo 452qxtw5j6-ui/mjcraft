@@ -20,9 +20,6 @@ import { safeJsonParse, readJsonFileSync } from '../utils/files.ts';
 import { EntityColorSchema } from '../colors/validate.ts';
 import { isValidProviderAuthCombination } from './llm-connections.ts';
 import { isValidLabelId } from '../labels/storage.ts';
-import { loadAllSkills } from '../skills/storage.ts';
-import { loadWorkspaceSources } from '../sources/storage.ts';
-import { isPersonaPromptFileWithinPersonaDir } from '../personas/storage.ts';
 
 // ============================================================
 // Config Directory
@@ -1107,20 +1104,6 @@ import { validateAutoLabelRule } from '../labels/auto/validation.ts';
 
 const LABEL_CONFIG_FILE = 'labels/config.json';
 
-const PersonaConfigSchema = z.object({
-  version: z.number().int().min(1),
-  id: z.string().min(1),
-  name: z.string().min(1),
-  injectPrompt: z.boolean(),
-  personaPromptFile: z.string().min(1),
-  linkedLabelId: z.string().min(1).optional(),
-  primarySkill: z.string().min(1).optional(),
-  visibleSkills: z.array(z.string().min(1)).optional(),
-  defaultSkills: z.array(z.string().min(1)).optional(),
-  visibleSources: z.array(z.string().min(1)).optional(),
-  defaultSources: z.array(z.string().min(1)).optional(),
-});
-
 /** Maximum nesting depth for label tree (prevents excessively deep hierarchies) */
 const MAX_LABEL_DEPTH = 5;
 
@@ -1347,182 +1330,6 @@ export function validateLabelsContent(jsonString: string): ValidationResult {
     errors,
     warnings,
   };
-}
-
-export function validatePersonaContent(jsonString: string): ValidationResult {
-  const file = 'personas/<id>/persona.json';
-  const errors: ValidationIssue[] = [];
-  const warnings: ValidationIssue[] = [];
-
-  let content: unknown;
-  try {
-    content = safeJsonParse(jsonString);
-  } catch (e) {
-    return {
-      valid: false,
-      errors: [{
-        file,
-        path: '',
-        message: `Invalid JSON: ${e instanceof Error ? e.message : 'Unknown error'}`,
-        severity: 'error',
-      }],
-      warnings: [],
-    };
-  }
-
-  const result = PersonaConfigSchema.safeParse(content);
-  if (!result.success) {
-    errors.push(...zodErrorToIssues(result.error, file));
-    return { valid: false, errors, warnings };
-  }
-
-  const persona = result.data;
-  const visibleSkills = new Set(persona.visibleSkills ?? []);
-  const defaultSkills = new Set(persona.defaultSkills ?? []);
-  const visibleSources = new Set(persona.visibleSources ?? []);
-  const defaultSources = new Set(persona.defaultSources ?? []);
-
-  if (persona.primarySkill && !visibleSkills.has(persona.primarySkill)) {
-    errors.push({
-      file,
-      path: 'primarySkill',
-      message: `Primary skill "${persona.primarySkill}" must also be listed in visibleSkills`,
-      severity: 'error',
-    });
-  }
-
-  if (persona.primarySkill && !defaultSkills.has(persona.primarySkill)) {
-    errors.push({
-      file,
-      path: 'primarySkill',
-      message: `Primary skill "${persona.primarySkill}" must also be listed in defaultSkills`,
-      severity: 'error',
-    });
-  }
-
-  for (const skill of defaultSkills) {
-    if (!visibleSkills.has(skill)) {
-      errors.push({
-        file,
-        path: 'defaultSkills',
-        message: `Default skill "${skill}" must also be listed in visibleSkills`,
-        severity: 'error',
-      });
-    }
-  }
-
-  for (const source of defaultSources) {
-    if (!visibleSources.has(source)) {
-      errors.push({
-        file,
-        path: 'defaultSources',
-        message: `Default source "${source}" must also be listed in visibleSources`,
-        severity: 'error',
-      });
-    }
-  }
-
-  return { valid: errors.length === 0, errors, warnings };
-}
-
-export function validatePersona(workspaceRoot: string, slug: string): ValidationResult {
-  const personaDir = join(workspaceRoot, 'personas', slug);
-  const personaPath = join(personaDir, 'persona.json');
-  const file = `personas/${slug}/persona.json`;
-
-  if (!existsSync(personaPath)) {
-    return {
-      valid: false,
-      errors: [{
-        file,
-        path: '',
-        message: 'persona.json not found',
-        severity: 'error',
-      }],
-      warnings: [],
-    };
-  }
-
-  const jsonString = readFileSync(personaPath, 'utf-8');
-  const contentResult = validatePersonaContent(jsonString);
-  const errors = [...contentResult.errors.map(issue => ({ ...issue, file }))];
-  const warnings = [...contentResult.warnings.map(issue => ({ ...issue, file }))];
-  if (!contentResult.valid) {
-    return { valid: false, errors, warnings };
-  }
-
-  const content = safeJsonParse(jsonString);
-  const persona = PersonaConfigSchema.parse(content);
-
-  if (!isPersonaPromptFileWithinPersonaDir(personaDir, persona.personaPromptFile)) {
-    errors.push({
-      file,
-      path: 'personaPromptFile',
-      message: 'personaPromptFile must stay within the persona directory',
-      severity: 'error',
-    });
-    return { valid: false, errors, warnings };
-  }
-
-  const promptPath = join(personaDir, persona.personaPromptFile);
-  if (!existsSync(promptPath)) {
-    errors.push({
-      file,
-      path: 'personaPromptFile',
-      message: `Referenced prompt file "${persona.personaPromptFile}" does not exist`,
-      severity: 'error',
-    });
-  }
-
-  if (persona.linkedLabelId && !isValidLabelId(workspaceRoot, persona.linkedLabelId)) {
-    warnings.push({
-      file,
-      path: 'linkedLabelId',
-      message: `Linked label "${persona.linkedLabelId}" does not exist in this workspace`,
-      severity: 'warning',
-    });
-  }
-
-  const availableSkills = new Set(loadAllSkills(workspaceRoot).map(skill => skill.slug));
-  const availableSources = new Set(loadWorkspaceSources(workspaceRoot).map(source => source.config.slug));
-
-  for (const skill of persona.visibleSkills ?? []) {
-    if (!availableSkills.has(skill)) {
-      errors.push({
-        file,
-        path: 'visibleSkills',
-        message: `Referenced skill "${skill}" does not exist`,
-        severity: 'error',
-      });
-    }
-  }
-
-  for (const source of persona.visibleSources ?? []) {
-    if (!availableSources.has(source)) {
-      errors.push({
-        file,
-        path: 'visibleSources',
-        message: `Referenced source "${source}" does not exist`,
-        severity: 'error',
-      });
-    }
-  }
-
-  const visibleSourceSet = new Set(persona.visibleSources ?? []);
-  for (const skill of loadAllSkills(workspaceRoot).filter(entry => (persona.visibleSkills ?? []).includes(entry.slug))) {
-    for (const requiredSource of skill.metadata.requiredSources ?? []) {
-      if (!visibleSourceSet.has(requiredSource)) {
-        errors.push({
-          file,
-          path: 'visibleSources',
-          message: `Visible skill "${skill.slug}" requires source "${requiredSource}", which is not visible in this persona`,
-          severity: 'error',
-        });
-      }
-    }
-  }
-
-  return { valid: errors.length === 0, errors, warnings };
 }
 
 // ============================================================
@@ -2145,7 +1952,7 @@ export function formatValidationResult(result: ValidationResult): string {
  * Result of detecting what type of config file a path corresponds to.
  */
 export interface ConfigFileDetection {
-  type: 'source' | 'skill' | 'persona' | 'statuses' | 'labels' | 'permissions' | 'tool-icons' | 'automations';
+  type: 'source' | 'skill' | 'statuses' | 'labels' | 'permissions' | 'tool-icons' | 'automations';
   /** Slug of the source or skill (if applicable) */
   slug?: string;
   /** Display file path for error messages */
@@ -2159,7 +1966,6 @@ export interface ConfigFileDetection {
  * Matches patterns:
  * - .../sources/{slug}/config.json → source config
  * - .../skills/{slug}/SKILL.md → skill definition
- * - .../personas/{slug}/persona.json → persona config
  * - .../statuses/config.json → status workflow config
  * - .../labels/config.json → label config
  * - .../permissions.json (workspace or source-level) → permission rules
@@ -2188,12 +1994,6 @@ export function detectConfigFileType(filePath: string, workspaceRootPath: string
   const skillMatch = relativePath.match(/^skills\/([^/]+)\/SKILL\.md$/);
   if (skillMatch) {
     return { type: 'skill', slug: skillMatch[1], displayFile: `skills/${skillMatch[1]}/SKILL.md` };
-  }
-
-  // Match: personas/{slug}/persona.json
-  const personaMatch = relativePath.match(/^personas\/([^/]+)\/persona\.json$/);
-  if (personaMatch) {
-    return { type: 'persona', slug: personaMatch[1], displayFile: `personas/${personaMatch[1]}/persona.json` };
   }
 
   // Match: statuses/config.json
@@ -2266,8 +2066,6 @@ export function validateConfigFileContent(
       return validateSourceConfigContent(content);
     case 'skill':
       return validateSkillContent(content, detection.slug || 'unknown');
-    case 'persona':
-      return validatePersonaContent(content);
     case 'statuses':
       return validateStatusesContent(content);
     case 'labels':

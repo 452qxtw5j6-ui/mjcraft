@@ -36,7 +36,6 @@ import { getModelById } from '../config/models.ts';
 // BaseAgent provides common functionality
 import { BaseAgent } from './base-agent.ts';
 import type { Workspace } from '../config/storage.ts';
-import { loadPersonaPromptForInjection } from '../personas/storage.ts';
 
 // Event adapter
 import { PiEventAdapter } from './backend/pi/event-adapter.ts';
@@ -1821,10 +1820,6 @@ export class PiAgent extends BaseAgent {
         'Craft Agents Backend', // backendName
         undefined, // includeCoAuthoredBy
         promptCapabilities,
-        loadPersonaPromptForInjection(
-          this.config.workspace.rootPath,
-          this.config.session?.personaId,
-        ),
       );
 
       // Build context from sources

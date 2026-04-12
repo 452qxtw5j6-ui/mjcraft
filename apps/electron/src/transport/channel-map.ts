@@ -230,13 +230,11 @@ export const CHANNEL_MAP = {
 
   // Skills
   getSkills: invoke(RPC_CHANNELS.skills.GET),
-  listPersonas: invoke(RPC_CHANNELS.personas.LIST),
   getSkillFiles: invoke(RPC_CHANNELS.skills.GET_FILES),
   deleteSkill: invoke(RPC_CHANNELS.skills.DELETE),
   openSkillInEditor: invoke(RPC_CHANNELS.skills.OPEN_EDITOR),
   openSkillInFinder: invoke(RPC_CHANNELS.skills.OPEN_FINDER),
   onSkillsChanged: listener(RPC_CHANNELS.skills.CHANGED),
-  onPersonasChanged: listener(RPC_CHANNELS.personas.CHANGED),
 
   // Statuses
   listStatuses: invoke(RPC_CHANNELS.statuses.LIST),

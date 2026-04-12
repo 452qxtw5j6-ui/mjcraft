@@ -140,12 +140,6 @@ export interface LabelsChangedEvent {
   labels: string[]
 }
 
-export interface PersonaChangedEvent {
-  type: 'persona_changed'
-  sessionId: string
-  personaId: string
-}
-
 /**
  * Todo state changed event (external metadata change or agent tool)
  */
@@ -490,7 +484,6 @@ export type AgentEvent =
   | CredentialRequestEvent
   | SourcesChangedEvent
   | LabelsChangedEvent
-  | PersonaChangedEvent
   | SessionStatusChangedEvent
   | SessionFlaggedEvent
   | SessionUnflaggedEvent

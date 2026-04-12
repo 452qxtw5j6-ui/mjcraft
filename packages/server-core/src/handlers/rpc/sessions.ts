@@ -264,8 +264,6 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
         return sessionManager.setSessionSources(sessionId, command.sourceSlugs)
       case 'setLabels':
         return sessionManager.setSessionLabels(sessionId, command.labels)
-      case 'setPersona':
-        return sessionManager.setSessionPersona(sessionId, command.personaId)
       case 'showInFinder': {
         const sessionPath = sessionManager.getSessionPath(sessionId)
         if (sessionPath) {

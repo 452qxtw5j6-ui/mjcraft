@@ -261,10 +261,6 @@ export const RPC_CHANNELS = {
     OPEN_FINDER: 'skills:openFinder',
     CHANGED: 'skills:changed',
   },
-  personas: {
-    LIST: 'personas:list',
-    CHANGED: 'personas:changed',
-  },
   statuses: {
     LIST: 'statuses:list',
     REORDER: 'statuses:reorder',

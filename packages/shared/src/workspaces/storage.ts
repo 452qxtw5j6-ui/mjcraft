@@ -22,7 +22,6 @@ import { expandPath, toPortablePath } from '../utils/paths.ts';
 import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
 import { getDefaultStatusConfig, saveStatusConfig, ensureDefaultIconFiles } from '../statuses/storage.ts';
 import { getDefaultLabelConfig, saveLabelConfig } from '../labels/storage.ts';
-import { ensureDefaultPersonas } from '../personas/storage.ts';
 import { loadConfigDefaults } from '../config/storage.ts';
 import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.ts';
 import { normalizeThinkingLevel } from '../agent/thinking-levels.ts';
@@ -87,14 +86,6 @@ export function getWorkspaceSessionsPath(rootPath: string): string {
  */
 export function getWorkspaceSkillsPath(rootPath: string): string {
   return join(rootPath, 'skills');
-}
-
-/**
- * Get path to workspace personas directory
- * @param rootPath - Absolute path to workspace root folder
- */
-export function getWorkspacePersonasPath(rootPath: string): string {
-  return join(rootPath, 'personas');
 }
 
 // ============================================================
@@ -219,9 +210,6 @@ export function loadWorkspace(rootPath: string): LoadedWorkspace | null {
     mkdirSync(skillsPath, { recursive: true });
   }
 
-  // Ensure personas directory and seeded personas exist (migration for existing workspaces)
-  ensureDefaultPersonas(rootPath);
-
   return {
     config,
     sourceSlugs: listSubdirNames(getWorkspaceSourcesPath(rootPath)),
@@ -341,7 +329,6 @@ export function createWorkspaceAtPath(
   mkdirSync(getWorkspaceSourcesPath(rootPath), { recursive: true });
   mkdirSync(getWorkspaceSessionsPath(rootPath), { recursive: true });
   mkdirSync(getWorkspaceSkillsPath(rootPath), { recursive: true });
-  mkdirSync(getWorkspacePersonasPath(rootPath), { recursive: true });
 
   // Save config
   saveWorkspaceConfig(rootPath, config);
@@ -355,9 +342,6 @@ export function createWorkspaceAtPath(
 
   // Initialize plugin manifest for SDK integration (enables skills, commands, agents)
   ensurePluginManifest(rootPath, name);
-
-  // Initialize default personas
-  ensureDefaultPersonas(rootPath);
 
   return config;
 }

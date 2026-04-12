@@ -780,7 +780,7 @@ export function EditPopover({
   }, [controlledOnOpenChange, isControlled])
 
   // Use App context for session management (same code path as main chat)
-  const { onCreateSession, onSendMessage, enabledSources = [], skills = [], personas = [], labels = [], sessionStatuses = [] } = useAppShellContext()
+  const { onCreateSession, onSendMessage, enabledSources = [], skills = [], labels = [], sessionStatuses = [] } = useAppShellContext()
 
   // Session ID for inline execution (created on first message)
   const [inlineSessionId, setInlineSessionId] = useState<string | null>(null)
@@ -1117,7 +1117,6 @@ export function EditPopover({
                   permissionMode={permissionMode}
                   sources={enabledSources}
                   skills={skills}
-                  personas={personas}
                   labels={labels}
                   sessionStatuses={sessionStatuses}
                   compactMode={true}

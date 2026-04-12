@@ -29,7 +29,7 @@ export const SESSION_PERSISTENT_FIELDS = [
   // Timestamps
   'createdAt', 'lastUsedAt', 'lastMessageAt',
   // Display
-  'name', 'isFlagged', 'sessionStatus', 'labels', 'personaId', 'hidden',
+  'name', 'isFlagged', 'sessionStatus', 'labels', 'hidden',
   // Read tracking
   'lastReadMessageId', 'hasUnread',
   // Config
@@ -119,8 +119,6 @@ export interface SessionConfig {
   sessionStatus?: SessionStatus;
   /** Labels applied to this session (bare IDs or "id::value" entries) */
   labels?: string[];
-  /** Persona applied to this session */
-  personaId?: string;
   /** ID of last message user has read */
   lastReadMessageId?: string;
   /**
@@ -235,8 +233,6 @@ export interface SessionHeader {
   sessionStatus?: SessionStatus;
   /** Labels applied to this session (bare IDs or "id::value" entries) */
   labels?: string[];
-  /** Persona applied to this session */
-  personaId?: string;
   /** ID of last message user has read */
   lastReadMessageId?: string;
   /**
@@ -322,8 +318,6 @@ export interface SessionMetadata {
   sessionStatus?: SessionStatus;
   /** Labels applied to this session (bare IDs or "id::value" entries) */
   labels?: string[];
-  /** Persona applied to this session */
-  personaId?: string;
   /** Permission mode for this session */
   permissionMode?: PermissionMode;
   /** Previous permission mode (used to preserve modeTransition context across restarts) */

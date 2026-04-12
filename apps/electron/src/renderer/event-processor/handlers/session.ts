@@ -13,7 +13,6 @@ import type {
   TypedErrorEvent,
   SourcesChangedEvent,
   LabelsChangedEvent,
-  PersonaChangedEvent,
   SessionStatusChangedEvent,
   SessionFlaggedEvent,
   SessionUnflaggedEvent,
@@ -614,24 +613,6 @@ export function handleLabelsChanged(
       session: {
         ...session,
         labels: event.labels,
-      },
-      streaming,
-    },
-    effects: [],
-  }
-}
-
-export function handlePersonaChanged(
-  state: SessionState,
-  event: PersonaChangedEvent
-): ProcessResult {
-  const { session, streaming } = state
-
-  return {
-    state: {
-      session: {
-        ...session,
-        personaId: event.personaId,
       },
       streaming,
     },

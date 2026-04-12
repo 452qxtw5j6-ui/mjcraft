@@ -21,7 +21,6 @@ import type {
   SessionStatus,
   LoadedSource,
   LoadedSkill,
-  LoadedPersona,
   NewChatActionParams,
   LlmConnectionWithStatus,
   TestAutomationResult,
@@ -56,8 +55,6 @@ export interface AppShellContextType {
   skills?: LoadedSkill[]
   /** Working directory of the active session — needed for project-level skill resolution */
   activeSessionWorkingDirectory?: string
-  /** All personas for this workspace */
-  personas?: LoadedPersona[]
   /** All label configs (tree) for label menu and badge display */
   labels?: import('@craft-agent/shared/labels').LabelConfig[]
   /** Callback when session labels change */
@@ -66,8 +63,6 @@ export interface AppShellContextType {
   enabledModes?: PermissionMode[]
   /** Dynamic todo states from workspace config (provided by AppShell, defaults to empty) */
   sessionStatuses?: SessionStatusConfig[]
-  /** Callback when session persona changes */
-  onSessionPersonaChange?: (sessionId: string, personaId: string) => Promise<void>
 
   // Unified session options map
   /** All session-scoped options in one map. Use useSessionOptionsFor() hook for easy access. */

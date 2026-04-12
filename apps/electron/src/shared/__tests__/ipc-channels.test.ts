@@ -30,6 +30,7 @@ const EXPECTED_CHANNELS: string[] = [
   'automations:changed',
   'automations:delete',
   'automations:duplicate',
+  'automations:get',
   'automations:getHistory',
   'automations:getLastExecuted',
   'automations:replay',
@@ -147,8 +148,6 @@ const EXPECTED_CHANNELS: string[] = [
   'onboarding:validateMcp',
   'permissions:defaultsChanged',
   'permissions:getDefaults',
-  'personas:changed',
-  'personas:list',
   'pi:getApiKeyProviders',
   'pi:getProviderBaseUrl',
   'pi:getProviderModels',
@@ -159,6 +158,8 @@ const EXPECTED_CHANNELS: string[] = [
   'releaseNotes:get',
   'releaseNotes:getLatestVersion',
   'remote:testConnection',
+  'resources:export',
+  'resources:import',
   'server:createWorkspace',
   'server:getActiveSessions',
   'server:getHealth',
@@ -245,6 +246,8 @@ const EXPECTED_CHANNELS: string[] = [
   'theme:systemChanged',
   'theme:workspaceThemeChanged',
   'toolIcons:getMappings',
+  'tools:getBrowserToolEnabled',
+  'tools:setBrowserToolEnabled',
   'update:available',
   'update:check',
   'update:dismiss',
@@ -317,9 +320,4 @@ describe('BroadcastEventMap payload shapes', () => {
     expect(_check).toBe(true)
   })
 
-  it('personas:changed carries (workspaceId, personas)', () => {
-    type Payload = BroadcastEventMap[typeof RPC_CHANNELS.personas.CHANGED]
-    const _check: AssertTuple<Payload, 2> = true
-    expect(_check).toBe(true)
-  })
 })

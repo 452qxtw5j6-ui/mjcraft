@@ -295,8 +295,6 @@ export interface SystemPromptOptions {
   includeCoAuthoredBy?: boolean;
   /** Prompt-only guidance toggles for backend/runtime-specific workflows */
   promptCapabilities?: PromptGuidanceCapabilities;
-  /** Optional persona block appended to the system prompt */
-  personaPrompt?: string;
 }
 
 export interface PromptGuidanceCapabilities {
@@ -369,7 +367,6 @@ Use config_validate to verify changes match the expected schema.
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
  * @param includeCoAuthoredBy - Whether to include git trailer guidance
  * @param promptCapabilities - Prompt-only workflow guidance toggles
- * @param personaPrompt - Optional persona block injected into the prompt
  */
 export function getSystemPrompt(
   pinnedPreferencesPrompt?: string,
@@ -380,15 +377,11 @@ export function getSystemPrompt(
   backendName?: string,
   includeCoAuthoredBy?: boolean,
   promptCapabilities?: PromptGuidanceCapabilities,
-  personaPrompt?: string,
 ): string {
   // Use mini agent prompt for quick edits (pass workspace root for config paths)
   if (preset === 'mini') {
     debug('[getSystemPrompt] 🤖 Generating MINI agent system prompt for workspace:', workspaceRootPath);
-    const miniPrompt = getMiniAgentSystemPrompt(workspaceRootPath);
-    return personaPrompt?.trim()
-      ? `${miniPrompt}\n\n## Persona\n${personaPrompt.trim()}`
-      : miniPrompt;
+    return getMiniAgentSystemPrompt(workspaceRootPath);
   }
 
   // Use pinned preferences if provided (for session consistency after compaction)
@@ -408,10 +401,7 @@ export function getSystemPrompt(
     resolvePromptGuidanceProfile({ backendName }).capabilities,
     promptCapabilities,
   );
-  const personaContext = personaPrompt?.trim()
-    ? `\n\n## Persona\n${personaPrompt.trim()}`
-    : '';
-  const fullPrompt = `${basePrompt}${personaContext}${preferences}${debugContext}${projectContextFiles}`;
+  const fullPrompt = `${basePrompt}${preferences}${debugContext}${projectContextFiles}`;
 
   debug('[getSystemPrompt] full prompt length:', fullPrompt.length);
 
