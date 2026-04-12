@@ -12,11 +12,14 @@ import { SendResourceToWorkspaceDialog } from './SendResourceToWorkspaceDialog'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig, type EditContextKey } from '@/components/ui/EditPopover'
 import type { LoadedSource, SourceConnectionStatus, SourceFilter } from '../../../shared/types'
+import { getSourceSidebarCategory } from '@/lib/source-plugins'
 
 const SOURCE_TYPE_CONFIG: Record<string, { labelKey: string; colorClass: string }> = {
   mcp: { labelKey: 'sourcesList.typeMcp', colorClass: 'bg-accent/10 text-accent' },
   api: { labelKey: 'sourcesList.typeApi', colorClass: 'bg-success/10 text-success' },
   local: { labelKey: 'sourcesList.typeLocal', colorClass: 'bg-info/10 text-info' },
+  cli: { labelKey: 'sourcesList.typeCli', colorClass: 'bg-warning/10 text-warning' },
+  plugin: { labelKey: 'sourcesList.typePlugin', colorClass: 'bg-foreground/10 text-foreground' },
 }
 
 const SOURCE_STATUS_CONFIG: Record<string, { labelKey: string; colorClass: string } | null> = {
@@ -31,6 +34,8 @@ const SOURCE_TYPE_FILTER_LABEL_KEYS: Record<string, string> = {
   api: 'sourcesList.filterApi',
   mcp: 'sourcesList.filterMcp',
   local: 'sourcesList.filterLocalFolder',
+  cli: 'sourcesList.filterCli',
+  plugin: 'sourcesList.filterPlugin',
 }
 
 export interface SourcesListPanelProps {
@@ -65,7 +70,7 @@ export function SourcesListPanel({
 
   const filteredSources = React.useMemo(() => {
     if (!sourceFilter) return sources
-    return sources.filter(s => s.config.type === sourceFilter.sourceType)
+    return sources.filter((source) => getSourceSidebarCategory(source) === sourceFilter.sourceType)
   }, [sources, sourceFilter])
 
   const emptyMessage = React.useMemo(() => {
@@ -102,7 +107,9 @@ export function SourcesListPanel({
                 </button>
               }
               {...getEditConfig(
-                sourceFilter?.kind === 'type' ? `add-source-${sourceFilter.sourceType}` as EditContextKey : 'add-source',
+                sourceFilter?.kind === 'type' && (sourceFilter.sourceType === 'api' || sourceFilter.sourceType === 'mcp' || sourceFilter.sourceType === 'local')
+                  ? `add-source-${sourceFilter.sourceType}` as EditContextKey
+                  : 'add-source',
                 workspaceRootPath
               )}
             />
@@ -111,7 +118,7 @@ export function SourcesListPanel({
       }
       mapItem={(source) => {
         const connectionStatus = deriveConnectionStatus(source, localMcpEnabled)
-        const typeConfig = SOURCE_TYPE_CONFIG[source.config.type]
+        const typeConfig = SOURCE_TYPE_CONFIG[getSourceSidebarCategory(source)]
         const statusConfig = SOURCE_STATUS_CONFIG[connectionStatus]
         const subtitle = source.config.tagline || source.config.provider || ''
         return {

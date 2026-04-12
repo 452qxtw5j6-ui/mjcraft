@@ -300,7 +300,7 @@ export function InlineMentionMenu({
     >
       {/* Menu header — sticky above scroll area */}
       <div className="px-3 py-1.5 text-[12px] font-medium text-muted-foreground border-b border-foreground/5">
-        {t('chat.mentionFilesSkillsSources')}
+        {t('chat.mentionFilesFoldersSources', { defaultValue: 'Mention files, folders, sources' })}
       </div>
 
       <div ref={listRef} className={MENU_LIST_STYLE}>
@@ -506,21 +506,6 @@ export function useInlineMention({
   // Build sections from available data (skills, sources, and file search results)
   const sections = React.useMemo((): MentionSection[] => {
     const result: MentionSection[] = []
-
-    // Skills section
-    if (skills.length > 0) {
-      result.push({
-        id: 'skills',
-        label: 'Skills',
-        items: skills.map(skill => ({
-          id: skill.slug,
-          type: 'skill' as const,
-          label: skill.metadata.name,
-          description: skill.metadata.description,
-          skill,
-        })),
-      })
-    }
 
     // Sources section
     if (sources.length > 0) {

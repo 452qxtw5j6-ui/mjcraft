@@ -30,6 +30,16 @@ import {
   type MentionItemType,
 } from '@/components/ui/mention-menu'
 import {
+  InlinePluginMenu,
+  useInlinePluginMenu,
+  type PluginCommandItem,
+} from '@/components/ui/plugin-menu'
+import {
+  InlineSkillMenu,
+  useInlineSkillMenu,
+  type SkillCommandItem,
+} from '@/components/ui/skill-menu'
+import {
   InlineLabelMenu,
   useInlineLabelMenu,
 } from '@/components/ui/label-menu'
@@ -78,6 +88,7 @@ import {
   removeRecentWorkingDir,
 } from './working-directory-history'
 import { CompactPermissionModeSelector } from './CompactPermissionModeSelector'
+import { getPluginSkillSlugs, getPluginSourceSlugsForSkills, isPluginSource } from '@/lib/source-plugins'
 
 /**
  * Format token count for display (e.g., 1500 -> "1.5k", 200000 -> "200k")
@@ -176,8 +187,8 @@ export interface FreeFormInputProps {
   enabledSourceSlugs?: string[]
   /** Callback when source selection changes */
   onSourcesChange?: (slugs: string[]) => void
-  // Skill selection (for @mentions)
-  /** Available skills for @mention autocomplete */
+  // Skill selection (for $ mentions)
+  /** Available skills for $ autocomplete */
   skills?: LoadedSkill[]
   // Label selection (for #labels)
   /** Available labels for #label autocomplete */
@@ -287,7 +298,8 @@ export function FreeFormInput({
   const defaultPlaceholders = React.useMemo(() => [
     t("chatInput.placeholder.workOn"),
     t("chatInput.placeholder.shiftTab"),
-    t("chatInput.placeholder.mention"),
+    t("chatInput.placeholder.mention", { defaultValue: 'Type @ to mention files, folders, or sources' }),
+    t("chatInput.placeholder.skills", { defaultValue: 'Type $ for skills and % for plugins' }),
     t("chatInput.placeholder.labels"),
     t("chatInput.placeholder.newLine"),
     t("chatInput.placeholder.sidebar", { key: cmdKey }),
@@ -302,8 +314,15 @@ export function FreeFormInput({
   const llmConnections = appShellCtx?.llmConnections ?? []
   const workspaceDefaultConnection = appShellCtx?.workspaceDefaultLlmConnection
 
-  const visibleSkills = skills
-  const visibleSources = sources
+  const pluginSkillSlugs = React.useMemo(() => getPluginSkillSlugs(sources), [sources])
+  const visibleSkills = React.useMemo(
+    () => skills.filter((skill) => !pluginSkillSlugs.has(skill.slug)),
+    [skills, pluginSkillSlugs]
+  )
+  const visibleSources = React.useMemo(
+    () => sources.filter((source) => !isPluginSource(source)),
+    [sources]
+  )
 
   // Derive connectionDefaultModel per-session from the effective connection.
   // Only non-null for compat providers (custom endpoints with fixed models).
@@ -899,17 +918,41 @@ export function FreeFormInput({
     }
 
     // Files via @ mention in text are sufficient context for the agent.
-    // Skills also don't need special handling beyond text insertion.
   }, [optimisticSourceSlugs, onSourcesChange])
 
-  // Inline mention hook (for skills, sources, and files)
+  // Inline mention hook (@ = sources, files, folders only)
   const inlineMention = useInlineMention({
     inputRef: richInputRef,
-    skills: visibleSkills,
+    skills: [],
     sources: visibleSources,
     basePath: workingDirectory,
     onSelect: handleMentionSelect,
     // Use workspace slug (not UUID) for SDK skill qualification
+    workspaceId: workspaceSlug,
+  })
+
+  const handlePluginCommandSelect = React.useCallback((_item: PluginCommandItem) => {
+    // Plugin commands resolve to skill mentions immediately.
+    // Their backing source is activated on submit, not on selection,
+    // so typing remains reversible while the menu is open.
+  }, [])
+
+  const inlinePlugin = useInlinePluginMenu({
+    inputRef: richInputRef,
+    skills,
+    sources,
+    onSelect: handlePluginCommandSelect,
+    workspaceId: workspaceSlug,
+  })
+
+  const handleSkillCommandSelect = React.useCallback((_item: SkillCommandItem) => {
+    // General skills resolve directly to skill mentions.
+  }, [])
+
+  const inlineSkill = useInlineSkillMenu({
+    inputRef: richInputRef,
+    skills: visibleSkills,
+    onSelect: handleSkillCommandSelect,
     workspaceId: workspaceSlug,
   })
 
@@ -1170,13 +1213,14 @@ export function FreeFormInput({
     if (disableSend) return false
 
     // Parse all @mentions (skills, sources, folders)
-    const skillSlugs = visibleSkills.map(s => s.slug)
+    const skillSlugs = skills.map(s => s.slug)
     const sourceSlugs = visibleSources.map(s => s.config.slug)
     const mentions = parseMentions(input, skillSlugs, sourceSlugs)
+    const pluginSourceSlugs = getPluginSourceSlugsForSkills(sources, mentions.skills)
 
     // Enable any mentioned sources that aren't already enabled
-    if (mentions.sources.length > 0 && onSourcesChange) {
-      const newSlugs = [...new Set([...optimisticSourceSlugs, ...mentions.sources])]
+    if ((mentions.sources.length > 0 || pluginSourceSlugs.length > 0) && onSourcesChange) {
+      const newSlugs = [...new Set([...optimisticSourceSlugs, ...mentions.sources, ...pluginSourceSlugs])]
       if (newSlugs.length > optimisticSourceSlugs.length) {
         setOptimisticSourceSlugs(newSlugs)
         onSourcesChange(newSlugs)
@@ -1228,6 +1272,28 @@ export function FreeFormInput({
     // During IME composition, ESC should cancel composition, not trigger app/menu ESC behavior.
     if (e.key === 'Escape' && e.nativeEvent.isComposing) {
       return
+    }
+
+    if (inlinePlugin.isOpen) {
+      if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        inlinePlugin.close()
+        return
+      }
+    }
+
+    if (inlineSkill.isOpen) {
+      if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        inlineSkill.close()
+        return
+      }
     }
 
     // Don't submit when mention menu is open AND has visible content
@@ -1335,6 +1401,12 @@ export function FreeFormInput({
     // Update inline slash command state
     inlineSlash.handleInputChange(value, cursorPosition)
 
+    // Update inline skill state (for $ general skills)
+    inlineSkill.handleInputChange(value, cursorPosition)
+
+    // Update inline plugin state (for % plugin commands)
+    inlinePlugin.handleInputChange(value, cursorPosition)
+
     // Update inline mention state (for @mentions - skills, sources, folders)
     inlineMention.handleInputChange(value, cursorPosition)
 
@@ -1344,7 +1416,7 @@ export function FreeFormInput({
     // Auto-capitalize first letter (but not for slash commands, @mentions, or #labels)
     // Only if autoCapitalisation setting is enabled
     let newValue = value
-    if (autoCapitalisation && value.length > 0 && value.charAt(0) !== '/' && value.charAt(0) !== '@' && value.charAt(0) !== '#') {
+    if (autoCapitalisation && value.length > 0 && value.charAt(0) !== '/' && value.charAt(0) !== '@' && value.charAt(0) !== '%' && value.charAt(0) !== '#') {
       const capitalizedFirst = value.charAt(0).toUpperCase()
       if (capitalizedFirst !== value.charAt(0)) {
         newValue = capitalizedFirst + value.slice(1)
@@ -1365,7 +1437,7 @@ export function FreeFormInput({
       setInput(newValue)
       syncToParent(newValue)
     }
-  }, [inlineSlash, inlineMention, inlineLabel, syncToParent, autoCapitalisation])
+  }, [inlineSlash, inlineSkill, inlinePlugin, inlineMention, inlineLabel, syncToParent, autoCapitalisation])
 
   // Handle inline slash command selection (removes the /command text)
   const handleInlineSlashCommandSelect = React.useCallback((commandId: SlashCommandId) => {
@@ -1394,6 +1466,26 @@ export function FreeFormInput({
       richInputRef.current?.setSelectionRange(cursorPosition, cursorPosition)
     }, 0)
   }, [inlineMention, syncToParent])
+
+  const handleInlinePluginSelect = React.useCallback((item: PluginCommandItem) => {
+    const { value: newValue, cursorPosition } = inlinePlugin.handleSelect(item)
+    setInput(newValue)
+    syncToParent(newValue)
+    setTimeout(() => {
+      richInputRef.current?.focus()
+      richInputRef.current?.setSelectionRange(cursorPosition, cursorPosition)
+    }, 0)
+  }, [inlinePlugin, syncToParent])
+
+  const handleInlineSkillSelect = React.useCallback((item: SkillCommandItem) => {
+    const { value: newValue, cursorPosition } = inlineSkill.handleSelect(item)
+    setInput(newValue)
+    syncToParent(newValue)
+    setTimeout(() => {
+      richInputRef.current?.focus()
+      richInputRef.current?.setSelectionRange(cursorPosition, cursorPosition)
+    }, 0)
+  }, [inlineSkill, syncToParent])
 
   // Handle inline label selection (removes the #label text from input)
   const handleInlineLabelSelect = React.useCallback((labelId: string) => {
@@ -1482,6 +1574,26 @@ export function FreeFormInput({
           workspaceId={workspaceId}
           maxWidth={280}
           isSearching={inlineMention.isSearching}
+        />
+
+        <InlineSkillMenu
+          open={inlineSkill.isOpen}
+          onOpenChange={(open) => !open && inlineSkill.close()}
+          items={inlineSkill.items}
+          filter={inlineSkill.filter}
+          position={inlineSkill.position}
+          workspaceId={workspaceSlug}
+          onSelectSkill={handleInlineSkillSelect}
+        />
+
+        <InlinePluginMenu
+          open={inlinePlugin.isOpen}
+          onOpenChange={(open) => !open && inlinePlugin.close()}
+          plugins={inlinePlugin.plugins}
+          filter={inlinePlugin.filter}
+          position={inlinePlugin.position}
+          workspaceId={workspaceSlug}
+          onSelectCommand={handleInlinePluginSelect}
         />
 
         {/* Inline Label & State Autocomplete (#labels / #states) */}
@@ -1632,7 +1744,7 @@ export function FreeFormInput({
           }}
           placeholder={effectivePlaceholder}
           disabled={disabled}
-          skills={visibleSkills}
+          skills={skills}
           sources={visibleSources}
           workspaceId={workspaceSlug}
           className="pl-5 pr-4 pt-4 pb-3 overflow-y-auto min-h-[88px]"

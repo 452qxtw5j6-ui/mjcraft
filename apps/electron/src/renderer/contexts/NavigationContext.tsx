@@ -50,6 +50,7 @@ import {
 import { routes, type Route, type ViewRoute } from '../../shared/routes'
 import { parsePermissionMode } from '@craft-agent/shared/agent/mode-types'
 import { NAVIGATE_EVENT, type NavigateOptions } from '../lib/navigate'
+import { getSourceSidebarCategory } from '@/lib/source-plugins'
 import { normalizePanelRouteForReconcile } from './navigation-reconcile'
 import { buildSemanticHistoryKey, canRunInitialRestore } from './navigation-history'
 import * as storage from '@/lib/local-storage'
@@ -592,7 +593,7 @@ export function NavigationProvider({
       if (!filter) {
         return sources[0]?.config.slug ?? null
       }
-      const filtered = sources.filter(s => s.config.type === filter.sourceType)
+      const filtered = sources.filter((source) => getSourceSidebarCategory(source) === filter.sourceType)
       return filtered[0]?.config.slug ?? null
     },
     [sources]
@@ -1186,6 +1187,12 @@ export function NavigationProvider({
           return
         case 'local':
           navigate(routes.view.sourcesLocal(sourceSlug))
+          return
+        case 'cli':
+          navigate(routes.view.sourcesCli(sourceSlug))
+          return
+        case 'plugin':
+          navigate(routes.view.sourcesPlugin(sourceSlug))
           return
       }
     }

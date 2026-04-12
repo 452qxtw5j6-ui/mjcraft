@@ -22,6 +22,7 @@ import {
   ensureMockElectronAPI,
   mockInputCallbacks,
   mockAttachmentCallbacks,
+  mockSkills,
   mockSources,
   sampleImageAttachment,
   samplePdfAttachment,
@@ -758,6 +759,7 @@ function InputContainerPlayground({
               console.log('[Playground] Structured response:', response)
             },
             currentModel: model,
+            skills: mockSkills,
             sources: showSources ? sources : [],
             enabledSourceSlugs: showSources ? enabledSourceSlugs : [],
             onSourcesChange: showSources ? setEnabledSourceSlugs : undefined,
@@ -832,6 +834,7 @@ function ActiveTasksBarContext({ tasks = sampleBackgroundTasks }: ActiveTasksBar
           currentModel="claude-sonnet-4-6"
           permissionMode={permissionMode}
           onPermissionModeChange={setPermissionMode}
+          skills={mockSkills}
           sources={mockSources}
           enabledSourceSlugs={['github-api', 'local-files']}
           workingDirectory="/Users/demo/projects/craft-agent"
@@ -935,6 +938,7 @@ function PermissionInputToggle({ autoToggle = false, autoToggleInterval = 3000, 
         currentModel="claude-sonnet-4-6"
         permissionMode={permissionMode}
         onPermissionModeChange={setPermissionMode}
+        skills={mockSkills}
         sources={mockSources}
         enabledSourceSlugs={['github-api', 'local-files']}
         workingDirectory="/Users/demo/projects/craft-agent"
@@ -1241,7 +1245,7 @@ export const chatComponents: ComponentEntry[] = [
     id: 'input-container',
     name: 'InputContainer',
     category: 'Chat Inputs',
-    description: 'App-like input zone with max-width layout, active option badges, labels, statuses, tasks, and full InputContainer behavior',
+    description: 'App-like input zone with max-width layout, active option badges, labels, statuses, tasks, @ mentions, and % plugin command behavior',
     component: InputContainerPlayground,
     layout: 'full',
     previewOverflow: 'visible',
@@ -1348,7 +1352,7 @@ export const chatComponents: ComponentEntry[] = [
       {
         name: 'sourceCount',
         description: 'How many sources are available in selector',
-        control: { type: 'number', min: 1, max: 4, step: 1 },
+        control: { type: 'number', min: 1, max: 5, step: 1 },
         defaultValue: 2,
       },
       {
@@ -1496,10 +1500,10 @@ export const chatComponents: ComponentEntry[] = [
       },
       {
         name: 'Source-heavy Review',
-        description: 'Multiple source avatars and source selector stress test',
+        description: 'Multiple source avatars including CLI/plugin fixtures and source selector stress test',
         props: {
           showSources: true,
-          sourceCount: 4,
+          sourceCount: 5,
           showWorkingDirectory: false,
         },
       },

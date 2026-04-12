@@ -13,10 +13,10 @@ import {
   statSync,
 } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import matter from 'gray-matter';
 import type { LoadedSkill, SkillMetadata, SkillSource } from './types.ts';
-import { getWorkspaceSkillsPath } from '../workspaces/storage.ts';
+import { getWorkspaceSkillsPath, getWorkspaceSourcesPath } from '../workspaces/storage.ts';
 import {
   validateIconValue,
   findIconFile,
@@ -141,6 +141,89 @@ function loadSkillFromDir(skillsDir: string, slug: string, source: SkillSource):
   };
 }
 
+function loadStandaloneSkillDir(skillDir: string, slug: string, source: SkillSource): LoadedSkill | null {
+  const skillFile = join(skillDir, 'SKILL.md');
+  if (!existsSync(skillDir) || !statSync(skillDir).isDirectory()) {
+    return null;
+  }
+  if (!existsSync(skillFile)) {
+    return null;
+  }
+
+  let content: string;
+  try {
+    content = readFileSync(skillFile, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  const parsed = parseSkillFile(content);
+  if (!parsed) {
+    return null;
+  }
+
+  return {
+    slug,
+    metadata: parsed.metadata,
+    content: parsed.body,
+    iconPath: findIconFile(skillDir),
+    path: skillDir,
+    source,
+  };
+}
+
+function looksLikePluginSourcePath(localPath: string): boolean {
+  return /\/(\.agents|\.claude)\/skills(\/|$)/.test(localPath);
+}
+
+function loadPluginSourceSkills(workspaceRoot: string): LoadedSkill[] {
+  const sourcesDir = getWorkspaceSourcesPath(workspaceRoot);
+  if (!existsSync(sourcesDir)) return [];
+
+  const pluginSkills: LoadedSkill[] = [];
+  const seen = new Set<string>();
+
+  for (const sourceDir of readdirSync(sourcesDir, { withFileTypes: true })) {
+    if (!sourceDir.isDirectory()) continue;
+
+    const configPath = join(sourcesDir, sourceDir.name, 'config.json');
+    if (!existsSync(configPath)) continue;
+
+    try {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8')) as {
+        type?: string;
+        local?: { path?: string };
+      };
+
+      if (config.type !== 'local' || !config.local?.path || !looksLikePluginSourcePath(config.local.path)) {
+        continue;
+      }
+
+      const expandedRoot = config.local.path;
+      const rootSlug = basename(expandedRoot);
+      const rootSkill = loadStandaloneSkillDir(expandedRoot, rootSlug, 'workspace');
+      if (rootSkill && !seen.has(rootSkill.slug)) {
+        pluginSkills.push(rootSkill);
+        seen.add(rootSkill.slug);
+      }
+
+      if (!existsSync(expandedRoot)) continue;
+      for (const entry of readdirSync(expandedRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const nestedSkill = loadStandaloneSkillDir(join(expandedRoot, entry.name), entry.name, 'workspace');
+        if (nestedSkill && !seen.has(nestedSkill.slug)) {
+          pluginSkills.push(nestedSkill);
+          seen.add(nestedSkill.slug);
+        }
+      }
+    } catch {
+      // Ignore malformed source configs here; source validation happens elsewhere.
+    }
+  }
+
+  return pluginSkills;
+}
+
 /**
  * Load all skills from a directory
  * @param skillsDir - Absolute path to skills directory
@@ -231,6 +314,13 @@ export function loadAllSkills(workspaceRoot: string, projectRoot?: string): Load
   // 2. Workspace skills (medium priority)
   for (const skill of loadWorkspaceSkills(workspaceRoot)) {
     skillsBySlug.set(skill.slug, skill);
+  }
+
+  // 2.5. Plugin-backed source skills (same priority tier as workspace skills)
+  for (const skill of loadPluginSourceSkills(workspaceRoot)) {
+    if (!skillsBySlug.has(skill.slug)) {
+      skillsBySlug.set(skill.slug, skill);
+    }
   }
 
   // 3. Project skills (highest priority): {projectRoot}/.agents/skills/

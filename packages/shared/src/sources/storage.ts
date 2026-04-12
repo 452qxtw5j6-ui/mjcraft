@@ -8,7 +8,7 @@
  * NOT a workspace slug. The `LoadedSource.workspaceId` is derived via basename().
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { join, basename } from 'path';
 import { randomUUID } from 'crypto';
 import type {
@@ -33,6 +33,7 @@ import {
   needsIconDownload,
   isIconUrl,
 } from '../utils/icon.ts';
+import matter from 'gray-matter';
 
 // ============================================================
 // Directory Utilities
@@ -75,12 +76,62 @@ export function loadSourceConfig(
     // Expand path variables in local source paths for portability
     if (config.type === 'local' && config.local?.path) {
       config.local.path = expandPath(config.local.path);
+      config.plugin = config.plugin ?? inferPluginConfig(config.local.path);
     }
 
     return config;
   } catch {
     return null;
   }
+}
+
+function inferPluginConfig(localPath: string): FolderSourceConfig['plugin'] | undefined {
+  if (!/\/(\.agents|\.claude)\/skills(\/|$)/.test(localPath)) {
+    return undefined;
+  }
+
+  if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
+    return undefined;
+  }
+
+  const items: NonNullable<FolderSourceConfig['plugin']>['items'] = [];
+
+  const rootSkillPath = join(localPath, 'SKILL.md');
+  if (existsSync(rootSkillPath)) {
+    try {
+      const parsed = matter(readFileSync(rootSkillPath, 'utf-8'));
+      items.push({
+        id: basename(localPath),
+        skill: basename(localPath),
+        label: typeof parsed.data.name === 'string' ? parsed.data.name : basename(localPath),
+        description: typeof parsed.data.description === 'string' ? parsed.data.description : undefined,
+      });
+    } catch {
+      items.push({ id: basename(localPath), skill: basename(localPath) });
+    }
+  }
+
+  for (const entry of readdirSync(localPath, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const skillPath = join(localPath, entry.name, 'SKILL.md');
+    if (!existsSync(skillPath)) continue;
+    try {
+      const parsed = matter(readFileSync(skillPath, 'utf-8'));
+      items.push({
+        id: entry.name,
+        skill: entry.name,
+        label: typeof parsed.data.name === 'string' ? parsed.data.name : entry.name,
+        description: typeof parsed.data.description === 'string' ? parsed.data.description : undefined,
+      });
+    } catch {
+      items.push({ id: entry.name, skill: entry.name });
+    }
+  }
+
+  if (items.length === 0) return undefined;
+  return {
+    items,
+  };
 }
 
 /**
@@ -715,4 +766,3 @@ export function sourceExists(workspaceRootPath: string, sourceSlug: string): boo
 // ============================================================
 
 export { parseGuideMarkdown };
-

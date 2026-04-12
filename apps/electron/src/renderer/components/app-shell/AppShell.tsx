@@ -23,6 +23,8 @@ import {
   Inbox,
   Globe,
   FolderOpen,
+  Plug,
+  SquareTerminal,
   Cake,
   Calendar,
   Layers,
@@ -62,6 +64,7 @@ import { ContextMenuProvider } from "@/components/ui/menu-context"
 import { SidebarMenu } from "./SidebarMenu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { FadingText } from "@/components/ui/fading-text"
+import { getSourceSidebarCategory } from "@/lib/source-plugins"
 import {
   Collapsible,
   CollapsibleTrigger,
@@ -78,6 +81,7 @@ import { ensureSessionMessagesLoadedAtom } from "@/atoms/sessions"
 import { AppShellProvider, type AppShellContextType } from "@/context/AppShellContext"
 import { EscapeInterruptProvider, useEscapeInterrupt } from "@/context/EscapeInterruptContext"
 import { useTheme } from "@/context/ThemeContext"
+import { useTransportConnectionState } from '@/hooks/useTransportConnectionState'
 import { getResizeGradientStyle } from "@/hooks/useResizeGradient"
 import { useAction, useActionLabel } from "@/actions"
 import { useFocusZone } from "@/hooks/keyboard"
@@ -1332,6 +1336,7 @@ function AppShellContent({
   const activeSessionWorkingDirectory = session.selected
     ? sessionMetaMap.get(session.selected)?.workingDirectory
     : undefined
+  const transportConnectionState = useTransportConnectionState()
   React.useEffect(() => {
     if (!activeWorkspaceId) return
     window.electronAPI.getSkills(activeWorkspaceId, activeSessionWorkingDirectory).then((loaded) => {
@@ -1340,6 +1345,35 @@ function AppShellContent({
       console.error('[Chat] Failed to load skills:', err)
     })
   }, [activeWorkspaceId, activeSessionWorkingDirectory])
+
+  const lastTransportRefreshKeyRef = useRef<string | null>(null)
+  React.useEffect(() => {
+    if (transportConnectionState?.status !== 'connected') {
+      lastTransportRefreshKeyRef.current = null
+    }
+  }, [transportConnectionState?.status])
+
+  React.useEffect(() => {
+    if (!activeWorkspaceId) return
+    if (transportConnectionState?.status !== 'connected') return
+
+    const refreshKey = `${activeWorkspaceId}::${activeSessionWorkingDirectory ?? ''}`
+    if (lastTransportRefreshKeyRef.current === refreshKey) return
+    lastTransportRefreshKeyRef.current = refreshKey
+
+    window.electronAPI.getSources(activeWorkspaceId).then((loaded) => {
+      clearSourceIconCaches()
+      setSources(loaded || [])
+    }).catch((err) => {
+      console.error('[AppShell] Failed to refresh sources after transport reconnect:', err)
+    })
+
+    window.electronAPI.getSkills(activeWorkspaceId, activeSessionWorkingDirectory).then((loaded) => {
+      setSkills(loaded || [])
+    }).catch((err) => {
+      console.error('[AppShell] Failed to refresh skills after transport reconnect:', err)
+    })
+  }, [activeWorkspaceId, activeSessionWorkingDirectory, transportConnectionState?.status])
 
   // Filter session metadata by active workspace
   // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
@@ -1449,12 +1483,9 @@ function AppShellContent({
 
   // Count sources by type for the Sources dropdown subcategories
   const sourceTypeCounts = useMemo(() => {
-    const counts = { api: 0, mcp: 0, local: 0 }
+    const counts = { api: 0, mcp: 0, local: 0, cli: 0, plugin: 0 }
     for (const source of sources) {
-      const t = source.config.type
-      if (t === 'api' || t === 'mcp' || t === 'local') {
-        counts[t]++
-      }
+      counts[getSourceSidebarCategory(source)]++
     }
     return counts
   }, [sources])
@@ -1764,6 +1795,14 @@ function AppShellContent({
     navigate(routes.view.sourcesLocal())
   }, [])
 
+  const handleSourcesCliClick = useCallback(() => {
+    navigate(routes.view.sourcesCli())
+  }, [])
+
+  const handleSourcesPluginClick = useCallback(() => {
+    navigate(routes.view.sourcesPlugin())
+  }, [])
+
   // Handler for skills view
   const handleSkillsClick = useCallback(() => {
     navigate(routes.view.skills())
@@ -1926,11 +1965,18 @@ function AppShellContent({
   // Handler for "Add Source" context menu action
   // Opens the EditPopover for adding a new source
   // Optional sourceType param allows filter-aware context (from subcategory menus or filtered views)
-  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local') => {
+  const getAddSourceEditKey = useCallback((sourceType?: SourceFilter['sourceType']) => {
+    if (sourceType === 'api' || sourceType === 'mcp' || sourceType === 'local') {
+      return `add-source-${sourceType}` as const
+    }
+    return 'add-source' as const
+  }, [])
+
+  const openAddSource = useCallback((sourceType?: SourceFilter['sourceType']) => {
     captureContextMenuPosition()
-    const key = sourceType ? `add-source-${sourceType}` as const : 'add-source' as const
+    const key = getAddSourceEditKey(sourceType)
     setTimeout(() => setEditPopoverOpen(key), 50)
-  }, [captureContextMenuPosition])
+  }, [captureContextMenuPosition, getAddSourceEditKey])
 
   // Handler for "Add Skill" context menu action
   // Opens the EditPopover for adding a new skill
@@ -2488,6 +2534,22 @@ function AppShellContent({
                             onAddSource: () => openAddSource('local'),
                             sourceType: 'local',
                           },
+                        },
+                        {
+                          id: "nav:sources:cli",
+                          title: t("sidebar.clis"),
+                          label: String(sourceTypeCounts.cli),
+                          icon: SquareTerminal,
+                          variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'cli') ? "default" : "ghost",
+                          onClick: handleSourcesCliClick,
+                        },
+                        {
+                          id: "nav:sources:plugin",
+                          title: t("sidebar.plugins"),
+                          label: String(sourceTypeCounts.plugin),
+                          icon: Plug,
+                          variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'plugin') ? "default" : "ghost",
+                          onClick: handleSourcesPluginClick,
                         },
                       ],
                     },
@@ -3176,7 +3238,9 @@ function AppShellContent({
                         />
                       }
                       {...getEditConfig(
-                        sourceFilter?.kind === 'type' ? `add-source-${sourceFilter.sourceType}` as EditContextKey : 'add-source',
+                        sourceFilter?.kind === 'type' && (sourceFilter.sourceType === 'api' || sourceFilter.sourceType === 'mcp' || sourceFilter.sourceType === 'local')
+                          ? `add-source-${sourceFilter.sourceType}` as EditContextKey
+                          : 'add-source',
                         activeWorkspace.rootPath
                       )}
                     />

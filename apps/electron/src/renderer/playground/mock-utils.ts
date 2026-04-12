@@ -1,4 +1,4 @@
-import type { FileAttachment, LoadedSource, PermissionMode } from '../../shared/types'
+import type { FileAttachment, LoadedSource, LoadedSkill, PermissionMode } from '../../shared/types'
 
 // ============================================================================
 // Mock electronAPI
@@ -252,6 +252,99 @@ export const mockSources: LoadedSource[] = [
     folderPath: '/mock/sources/local-files',
     workspaceRootPath: '/mock/workspaces/playground-workspace',
     workspaceId: 'playground-workspace',
+  },
+  {
+    config: {
+      id: 'seo-plugin-1',
+      slug: 'seo-project',
+      name: 'SEO Project',
+      provider: 'filesystem',
+      type: 'local',
+      enabled: true,
+      local: {
+        path: '/Users/demo/projects/seo-project',
+      },
+      tagline: 'Plugin-style local folder with guided SEO workflows',
+      plugin: {
+        name: 'SEO Project',
+        description: 'Grouped SEO workflows',
+        items: [
+          { id: 'analyze', skill: 'seo-analyze', label: 'analyze' },
+          { id: 'build-dashboard', skill: 'seo-dashboard', label: 'build-dashboard' },
+          { id: 'write-query', skill: 'seo-write-query', label: 'write-query' },
+        ],
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+    guide: null,
+    folderPath: '/mock/sources/seo-project',
+    workspaceRootPath: '/mock/workspaces/playground-workspace',
+    workspaceId: 'playground-workspace',
+  },
+  {
+    config: {
+      id: 'duckdb-cli-1',
+      slug: 'duckdb-cli',
+      name: 'DuckDB CLI',
+      provider: 'duckdb',
+      type: 'cli',
+      enabled: true,
+      cli: {
+        command: 'duckdb',
+        args: ['--readonly'],
+      },
+      tagline: 'Run local DuckDB queries through the CLI proxy',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+    guide: null,
+    folderPath: '/mock/sources/duckdb-cli',
+    workspaceRootPath: '/mock/workspaces/playground-workspace',
+    workspaceId: 'playground-workspace',
+  },
+]
+
+export const mockSkills: LoadedSkill[] = [
+  {
+    slug: 'seo-analyze',
+    metadata: {
+      name: 'SEO Analyze',
+      description: 'Inspect rankings and page performance',
+    },
+    content: 'Analyze SEO data.',
+    path: '/mock/skills/seo-analyze',
+    source: 'workspace',
+  },
+  {
+    slug: 'seo-dashboard',
+    metadata: {
+      name: 'SEO Dashboard',
+      description: 'Build a focused SEO dashboard from the dataset',
+    },
+    content: 'Build SEO dashboards.',
+    path: '/mock/skills/seo-dashboard',
+    source: 'workspace',
+  },
+  {
+    slug: 'seo-write-query',
+    metadata: {
+      name: 'SEO Write Query',
+      description: 'Generate or validate analysis queries',
+    },
+    content: 'Write SQL queries.',
+    path: '/mock/skills/seo-write-query',
+    source: 'workspace',
+  },
+  {
+    slug: 'general-refactor',
+    metadata: {
+      name: 'General Refactor',
+      description: 'Refactor code safely',
+    },
+    content: 'General refactoring instructions.',
+    path: '/mock/skills/general-refactor',
+    source: 'workspace',
   },
 ]
 

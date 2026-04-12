@@ -104,16 +104,16 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
     }
   }
 
-  // Sources navigator - supports type filters (api, mcp, local)
+  // Sources navigator - supports type filters (api, mcp, local, cli, plugin)
   if (first === 'sources') {
     if (segments.length === 1) {
       return { navigator: 'sources', details: null }
     }
 
     // Check for type filter: sources/api, sources/mcp, sources/local
-    const validSourceTypes = ['api', 'mcp', 'local']
+    const validSourceTypes = ['api', 'mcp', 'local', 'cli', 'plugin']
     if (validSourceTypes.includes(segments[1])) {
-      const sourceType = segments[1] as 'api' | 'mcp' | 'local'
+      const sourceType = segments[1] as 'api' | 'mcp' | 'local' | 'cli' | 'plugin'
       const sourceFilter: SourceFilter = { kind: 'type', sourceType }
 
       // Check for source selection within filtered view: sources/api/source/{sourceSlug}

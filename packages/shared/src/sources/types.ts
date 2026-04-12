@@ -397,6 +397,19 @@ export interface LocalSourceConfig {
   format?: string; // Optional hint: 'filesystem' | 'obsidian' | 'git' | 'sqlite' | etc.
 }
 
+export interface SourcePluginItemConfig {
+  id: string;
+  skill: string;
+  label?: string;
+  description?: string;
+}
+
+export interface SourcePluginConfig {
+  name?: string;
+  description?: string;
+  items: SourcePluginItemConfig[];
+}
+
 /**
  * Source connection status
  * - 'connected': Source is connected and working
@@ -458,6 +471,10 @@ export interface FolderSourceConfig {
 
   // Brand theming for this source's UI elements
   brand?: SourceBrand;
+
+  // Optional plugin-style UI metadata for local/plugin folders.
+  // This is a presentation hint only: execution still resolves to regular skills.
+  plugin?: SourcePluginConfig;
 
   // Status tracking
   isAuthenticated?: boolean;
