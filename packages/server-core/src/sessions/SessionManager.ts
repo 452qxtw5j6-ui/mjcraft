@@ -1022,6 +1022,7 @@ function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Sess
 
 // Performance: Batch IPC delta events to reduce renderer load
 const DELTA_BATCH_INTERVAL_MS = 50  // Flush batched deltas every 50ms
+const PI_AGENT_IDLE_TTL_MS = 60_000
 
 interface PendingDelta {
   delta: string
@@ -1033,6 +1034,7 @@ export class SessionManager implements ISessionManager {
   // Delta batching for performance - reduces IPC events from 50+/sec to ~20/sec
   private pendingDeltas: Map<string, PendingDelta> = new Map()
   private deltaFlushTimers: Map<string, NodeJS.Timeout> = new Map()
+  private agentIdleTimers: Map<string, NodeJS.Timeout> = new Map()
   // Config watchers for live updates (sources, etc.) - one per workspace
   private configWatchers: Map<string, ConfigWatcher> = new Map()
   // Automation systems for workspace event automations - one per workspace (includes scheduler, diffing, and handlers)
@@ -2607,6 +2609,8 @@ export class SessionManager implements ISessionManager {
    * 4. fallback: no connection configured
    */
   private async getOrCreateAgent(managed: ManagedSession): Promise<AgentInstance> {
+    this.clearAgentIdleTimer(managed.id)
+
     if (!managed.agent) {
       const end = perf.start('agent.create', { sessionId: managed.id })
 
@@ -4730,6 +4734,7 @@ export class SessionManager implements ISessionManager {
       clearTimeout(timer)
       this.deltaFlushTimers.delete(sessionId)
     }
+    this.clearAgentIdleTimer(sessionId)
     this.pendingDeltas.delete(sessionId)
     this.clearAdminRememberApprovalsForSession(sessionId)
     this.clearPendingPermissionRequestsForSession(sessionId)
@@ -4745,17 +4750,7 @@ export class SessionManager implements ISessionManager {
       this.browserPaneManager.destroyForSession(sessionId)
     }
 
-    // Dispose agent to clean up ConfigWatchers, event listeners, MCP connections
-    if (managed.agent) {
-      managed.agent.dispose()
-    }
-
-    // Stop pool server (HTTP MCP server for external SDK subprocesses)
-    if (managed.poolServer) {
-      managed.poolServer.stop().catch(err => {
-        sessionLog.warn(`Failed to stop pool server for ${sessionId}: ${err instanceof Error ? err.message : err}`)
-      })
-    }
+    await this.disposeManagedAgentResources(managed, 'delete session')
 
     this.sessions.delete(sessionId)
 
@@ -5408,7 +5403,7 @@ export class SessionManager implements ISessionManager {
 
         // 2. Destroy the agent — the new agent's postInit() will refresh auth
         sessionLog.info(`[auth-retry] Destroying agent for session ${sessionId}`)
-        managed.agent = null
+        await this.disposeManagedAgentResources(managed, 'auth retry')
 
         // 3. Retry the message
         const retryMessage = managed.lastSentMessage
@@ -5571,6 +5566,7 @@ export class SessionManager implements ISessionManager {
         hasUnread: managed.hasUnread,  // Propagate unread state to renderer
       }, managed.workspace.id)
 
+      this.scheduleIdleAgentCleanup(managed)
     }
 
     // 6. Always persist
@@ -6731,6 +6727,86 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  private clearAgentIdleTimer(sessionId: string): void {
+    const timer = this.agentIdleTimers.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      this.agentIdleTimers.delete(sessionId)
+    }
+  }
+
+  private shouldAutoDestroyIdleAgent(managed: ManagedSession): boolean {
+    const workspaceConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+    const backendContext = resolveBackendContext({
+      sessionConnectionSlug: managed.llmConnection,
+      workspaceDefaultConnectionSlug: workspaceConfig?.defaults?.defaultLlmConnection,
+      managedModel: managed.model,
+    })
+    return backendContext.provider === 'pi'
+  }
+
+  private async disposeManagedAgentResources(
+    managed: ManagedSession,
+    reason: string,
+  ): Promise<void> {
+    this.clearAgentIdleTimer(managed.id)
+
+    const agent = managed.agent
+    managed.agent = null
+    managed.agentReady = undefined
+    managed.agentReadyResolve = undefined
+
+    if (agent) {
+      try {
+        agent.dispose()
+      } catch (error) {
+        sessionLog.warn(`Failed to dispose agent for ${managed.id} during ${reason}:`, error)
+      }
+    }
+
+    if (managed.poolServer) {
+      try {
+        await managed.poolServer.stop()
+      } catch (error) {
+        sessionLog.warn(`Failed to stop pool server for ${managed.id} during ${reason}:`, error)
+      }
+      managed.poolServer = undefined
+    }
+
+    if (managed.mcpPool) {
+      try {
+        await managed.mcpPool.disconnectAll()
+      } catch (error) {
+        sessionLog.warn(`Failed to disconnect MCP pool for ${managed.id} during ${reason}:`, error)
+      }
+      managed.mcpPool = undefined
+    }
+
+    managed.envOverrides = undefined
+  }
+
+  private scheduleIdleAgentCleanup(managed: ManagedSession): void {
+    this.clearAgentIdleTimer(managed.id)
+
+    if (!managed.agent || !this.shouldAutoDestroyIdleAgent(managed)) {
+      return
+    }
+
+    const sessionId = managed.id
+    const timer = setTimeout(() => {
+      const latest = this.sessions.get(sessionId)
+      if (!latest || latest.isProcessing || latest.messageQueue.length > 0 || !latest.agent) {
+        return
+      }
+
+      void this.disposeManagedAgentResources(latest, 'idle timeout').then(() => {
+        sessionLog.info(`Disposed idle Pi agent for session ${sessionId} after ${PI_AGENT_IDLE_TTL_MS}ms`)
+      })
+    }, PI_AGENT_IDLE_TTL_MS)
+
+    this.agentIdleTimers.set(sessionId, timer)
+  }
+
   /**
    * Execute a prompt automation by creating a new session and sending the prompt
    */
@@ -7229,6 +7305,10 @@ export class SessionManager implements ISessionManager {
       clearTimeout(timer)
     }
     this.deltaFlushTimers.clear()
+    for (const [, timer] of this.agentIdleTimers) {
+      clearTimeout(timer)
+    }
+    this.agentIdleTimers.clear()
     this.pendingDeltas.clear()
 
     // Clear pending credential resolvers (they won't be resolved, but prevents memory leak)
@@ -7237,8 +7317,9 @@ export class SessionManager implements ISessionManager {
     this.adminRememberApprovals.clear()
 
     // Clean up session-scoped tool callbacks for all sessions
-    for (const sessionId of this.sessions.keys()) {
+    for (const [sessionId, managed] of this.sessions) {
       unregisterSessionScopedToolCallbacks(sessionId)
+      void this.disposeManagedAgentResources(managed, 'session manager cleanup')
     }
 
     sessionLog.info('Cleanup complete')
