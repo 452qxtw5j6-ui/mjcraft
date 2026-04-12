@@ -50,7 +50,7 @@ import {
 import { routes, type Route, type ViewRoute } from '../../shared/routes'
 import { parsePermissionMode } from '@craft-agent/shared/agent/mode-types'
 import { NAVIGATE_EVENT, type NavigateOptions } from '../lib/navigate'
-import { getSourceSidebarCategory } from '@/lib/source-plugins'
+import { getPluginSkillSlugs, getSourceSidebarCategory } from '@/lib/source-plugins'
 import { normalizePanelRouteForReconcile } from './navigation-reconcile'
 import { buildSemanticHistoryKey, canRunInitialRestore } from './navigation-history'
 import * as storage from '@/lib/local-storage'
@@ -601,9 +601,10 @@ export function NavigationProvider({
 
   const getFirstSkillSlug = useCallback(
     (): string | null => {
-      return skills[0]?.slug ?? null
+      const pluginSkillSlugs = getPluginSkillSlugs(sources)
+      return skills.find((skill) => !pluginSkillSlugs.has(skill.slug))?.slug ?? null
     },
-    [skills]
+    [skills, sources]
   )
 
   // =========================================================================

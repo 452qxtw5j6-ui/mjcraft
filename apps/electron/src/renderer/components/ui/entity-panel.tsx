@@ -18,6 +18,7 @@ export interface EntityPanelItem {
   badges?: React.ReactNode
   trailing?: React.ReactNode
   menu?: React.ReactNode
+  children?: React.ReactNode
   dataAttributes?: Record<string, string | undefined>
 }
 
@@ -77,6 +78,7 @@ export function EntityPanel<T>({
             title={mapped.title}
             badges={mapped.badges}
             trailing={mapped.trailing}
+            children={mapped.children}
             isSelected={selectedId === getId(item)}
             isInMultiSelect={rowProps.isInMultiSelect}
             showSeparator={!isFirst}

@@ -13,6 +13,9 @@ import { useAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig, type EditContextKey } from '@/components/ui/EditPopover'
 import type { LoadedSource, SourceConnectionStatus, SourceFilter } from '../../../shared/types'
 import { getSourceSidebarCategory } from '@/lib/source-plugins'
+import { routes, navigate } from '@/lib/navigate'
+import { Sparkles } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 const SOURCE_TYPE_CONFIG: Record<string, { labelKey: string; colorClass: string }> = {
   mcp: { labelKey: 'sourcesList.typeMcp', colorClass: 'bg-accent/10 text-accent' },
@@ -62,6 +65,7 @@ export function SourcesListPanel({
   const { t } = useTranslation()
   const { workspaces, activeWorkspaceId } = useAppShellContext()
   const hasOtherWorkspaces = workspaces.length > 1
+  const [expandedPluginSlug, setExpandedPluginSlug] = React.useState<string | null>(null)
 
   // Send to Workspace dialog state
   const [sendDialogOpen, setSendDialogOpen] = React.useState(false)
@@ -82,6 +86,26 @@ export function SourcesListPanel({
     return t('sourcesList.noSourcesConfigured')
   }, [sourceFilter, t])
 
+  React.useEffect(() => {
+    if (!selectedSourceSlug) {
+      setExpandedPluginSlug(null)
+      return
+    }
+    const selected = filteredSources.find((source) => source.config.slug === selectedSourceSlug)
+    if (selected && getSourceSidebarCategory(selected) === 'plugin') {
+      setExpandedPluginSlug(selectedSourceSlug)
+    }
+  }, [filteredSources, selectedSourceSlug])
+
+  const handleSourceItemClick = React.useCallback((source: LoadedSource) => {
+    if (getSourceSidebarCategory(source) === 'plugin') {
+      setExpandedPluginSlug((prev) => prev === source.config.slug ? null : source.config.slug)
+    } else {
+      setExpandedPluginSlug(null)
+    }
+    onSourceClick(source)
+  }, [onSourceClick])
+
   return (
     <>
     <EntityPanel<LoadedSource>
@@ -89,7 +113,7 @@ export function SourcesListPanel({
       getId={(s) => s.config.slug}
       selection={sourceSelection}
       selectedId={selectedSourceSlug}
-      onItemClick={onSourceClick}
+      onItemClick={handleSourceItemClick}
       className={className}
       emptyState={
         <EntityListEmptyScreen
@@ -121,6 +145,12 @@ export function SourcesListPanel({
         const typeConfig = SOURCE_TYPE_CONFIG[getSourceSidebarCategory(source)]
         const statusConfig = SOURCE_STATUS_CONFIG[connectionStatus]
         const subtitle = source.config.tagline || source.config.provider || ''
+        const pluginItems = source.config.plugin?.items ?? []
+        const showPluginChildren =
+          getSourceSidebarCategory(source) === 'plugin' &&
+          expandedPluginSlug === source.config.slug &&
+          pluginItems.length > 1
+
         return {
           icon: <SourceAvatar source={source} size="sm" />,
           title: source.config.name,
@@ -149,6 +179,41 @@ export function SourcesListPanel({
               } : undefined}
             />
           ),
+          children: showPluginChildren ? (
+            <div className="ml-8 mr-4 mb-3 rounded-[8px] border border-border/40 overflow-hidden bg-background/60">
+              {pluginItems.map((item, index) => (
+                <button
+                  key={`${source.config.slug}:${item.id}`}
+                  type="button"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigate(routes.view.sources({ sourceSlug: source.config.slug, skillSlug: item.skill, type: 'plugin' }))
+                  }}
+                  className={cn(
+                    'w-full px-3 py-2.5 text-left hover:bg-foreground/[0.03] transition-colors',
+                    index > 0 && 'border-t border-border/30'
+                  )}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <div className="shrink-0 pt-0.5">
+                      <span className="flex h-5 w-5 items-center justify-center rounded-[6px] bg-foreground/6 text-muted-foreground">
+                        <Sparkles className="h-3.5 w-3.5" />
+                      </span>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-foreground truncate">
+                        {item.label || item.skill}
+                      </div>
+                      <div className="text-xs text-muted-foreground line-clamp-2">
+                        {item.description || item.skill}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : undefined,
         }
       }}
     />

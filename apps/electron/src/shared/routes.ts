@@ -123,10 +123,13 @@ export const routes = {
         : `view/${encodeURIComponent(viewId)}` as const,
 
     /** Sources view (sources navigator) - supports type filtering */
-    sources: (params?: { sourceSlug?: string; type?: 'api' | 'mcp' | 'local' | 'cli' | 'plugin' }) => {
-      const { sourceSlug, type } = params ?? {}
+    sources: (params?: { sourceSlug?: string; skillSlug?: string; type?: 'api' | 'mcp' | 'local' | 'cli' | 'plugin' }) => {
+      const { sourceSlug, skillSlug, type } = params ?? {}
       // Build base from filter type
       const base = type ? `sources/${type}` : 'sources'
+      if (sourceSlug && skillSlug) {
+        return `${base}/source/${sourceSlug}/skill/${skillSlug}` as const
+      }
       if (sourceSlug) {
         return `${base}/source/${sourceSlug}` as const
       }
@@ -162,6 +165,10 @@ export const routes = {
       sourceSlug
         ? `sources/plugin/source/${sourceSlug}` as const
         : 'sources/plugin' as const,
+
+    /** Plugin sources view with plugin child skill open in the main panel */
+    sourcesPluginSkill: (sourceSlug: string, skillSlug: string) =>
+      `sources/plugin/source/${sourceSlug}/skill/${skillSlug}` as const,
 
     /** Skills view (skills navigator). Pass a slug string for a local skill detail view. */
     skills: (skillSlug?: string) => {

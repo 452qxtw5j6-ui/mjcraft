@@ -50,6 +50,8 @@ export interface ParsedCompoundRoute {
   details: {
     type: string
     id: string
+    sourceSlug?: string
+    skillSlug?: string
   } | null
 }
 
@@ -118,6 +120,13 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
 
       // Check for source selection within filtered view: sources/api/source/{sourceSlug}
       if (segments[2] === 'source' && segments[3]) {
+        if (segments[4] === 'skill' && segments[5]) {
+          return {
+            navigator: 'sources',
+            sourceFilter,
+            details: { type: 'plugin-skill', id: segments[5], sourceSlug: segments[3], skillSlug: segments[5] },
+          }
+        }
         return {
           navigator: 'sources',
           sourceFilter,
@@ -131,6 +140,12 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
 
     // Unfiltered source selection: sources/source/{sourceSlug}
     if (segments[1] === 'source' && segments[2]) {
+      if (segments[3] === 'skill' && segments[4]) {
+        return {
+          navigator: 'sources',
+          details: { type: 'plugin-skill', id: segments[4], sourceSlug: segments[2], skillSlug: segments[4] },
+        }
+      }
       return {
         navigator: 'sources',
         details: { type: 'source', id: segments[2] },
@@ -267,6 +282,9 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
       base = `sources/${parsed.sourceFilter.sourceType}`
     }
     if (!parsed.details) return base
+    if (parsed.details.type === 'plugin-skill') {
+      return `${base}/source/${parsed.details.sourceSlug ?? parsed.details.id}/skill/${parsed.details.skillSlug ?? parsed.details.id}`
+    }
     return `${base}/source/${parsed.details.id}`
   }
 
@@ -389,6 +407,9 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
     if (!compound.details) {
       return { type: 'view', name: 'sources', params: {} }
     }
+    if (compound.details.type === 'plugin-skill') {
+      return { type: 'view', name: 'skill-info', id: compound.details.skillSlug ?? compound.details.id, params: {} }
+    }
     return { type: 'view', name: 'source-info', id: compound.details.id, params: {} }
   }
 
@@ -505,6 +526,17 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
         navigator: 'sources',
         filter: compound.sourceFilter,
         details: null,
+      }
+    }
+    if (compound.details.type === 'plugin-skill') {
+      return {
+        navigator: 'sources',
+        filter: compound.sourceFilter,
+        details: {
+          type: 'plugin-skill',
+          sourceSlug: compound.details.sourceSlug ?? compound.details.id,
+          skillSlug: compound.details.skillSlug ?? compound.details.id,
+        },
       }
     }
     return {
@@ -704,7 +736,16 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
     return {
       navigator: 'sources',
       sourceFilter: state.filter ?? undefined,
-      details: state.details ? { type: 'source', id: state.details.sourceSlug } : null,
+      details: state.details
+        ? state.details.type === 'plugin-skill'
+          ? {
+              type: 'plugin-skill',
+              id: state.details.skillSlug,
+              sourceSlug: state.details.sourceSlug,
+              skillSlug: state.details.skillSlug,
+            }
+          : { type: 'source', id: state.details.sourceSlug }
+        : null,
     }
   }
 

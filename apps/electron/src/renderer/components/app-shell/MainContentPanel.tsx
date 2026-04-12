@@ -252,6 +252,17 @@ export function MainContentPanel({
         </Panel>
       )
     }
+    if (navState.details?.type === 'plugin-skill') {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <SkillInfoPage
+            skillSlug={navState.details.skillSlug}
+            workspaceId={activeWorkspaceId || ''}
+            workingDirectory={activeSessionWorkingDirectory}
+          />
+        </Panel>
+      )
+    }
     if (navState.details) {
       return wrapWithStoplight(
         <Panel variant="grow" className={className}>

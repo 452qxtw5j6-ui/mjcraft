@@ -64,7 +64,7 @@ import { ContextMenuProvider } from "@/components/ui/menu-context"
 import { SidebarMenu } from "./SidebarMenu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { FadingText } from "@/components/ui/fading-text"
-import { getSourceSidebarCategory } from "@/lib/source-plugins"
+import { getPluginSkillSlugs, getSourceSidebarCategory } from "@/lib/source-plugins"
 import {
   Collapsible,
   CollapsibleTrigger,
@@ -1501,6 +1501,12 @@ function AppShellContent({
     return counts
   }, [automations])
 
+  const pluginSkillSlugs = useMemo(() => getPluginSkillSlugs(sources), [sources])
+  const generalSkills = useMemo(
+    () => skills.filter((skill) => !pluginSkillSlugs.has(skill.slug)),
+    [skills, pluginSkillSlugs]
+  )
+
   // Filter session metadata based on sidebar mode and chat filter
   const filteredSessionMetas = useMemo(() => {
     // When in sources mode, return empty (no sessions to show)
@@ -2556,7 +2562,7 @@ function AppShellContent({
                     {
                       id: "nav:skills",
                       title: t("sidebar.skills"),
-                      label: String(skills.length),
+                      label: String(generalSkills.length),
                       icon: Zap,
                       variant: isSkillsNavigation(navState) ? "default" : "ghost",
                       onClick: handleSkillsClick,
@@ -3289,7 +3295,7 @@ function AppShellContent({
             {isSkillsNavigation(navState) && activeWorkspaceId && (
               /* Skills List */
               <SkillsListPanel
-                skills={skills}
+                skills={generalSkills}
                 workspaceId={activeWorkspaceId}
                 workspaceRootPath={activeWorkspace?.rootPath}
                 onSkillClick={handleSkillSelect}

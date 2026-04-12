@@ -709,7 +709,7 @@ export interface AutomationFilter {
 export interface SourcesNavigationState {
   navigator: 'sources'
   filter?: SourceFilter
-  details: { type: 'source'; sourceSlug: string } | null
+  details: { type: 'source'; sourceSlug: string } | { type: 'plugin-skill'; sourceSlug: string; skillSlug: string } | null
   rightSidebar?: RightSidebarPanel
 }
 
@@ -780,6 +780,9 @@ export const DEFAULT_NAVIGATION_STATE: NavigationState = {
 export const getNavigationStateKey = (state: NavigationState): string => {
   if (state.navigator === 'sources') {
     if (state.details) {
+      if (state.details.type === 'plugin-skill') {
+        return `sources/source/${state.details.sourceSlug}/skill/${state.details.skillSlug}`
+      }
       return `sources/source/${state.details.sourceSlug}`
     }
     return 'sources'
@@ -816,7 +819,22 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
   // Handle sources
   if (key === 'sources') return { navigator: 'sources', details: null }
   if (key.startsWith('sources/source/')) {
-    const sourceSlug = key.slice(15)
+    const rest = key.slice(15)
+    const skillMarker = '/skill/'
+    const skillIndex = rest.indexOf(skillMarker)
+
+    if (skillIndex !== -1) {
+      const sourceSlug = rest.slice(0, skillIndex)
+      const skillSlug = rest.slice(skillIndex + skillMarker.length)
+      if (sourceSlug && skillSlug) {
+        return {
+          navigator: 'sources',
+          details: { type: 'plugin-skill', sourceSlug, skillSlug },
+        }
+      }
+    }
+
+    const sourceSlug = rest
     if (sourceSlug) {
       return { navigator: 'sources', details: { type: 'source', sourceSlug } }
     }
