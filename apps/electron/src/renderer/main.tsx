@@ -8,13 +8,24 @@ import App from './App'
 import { ThemeProvider } from './context/ThemeContext'
 import { windowWorkspaceIdAtom } from './atoms/sessions'
 import { Toaster } from '@/components/ui/sonner'
-import { setupI18n } from '@craft-agent/shared/i18n'
+import { i18n, setupI18n } from '@craft-agent/shared/i18n'
 import { initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import './index.css'
 
 // Initialize i18n before any React rendering
 setupI18n([LanguageDetector, initReactI18next])
+
+// Keep the backend agent language aligned with the renderer's persisted language.
+const initialLanguage = i18n.resolvedLanguage ?? i18n.language
+if (initialLanguage) {
+  if (window.electronAPI?.setAgentLanguage) {
+    window.electronAPI.setAgentLanguage(initialLanguage).catch(() => {})
+  }
+  if (window.electronAPI?.changeLanguage) {
+    window.electronAPI.changeLanguage(initialLanguage).catch(() => {})
+  }
+}
 
 // Known-harmless console messages that should NOT be sent to Sentry.
 // These are dev-mode noise or expected warnings that aren't actionable.

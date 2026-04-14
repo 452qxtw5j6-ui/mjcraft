@@ -285,7 +285,12 @@ export default function AppearanceSettingsPage() {
                       value={(i18n.resolvedLanguage ?? i18n.language) as LanguageCode}
                       onValueChange={(value) => {
                         i18n.changeLanguage(value)
-                        window.electronAPI?.changeLanguage?.(value)
+                        if (window.electronAPI?.setAgentLanguage) {
+                          window.electronAPI.setAgentLanguage(value).catch(() => {})
+                        }
+                        if (window.electronAPI?.changeLanguage) {
+                          window.electronAPI.changeLanguage(value).catch(() => {})
+                        }
                       }}
                       options={Object.entries(LANGUAGES).map(([code, config]) => ({
                         value: code,

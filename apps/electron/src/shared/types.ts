@@ -642,6 +642,7 @@ export interface ElectronAPI {
 
   // Language
   changeLanguage(lang: string): Promise<void>
+  setAgentLanguage(lang: string): Promise<void>
 
   // Resources (cross-workspace export/import)
   exportResources(workspaceId: string, options: ExportResourcesOptions): Promise<ExportResult>

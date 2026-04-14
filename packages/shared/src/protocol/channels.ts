@@ -303,6 +303,7 @@ export const RPC_CHANNELS = {
   appearance: {
     GET_RICH_TOOL_DESCRIPTIONS: 'appearance:getRichToolDescriptions',
     SET_RICH_TOOL_DESCRIPTIONS: 'appearance:setRichToolDescriptions',
+    SET_AGENT_LANGUAGE: 'appearance:setAgentLanguage',
   },
   tools: {
     GET_BROWSER_TOOL_ENABLED: 'tools:getBrowserToolEnabled',

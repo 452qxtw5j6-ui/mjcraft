@@ -297,6 +297,7 @@ export const CHANNEL_MAP = {
   // Appearance settings
   getRichToolDescriptions: invoke(RPC_CHANNELS.appearance.GET_RICH_TOOL_DESCRIPTIONS),
   setRichToolDescriptions: invoke(RPC_CHANNELS.appearance.SET_RICH_TOOL_DESCRIPTIONS),
+  setAgentLanguage: invoke(RPC_CHANNELS.appearance.SET_AGENT_LANGUAGE),
 
   // Tools settings
   getBrowserToolEnabled: invoke(RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED),
