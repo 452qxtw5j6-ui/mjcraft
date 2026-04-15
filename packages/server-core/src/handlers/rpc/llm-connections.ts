@@ -202,14 +202,30 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
         updates.modelSelectionMode = inferredMode
       }
 
-      if (updates.models && updates.models.length > 0) {
-        const validation = validateModelList(updates.models, pendingConnection.defaultModel)
+      const normalizedPendingDefaultModel = pendingConnection.defaultModel?.trim() || undefined
+      if (pendingConnection.defaultModel !== normalizedPendingDefaultModel) {
+        pendingConnection.defaultModel = normalizedPendingDefaultModel
+        updates.defaultModel = normalizedPendingDefaultModel
+      }
+
+      const pendingModels = pendingConnection.models
+      if (pendingModels && pendingModels.length > 0) {
+        const validation = validateModelList(pendingModels, pendingConnection.defaultModel)
         if (!validation.valid) {
           return { success: false, error: validation.error }
         }
         if (validation.resolvedDefaultModel) {
           pendingConnection.defaultModel = validation.resolvedDefaultModel
           updates.defaultModel = validation.resolvedDefaultModel
+        }
+      } else if (!pendingConnection.defaultModel) {
+        const fallbackDefaultModel = getDefaultModelForConnection(
+          pendingConnection.providerType,
+          pendingConnection.piAuthProvider,
+        )
+        if (fallbackDefaultModel) {
+          pendingConnection.defaultModel = fallbackDefaultModel
+          updates.defaultModel = fallbackDefaultModel
         }
       }
 
@@ -271,9 +287,9 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       // filtered by the user's policy. For user-defined connections, only refresh
       // when no models were populated during setup.
       // Awaited so the model selector shows real available models immediately.
-      const pendingModels = Array.isArray(pendingConnection.models) ? pendingConnection.models : []
+      const refreshCandidateModels = Array.isArray(pendingConnection.models) ? pendingConnection.models : []
       const isAutoSynced = pendingConnection.modelSelectionMode === 'automaticallySyncedFromProvider'
-      if (!pendingModels.length || isAutoSynced) {
+      if (!refreshCandidateModels.length || isAutoSynced) {
         try {
           await getModelRefreshService().refreshNow(setup.slug)
         } catch (err) {
@@ -317,7 +333,7 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
     deps.platform.logger?.info(`[testLlmConnectionSetup] Testing: provider=${provider}${piAuthProvider ? ` piAuth=${piAuthProvider}` : ''}${baseUrl ? ` baseUrl=${baseUrl}` : ''} hasCustomEndpoint=${!!customEndpoint} hintProvider=${hint.providerType}`)
 
     try {
-      const testModel = model || getDefaultModelForConnection(provider, piAuthProvider)
+      const testModel = model?.trim() || getDefaultModelForConnection(provider, piAuthProvider)
       const result = await testBackendConnection({
         provider,
         apiKey: trimmedKey,

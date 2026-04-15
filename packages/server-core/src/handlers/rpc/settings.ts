@@ -52,7 +52,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     return getDefaultThinkingLevel()
   })
 
-  server.handle(RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL, async (_ctx, level: string) => {
+  server.handle(RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL, async (_ctx, level: string): Promise<{ success: boolean; error?: string }> => {
     if (!isValidThinkingLevel(level)) {
       throw new Error(`Invalid thinking level: ${level}. Valid values: 'off', 'low', 'medium', 'high', 'max'`)
     }
@@ -60,6 +60,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     if (!success) {
       throw new Error('Failed to persist default thinking level')
     }
+    return { success: true }
   })
 
   // ============================================================

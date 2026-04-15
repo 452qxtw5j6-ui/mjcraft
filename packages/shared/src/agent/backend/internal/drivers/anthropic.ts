@@ -2,6 +2,7 @@ import type { ProviderDriver } from '../driver-types.ts';
 import { applyAnthropicRuntimeBootstrap } from '../runtime-resolver.ts';
 import { validateAnthropicConnection } from '../../../../config/llm-validation.ts';
 import { getModelContextWindow } from '../../../../config/models.ts';
+import { getDefaultModelForConnection } from '../../../../config/llm-connections.ts';
 
 export const anthropicDriver: ProviderDriver = {
   provider: 'anthropic',
@@ -127,7 +128,10 @@ export const anthropicDriver: ProviderDriver = {
       return { success: false, error: 'Could not retrieve credentials' };
     }
 
-    const testModel = connection.defaultModel!;
+    const testModel = connection.defaultModel?.trim() || getDefaultModelForConnection('anthropic');
+    if (!testModel) {
+      return { success: false, error: 'No default model configured for Anthropic connection' };
+    }
     const validationResult = await validateAnthropicConnection({
       model: testModel,
       apiKey: apiKey || undefined,

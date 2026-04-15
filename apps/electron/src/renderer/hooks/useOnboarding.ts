@@ -201,6 +201,30 @@ export function useOnboarding({
   editingSlug = null,
   existingSlugs = new Set(),
 }: UseOnboardingOptions): UseOnboardingReturn {
+  const resolveSetupTestModel = useCallback((data: ApiKeySubmitData, isPiApiKeyFlow: boolean): string | undefined => {
+    const explicitModel = data.models?.[0]?.trim() || data.connectionDefaultModel?.trim()
+    if (explicitModel) return explicitModel
+
+    if (isPiApiKeyFlow) {
+      switch (data.piAuthProvider) {
+        case 'anthropic':
+          return 'pi/claude-opus-4-6'
+        case 'openai':
+          return 'pi/gpt-5.2'
+        case 'google':
+          return 'pi/gemini-2.5-pro'
+        default:
+          return undefined
+      }
+    }
+
+    if (!data.customEndpoint) {
+      return 'claude-opus-4-6'
+    }
+
+    return undefined
+  }, [])
+
   // Main wizard state
   const [state, setState] = useState<OnboardingState>({
     step: initialStep,
@@ -448,11 +472,12 @@ export function useOnboarding({
       // Validate connection by spawning a lightweight subprocess test.
       // Custom endpoint protocol routes through PiAgent at runtime, so test with Pi too.
       const setupTestProvider = data.customEndpoint ? 'pi' : (isPiApiKeyFlow ? 'pi' : 'anthropic')
+      const testModel = resolveSetupTestModel(data, isPiApiKeyFlow)
       const testResult = await window.electronAPI.testLlmConnectionSetup({
         provider: setupTestProvider,
         apiKey: data.apiKey,
         baseUrl: data.baseUrl,
-        model: data.models?.[0],
+        model: testModel,
         piAuthProvider: data.piAuthProvider,
         customEndpoint: data.customEndpoint,
       })
@@ -492,7 +517,7 @@ export function useOnboarding({
         errorMessage: error instanceof Error ? error.message : 'Validation failed',
       }))
     }
-  }, [handleSaveConfig, state.apiSetupMethod])
+  }, [handleSaveConfig, resolveSetupTestModel, state.apiSetupMethod])
 
   // Save config, validate the connection, and update state accordingly.
   // Shared by all OAuth flows after tokens are captured.

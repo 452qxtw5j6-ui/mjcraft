@@ -83,6 +83,11 @@ function readPiApiKeyConnection(configPath: string): any {
   return migrated.llmConnections.find((c: any) => c.slug === 'pi-api-key')
 }
 
+function readConnection(configPath: string, slug: string): any {
+  const migrated = JSON.parse(readFileSync(configPath, 'utf-8'))
+  return migrated.llmConnections.find((c: any) => c.slug === slug)
+}
+
 function getModelIds(connection: any): string[] {
   return (connection.models ?? []).map((m: any) => typeof m === 'string' ? m : m.id)
 }
@@ -110,6 +115,29 @@ describe('startup migration (integration)', () => {
     expect(connection).toBeDefined()
     expect(connection.piAuthProvider).toBe('openai')
     expect(connection.authType).toBe('api_key')
+  })
+
+  it('backfills blank defaultModel on direct Anthropic connections during startup migration', () => {
+    const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
+
+    writeRootConfig(configPath, workspaceRoot, [
+      {
+        slug: 'anthropic-api',
+        name: 'Anthropic (API Key)',
+        providerType: 'anthropic',
+        authType: 'api_key',
+        createdAt: Date.now(),
+        models: [],
+        defaultModel: '',
+      },
+    ])
+
+    runMigration(configDir)
+
+    const connection = readConnection(configPath, 'anthropic-api')
+    expect(connection).toBeDefined()
+    expect(getModelIds(connection).length).toBeGreaterThan(0)
+    expect(connection.defaultModel).toBe('claude-opus-4-6')
   })
 
   it('preserves userDefined3Tier model subsets during startup migration', () => {
