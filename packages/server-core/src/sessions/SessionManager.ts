@@ -1098,6 +1098,20 @@ export class SessionManager implements ISessionManager {
     this.eventSink = sink
   }
 
+  /**
+   * Notify renderers that a session now exists and should be hydrated from the
+   * authoritative in-memory state before follow-up events arrive.
+   *
+   * Bridge-created sessions bypass the normal RPC create flow, so without this
+   * Thin Craft can synthesize an empty session from streaming events and miss
+   * initial metadata like labels until a full restart reloads from disk.
+   */
+  notifySessionCreated(sessionId: string): void {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+    this.sendEvent({ type: 'session_created', sessionId }, managed.workspace.id)
+  }
+
   setBrowserPaneManager(bpm: IBrowserPaneManager): void {
     this.browserPaneManager = bpm
     bpm.setSessionPathResolver((sessionId) => this.getSessionPath(sessionId))
