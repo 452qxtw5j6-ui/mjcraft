@@ -1,10 +1,10 @@
 import type { EventSink } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager } from '@craft-agent/server-core/handlers'
+import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
-import { basename, dirname, join, normalize, isAbsolute, sep } from 'path'
+import { basename, dirname, join } from 'path'
 import { existsSync } from 'fs'
-import { readFile, writeFile, mkdir, realpath } from 'fs/promises'
-import { homedir, tmpdir } from 'os'
+import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
 import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary } from '@craft-agent/shared/agent'
 import {
@@ -48,6 +48,7 @@ import {
   canUpdateSdkCwd,
   setPendingPlanExecution as setStoredPendingPlanExecution,
   markCompactionComplete as markStoredCompactionComplete,
+  markPendingPlanExecutionDispatched as markStoredPendingPlanExecutionDispatched,
   clearPendingPlanExecution as clearStoredPendingPlanExecution,
   getPendingPlanExecution as getStoredPendingPlanExecution,
   getSessionAttachmentsPath,
@@ -69,12 +70,13 @@ import {
   type SessionHeader,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
-import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
+import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, hasRenewEndpoint, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
 import { resolveAuthEnvVars } from '@craft-agent/shared/config'
 import { toolMetadataStore, getLastApiError } from '@craft-agent/shared/interceptor'
 import { isParentTaskTool } from '@craft-agent/shared/utils/toolNames'
+import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
@@ -167,56 +169,7 @@ const MAX_ADMIN_REMEMBER_MINUTES = 60
 const MAX_ANNOTATIONS_PER_MESSAGE = 200
 const MAX_ANNOTATION_JSON_BYTES = 32 * 1024
 
-/**
- * Validate spawn attachment path using the same safety policy as IPC attachment reads.
- */
-async function validateSpawnAttachmentPath(filePath: string): Promise<string> {
-  let normalizedPath = normalize(filePath)
-
-  if (normalizedPath.startsWith('~')) {
-    normalizedPath = normalizedPath.replace(/^~/, homedir())
-  }
-
-  if (!isAbsolute(normalizedPath)) {
-    throw new Error('Only absolute file paths are allowed')
-  }
-
-  let realFilePath: string
-  try {
-    realFilePath = await realpath(normalizedPath)
-  } catch {
-    realFilePath = normalizedPath
-  }
-
-  const allowedDirs = [homedir(), tmpdir()]
-  const isAllowed = allowedDirs.some(dir => {
-    const normalizedDir = normalize(dir)
-    const normalizedReal = normalize(realFilePath)
-    return normalizedReal.startsWith(normalizedDir + sep) || normalizedReal === normalizedDir
-  })
-
-  if (!isAllowed) {
-    throw new Error('Access denied: file path is outside allowed directories')
-  }
-
-  const sensitivePatterns = [
-    /\.ssh\//,
-    /\.gnupg\//,
-    /\.aws\/credentials/,
-    /\.env$/,
-    /\.env\./,
-    /credentials\.json$/,
-    /secrets?\./i,
-    /\.pem$/,
-    /\.key$/,
-  ]
-
-  if (sensitivePatterns.some(pattern => pattern.test(realFilePath))) {
-    throw new Error('Access denied: cannot read sensitive files')
-  }
-
-  return realFilePath
-}
+// validateSpawnAttachmentPath removed — use shared validateFilePath from @craft-agent/server-core/handlers
 
 function normalizeEnabledSourceSlugs(sourceSlugs: string[] | undefined): string[] | undefined {
   if (sourceSlugs === undefined) return undefined
@@ -386,13 +339,19 @@ async function buildServersFromSources(
   )
   span.mark('credentials.loaded')
 
-  // Build token getter for OAuth sources (Google, Slack, Microsoft use OAuth)
+  // Build token getter for refreshable sources (OAuth + renew-endpoint)
   // Uses TokenRefreshManager for unified refresh logic (DRY principle)
   const getTokenForSource = (source: LoadedSource) => {
     const provider = source.config.provider
     // Provider-specific OAuth (Google, Slack, Microsoft) or generic OAuth (authType: 'oauth')
     if (isApiOAuthProvider(provider) || source.config.api?.authType === 'oauth') {
-      // Use TokenRefreshManager if provided, otherwise create temporary one
+      const manager = tokenRefreshManager ?? new TokenRefreshManager(credManager, {
+        log: (msg) => sessionLog.debug(msg),
+      })
+      return createTokenGetter(manager, source)
+    }
+    // API renew endpoint — non-OAuth token refresh
+    if (hasRenewEndpoint(source)) {
       const manager = tokenRefreshManager ?? new TokenRefreshManager(credManager, {
         log: (msg) => sessionLog.debug(msg),
       })
@@ -2837,6 +2796,7 @@ export class SessionManager implements ISessionManager {
         envOverrides,
         // Claude-specific
         isHeadless: !AGENT_FLAGS.defaultModesEnabled,
+        skipConfigWatcher: true, // Server owns workspace-level ConfigWatcher — don't duplicate in agents
         automationSystem: this.automationSystems.get(managed.workspace.rootPath),
         systemPromptPreset: managed.systemPromptPreset,
         debugMode: _platform?.isDebugMode ? { enabled: true, logFilePath: _platform.getLogFilePath?.() } : undefined,
@@ -3482,7 +3442,9 @@ export class SessionManager implements ISessionManager {
           const attachments: FileAttachment[] = []
           for (const a of request.attachments) {
             try {
-              const safePath = await validateSpawnAttachmentPath(a.path)
+              const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id)
+              if (request.workingDirectory) extraDirs.push(request.workingDirectory)
+              const safePath = await validateFilePath(a.path, extraDirs)
               const attachment = readFileAttachment(safePath)
               if (attachment) {
                 if (a.name) attachment.name = a.name
@@ -3622,6 +3584,30 @@ export class SessionManager implements ISessionManager {
           if (byLabel) return { resolved: byLabel.id, available }
 
           return { resolved: null, available }
+        },
+        sendAgentMessageFn: async (sessionId: string, message: string, attachments?: Array<{ path: string; name?: string }>) => {
+          // Build FileAttachment[] from paths (same pattern as spawn_session)
+          let fileAttachments: FileAttachment[] | undefined
+          if (attachments?.length) {
+            const builtAttachments: FileAttachment[] = []
+            for (const a of attachments) {
+              try {
+                const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id)
+                const safePath = await validateFilePath(a.path, extraDirs)
+                const attachment = readFileAttachment(safePath)
+                if (attachment) {
+                  if (a.name) attachment.name = a.name
+                  builtAttachments.push(attachment)
+                }
+              } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error)
+                sessionLog.warn(`send_agent_message: blocked attachment path ${a.path}: ${msg}`)
+              }
+            }
+            if (builtAttachments.length > 0) fileAttachments = builtAttachments
+          }
+
+          await this.sendMessage(sessionId, message, fileAttachments)
         },
       })
 
@@ -3889,6 +3875,19 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Mark pending plan execution as already dispatched from the UI.
+   * This prevents reload recovery from double-submitting the same plan if
+   * sending succeeded but cleanup failed due a reconnect/disconnect.
+   */
+  async markPendingPlanExecutionDispatched(sessionId: string): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      await markStoredPendingPlanExecutionDispatched(managed.workspace.rootPath, sessionId)
+      sessionLog.info(`Session ${sessionId}: marked pending plan execution as dispatched`)
+    }
+  }
+
+  /**
    * Clear pending plan execution state.
    * Called after plan execution is triggered, on new user message,
    * or when the pending execution is no longer relevant.
@@ -3905,7 +3904,7 @@ export class SessionManager implements ISessionManager {
    * Get pending plan execution state for a session.
    * Used on reload/init to check if we need to resume plan execution.
    */
-  getPendingPlanExecution(sessionId: string): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean } | null {
+  getPendingPlanExecution(sessionId: string): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean; executionDispatched: boolean } | null {
     const managed = this.sessions.get(sessionId)
     if (!managed) return null
     return getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
@@ -7230,12 +7229,8 @@ export class SessionManager implements ISessionManager {
     writeSessionJsonl(sessionFile, storedSession)
 
     // Write all bundle files (attachments, plans, data, downloads, etc.)
-    for (const file of bundle.files) {
-      const targetPath = join(sessionDir, file.relativePath)
-      const targetDir = dirname(targetPath)
-      await mkdir(targetDir, { recursive: true })
-      await writeFile(targetPath, Buffer.from(file.contentBase64, 'base64'))
-    }
+    // Uses restoreFiles() for path traversal, size, and base64 validation.
+    restoreFiles(sessionDir, bundle.files)
 
     // Register in-memory — pass session metadata without messages to avoid
     // StoredMessage[] vs Message[] type mismatch, then convert messages separately

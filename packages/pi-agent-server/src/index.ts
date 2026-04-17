@@ -55,6 +55,7 @@ setBedrockProviderModule(bedrockProviderModule);
 
 // Model resolution (extracted for testability + custom-endpoint precedence)
 import { resolvePiModel } from './model-resolution.ts';
+import { buildCustomEndpointModelDef, type CustomEndpointModelOverrides } from './custom-endpoint-models.ts';
 
 // Direct source imports from shared (bundled by bun build)
 import { handleLargeResponse, estimateTokens, TOKEN_LIMIT } from '../../shared/src/utils/large-response.ts';
@@ -101,8 +102,8 @@ interface InitMessage {
   branchFromSdkSessionId?: string;
   branchFromSessionPath?: string;
   branchFromSdkTurnId?: string;
-  customEndpoint?: { api: CustomEndpointApi };
-  customModels?: Array<string | { id: string; contextWindow?: number }>;
+  customEndpoint?: { api: CustomEndpointApi; supportsImages?: boolean };
+  customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
   piAuth?: { provider: string; credential: PiCredential };
 }
 
@@ -398,25 +399,6 @@ function setInterceptorApiHints(model: { api?: string; provider?: string; baseUr
   );
 }
 
-/**
- * Build a synthetic model definition for a custom endpoint.
- * Uses reasonable defaults for context window and max tokens since we can't
- * query the endpoint for its actual capabilities. Users can override
- * contextWindow via model objects in their connection config.
- */
-function buildCustomEndpointModelDef(id: string, overrides?: { contextWindow?: number }) {
-  return {
-    id,
-    name: id,
-    reasoning: false,
-    input: ['text'] as ('text' | 'image')[],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    // Default 128K — users can override via contextWindow in model config.
-    contextWindow: overrides?.contextWindow ?? 131_072,
-    maxTokens: 8_192,
-  };
-}
-
 /** Strip bare model IDs (remove pi/ prefix if present) */
 function stripPiPrefix(id: string): string {
   return id.startsWith('pi/') ? id.slice(3) : id;
@@ -431,7 +413,12 @@ function resolveCustomEndpointApiKey(): string {
     return initConfig.piAuth.credential.key;
   }
   const key = initConfig?.apiKey || '';
-  if (!key && initConfig?.baseUrl && !isLocalhostUrl(initConfig.baseUrl)) {
+  if (!key && initConfig?.baseUrl) {
+    if (isLocalhostUrl(initConfig.baseUrl)) {
+      // Local endpoints (Ollama, LM Studio) don't need auth.
+      // Pi SDK requires a truthy apiKey to register models, so use a placeholder.
+      return 'not-needed';
+    }
     debugLog('[custom-endpoint] Warning: no API key found for non-localhost endpoint — requests will likely fail');
   }
   return key;
@@ -452,9 +439,8 @@ function isLocalhostUrl(url: string): boolean {
 /** Model IDs currently registered under the custom-endpoint provider */
 let customEndpointModelIds: Set<string> = new Set();
 
-interface CustomModelEntry {
+interface CustomModelEntry extends CustomEndpointModelOverrides {
   id: string;
-  contextWindow?: number;
 }
 
 /**
@@ -462,7 +448,7 @@ interface CustomModelEntry {
  * Note: registerProvider replaces the entire provider, so we maintain a Set of all
  * known model IDs and always pass the full set.
  */
-const customModelOverrides = new Map<string, { contextWindow?: number }>();
+const customModelOverrides = new Map<string, CustomEndpointModelOverrides>();
 
 function registerCustomEndpointModels(
   registry: PiModelRegistry,
@@ -472,7 +458,12 @@ function registerCustomEndpointModels(
 ): void {
   for (const m of models) {
     customEndpointModelIds.add(m.id);
-    if (m.contextWindow) customModelOverrides.set(m.id, { contextWindow: m.contextWindow });
+    if (m.contextWindow || m.supportsImages !== undefined) {
+      customModelOverrides.set(m.id, {
+        ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
+        ...(m.supportsImages !== undefined ? { supportsImages: m.supportsImages } : {}),
+      });
+    }
   }
   const allIds = [...customEndpointModelIds];
   registry.registerProvider('custom-endpoint', {
@@ -480,7 +471,11 @@ function registerCustomEndpointModels(
     apiKey: resolveCustomEndpointApiKey(),
     api,
     authHeader: true,
-    models: allIds.map(id => buildCustomEndpointModelDef(id, customModelOverrides.get(id))),
+    models: allIds.map(id => buildCustomEndpointModelDef(
+      id,
+      { supportsImages: initConfig?.customEndpoint?.supportsImages === true },
+      customModelOverrides.get(id),
+    )),
   });
   debugLog(`Registered custom endpoint: ${baseUrl} with ${allIds.length} model(s) [${allIds.join(', ')}], api: ${api}`);
 }

@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useTranslation } from "react-i18next"
+import { useTranslation, Trans } from "react-i18next"
 import { useRef, useState, useEffect, useCallback, useMemo } from "react"
 import { useAtomValue, useStore } from "jotai"
 import { motion, AnimatePresence } from "motion/react"
@@ -218,6 +218,7 @@ function FilterModeSubMenuItems({
   onChangeMode: (mode: FilterMode) => void
   onRemove: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <>
       <StyledDropdownMenuItem
@@ -225,21 +226,21 @@ function FilterModeSubMenuItems({
         className={cn(mode === 'include' && "bg-foreground/[0.03]")}
       >
         <Check className="h-3.5 w-3.5 shrink-0" />
-        <span className="flex-1">Include</span>
+        <span className="flex-1">{t("filter.include")}</span>
       </StyledDropdownMenuItem>
       <StyledDropdownMenuItem
         onClick={(e) => { e.preventDefault(); onChangeMode('exclude') }}
         className={cn(mode === 'exclude' && "bg-foreground/[0.03]")}
       >
         <X className="h-3.5 w-3.5 shrink-0" />
-        <span className="flex-1">Exclude</span>
+        <span className="flex-1">{t("filter.exclude")}</span>
       </StyledDropdownMenuItem>
       <StyledDropdownMenuSeparator />
       <StyledDropdownMenuItem
         onClick={(e) => { e.preventDefault(); onRemove() }}
       >
         <Trash2 className="h-3.5 w-3.5 shrink-0" />
-        <span className="flex-1">Clear</span>
+        <span className="flex-1">{t("common.clear")}</span>
       </StyledDropdownMenuItem>
     </>
   )
@@ -2213,46 +2214,46 @@ function AppShellContent({
   const listTitle = React.useMemo(() => {
     // Sources navigator
     if (isSourcesNavigation(navState)) {
-      return 'Sources'
+      return t("sidebar.sources")
     }
 
     // Skills navigator
     if (isSkillsNavigation(navState)) {
-      return 'All Skills'
+      return t("sidebar.allSkills")
     }
 
     // Automations navigator
     if (isAutomationsNavigation(navState)) {
-      if (!automationFilter) return 'All Automations'
+      if (!automationFilter) return t("sidebar.allAutomations")
       switch (automationFilter.automationType) {
-        case 'scheduled': return 'Scheduled'
-        case 'event': return 'Event-based'
-        case 'agentic': return 'Agentic'
-        default: return 'All Automations'
+        case 'scheduled': return t("sidebar.scheduled")
+        case 'event': return t("sidebar.eventBased")
+        case 'agentic': return t("sidebar.agentic")
+        default: return t("sidebar.allAutomations")
       }
     }
 
     // Settings navigator
-    if (isSettingsNavigation(navState)) return 'Settings'
+    if (isSettingsNavigation(navState)) return t("sidebar.settings")
 
     // Sessions navigator - use sessionFilter
-    if (!sessionFilter) return 'All Sessions'
+    if (!sessionFilter) return t("sidebar.allSessions")
 
     switch (sessionFilter.kind) {
       case 'flagged':
-        return 'Flagged'
+        return t("sidebar.flagged")
       case 'state': {
         const state = effectiveSessionStatuses.find(s => s.id === sessionFilter.stateId)
-        return state?.label || 'All Sessions'
+        return state ? t(`status.${state.id}`, state.label) : t("sidebar.allSessions")
       }
       case 'label':
-        return sessionFilter.labelId === '__all__' ? 'Labels' : getLabelDisplayName(labelConfigs, sessionFilter.labelId)
+        return sessionFilter.labelId === '__all__' ? t("sidebar.labels") : getLabelDisplayName(labelConfigs, sessionFilter.labelId)
       case 'view':
-        return sessionFilter.viewId === '__all__' ? 'Views' : viewConfigs.find(v => v.id === sessionFilter.viewId)?.name || 'Views'
+        return sessionFilter.viewId === '__all__' ? t("sidebar.views") : viewConfigs.find(v => v.id === sessionFilter.viewId)?.name || t("sidebar.views")
       default:
-        return 'All Sessions'
+        return t("sidebar.allSessions")
     }
-  }, [navState, sessionFilter, effectiveSessionStatuses, labelConfigs, viewConfigs, automationFilter])
+  }, [navState, t, sessionFilter, automationFilter, labelConfigs, viewConfigs, effectiveSessionStatuses])
 
   // Build recursive sidebar items from the shared display-sorted label tree.
   // Each node renders with condensed height (compact: true) since many labels expected.
@@ -2274,7 +2275,7 @@ function AppShellContent({
               <span className="flex items-center"><LabelValueTypeIcon valueType={node.label.valueType} size={10} /></span>
             </TooltipTrigger>
             <TooltipContent side="top" className="text-xs">
-              This label can have a {node.label.valueType} value
+              {t("sidebar.labelValueTypeTooltip", { valueType: t(`sidebar.labelValueType.${node.label.valueType}`) })}
             </TooltipContent>
           </Tooltip>
         ) : undefined,
@@ -2993,7 +2994,7 @@ function AppShellContent({
                               <StyledDropdownMenuSubContent minWidth="min-w-[180px]">
                                 {labelConfigs.length === 0 ? (
                                   <StyledDropdownMenuItem disabled>
-                                    <span className="text-muted-foreground">No labels configured</span>
+                                    <span className="text-muted-foreground">{t("table.noLabelsConfigured")}</span>
                                   </StyledDropdownMenuItem>
                                 ) : (
                                   <FilterLabelItems
@@ -3014,17 +3015,17 @@ function AppShellContent({
                                 <DropdownMenuSub>
                                   <StyledDropdownMenuSubTrigger>
                                     <Layers className="h-3.5 w-3.5" />
-                                    <span className="flex-1">Group</span>
+                                    <span className="flex-1">{t("sidebar.group")}</span>
                                   </StyledDropdownMenuSubTrigger>
                                   <StyledDropdownMenuSubContent minWidth="min-w-[140px]">
                                     <StyledDropdownMenuItem onClick={() => setChatGroupingMode('date')}>
                                       <Calendar className="h-3.5 w-3.5" />
-                                      <span className="flex-1">Date</span>
+                                      <span className="flex-1">{t("sidebar.groupByDate")}</span>
                                       {chatGroupingMode === 'date' && <Check className="h-3 w-3 text-muted-foreground" />}
                                     </StyledDropdownMenuItem>
                                     <StyledDropdownMenuItem onClick={() => setChatGroupingMode('status')}>
                                       <Inbox className="h-3.5 w-3.5" />
-                                      <span className="flex-1">Status</span>
+                                      <span className="flex-1">{t("sidebar.groupByStatus")}</span>
                                       {chatGroupingMode === 'status' && <Check className="h-3 w-3 text-muted-foreground" />}
                                     </StyledDropdownMenuItem>
                                   </StyledDropdownMenuSubContent>
@@ -3685,14 +3686,18 @@ function AppShellContent({
       <Dialog open={!!automationPendingDelete} onOpenChange={(open) => { if (!open) setAutomationPendingDelete(null) }}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>
-            <DialogTitle>Delete Automation</DialogTitle>
+            <DialogTitle>{t("dialog.deleteAutomation.title")}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete <strong>{pendingDeleteAutomation?.name}</strong>? This will remove the automation from your automations.json configuration.
+              <Trans
+                i18nKey="dialog.deleteAutomation.description"
+                values={{ name: pendingDeleteAutomation?.name }}
+                components={{ strong: <strong /> }}
+              />
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAutomationPendingDelete(null)}>Cancel</Button>
-            <Button variant="destructive" onClick={confirmDeleteAutomation}>Delete</Button>
+            <Button variant="outline" onClick={() => setAutomationPendingDelete(null)}>{t("common.cancel")}</Button>
+            <Button variant="destructive" onClick={confirmDeleteAutomation}>{t("common.delete")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

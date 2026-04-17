@@ -18,7 +18,7 @@ import { Button } from './button'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@craft-agent/ui'
 import type { ContentBadge, Session, CreateSessionOptions, ThinkingLevel } from '../../../shared/types'
-import { useActiveWorkspace, useAppShellContext, useSession } from '@/context/AppShellContext'
+import { useActiveWorkspace, useAppShellContext, useSession, usePendingPermission, usePendingCredential } from '@/context/AppShellContext'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { ChatDisplay } from '../app-shell/ChatDisplay'
 
@@ -780,7 +780,16 @@ export function EditPopover({
   }, [controlledOnOpenChange, isControlled])
 
   // Use App context for session management (same code path as main chat)
-  const { onCreateSession, onSendMessage, enabledSources = [], skills = [], labels = [], sessionStatuses = [] } = useAppShellContext()
+  const {
+    onCreateSession,
+    onSendMessage,
+    enabledSources = [],
+    skills = [],
+    labels = [],
+    sessionStatuses = [],
+    onRespondToPermission,
+    onRespondToCredential,
+  } = useAppShellContext()
 
   // Session ID for inline execution (created on first message)
   const [inlineSessionId, setInlineSessionId] = useState<string | null>(null)
@@ -788,6 +797,10 @@ export function EditPopover({
   // Get session data from Jotai atom (same as main chat - includes optimistic updates)
   // Pass empty string when no session yet - atom returns null for unknown IDs
   const inlineSession = useSession(inlineSessionId || '')
+
+  // Pending permission/credential requests for inline session (same flow as main chat)
+  const pendingPermission = usePendingPermission(inlineSessionId || '')
+  const pendingCredential = usePendingCredential(inlineSessionId || '')
 
   // Model state for ChatDisplay (starts with prop value, can be changed by user)
   const [currentModel, setCurrentModel] = useState(model || 'haiku')
@@ -1115,6 +1128,10 @@ export function EditPopover({
                   thinkingLevel={currentThinkingLevel}
                   onThinkingLevelChange={setCurrentThinkingLevel}
                   permissionMode={permissionMode}
+                  pendingPermission={pendingPermission}
+                  onRespondToPermission={onRespondToPermission}
+                  pendingCredential={pendingCredential}
+                  onRespondToCredential={onRespondToCredential}
                   sources={enabledSources}
                   skills={skills}
                   labels={labels}

@@ -295,6 +295,76 @@ export const initializeSessionsAtom = atom(
 )
 
 /**
+ * Action atom: refresh session metadata after a stale reconnect.
+ *
+ * Unlike initializeSessionsAtom (which resets everything for workspace switches),
+ * this preserves messages for already-loaded sessions and only marks overwritten
+ * metadata-only sessions as unloaded for lazy re-fetching.
+ *
+ * All cross-atom mutations happen inside a single write transaction so that
+ * React subscribers see one consistent update instead of intermediate states.
+ */
+export const refreshSessionsMetadataAtom = atom(
+  null,
+  (
+    get,
+    set,
+    payload: { sessions: Session[]; loadedSessionIds: Set<string> }
+  ): Map<string, SessionMeta> => {
+    const { sessions, loadedSessionIds } = payload
+
+    // Remove stale sessions that no longer exist on the server
+    const currentIds = get(sessionIdsAtom)
+    const latestIds = new Set(sessions.map(s => s.id))
+    for (const staleId of currentIds) {
+      if (!latestIds.has(staleId)) {
+        set(removeSessionAtom, staleId)
+      }
+    }
+
+    // Update each session atom, preserving messages for loaded sessions
+    const unloadedIds: string[] = []
+    for (const session of sessions) {
+      const currentSession = get(sessionAtomFamily(session.id))
+      const shouldPreserveMessages = !!currentSession && loadedSessionIds.has(session.id)
+      const nextSession = shouldPreserveMessages && currentSession
+        ? { ...session, messages: currentSession.messages }
+        : session
+
+      set(sessionAtomFamily(session.id), nextSession)
+
+      // Track sessions that lost their messages so lazy-loading re-fetches them
+      if (!shouldPreserveMessages && loadedSessionIds.has(session.id)) {
+        unloadedIds.push(session.id)
+      }
+    }
+
+    // Remove overwritten sessions from loadedSessionsAtom
+    if (unloadedIds.length > 0) {
+      const nextLoaded = new Set(get(loadedSessionsAtom))
+      for (const id of unloadedIds) nextLoaded.delete(id)
+      set(loadedSessionsAtom, nextLoaded)
+    }
+
+    // Build and set metadata map
+    const nextMetaMap = new Map<string, SessionMeta>()
+    for (const session of sessions) {
+      nextMetaMap.set(session.id, extractSessionMeta(session))
+    }
+    set(sessionMetaMapAtom, nextMetaMap)
+
+    // Set ordered IDs
+    const nextIds = sessions
+      .slice()
+      .sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0))
+      .map(s => s.id)
+    set(sessionIdsAtom, nextIds)
+
+    return nextMetaMap
+  }
+)
+
+/**
  * Action atom: add a new session
  */
 export const addSessionAtom = atom(
@@ -485,6 +555,10 @@ async function loadSessionMessages(
     // tokenUsage and sessionFolderPath are only returned by getSession() (not getSessions()),
     // so they must be explicitly merged here to be available after app restart.
     const existingSession = get(sessionAtomFamily(sessionId))
+    const preservedStaleMessages = !!existingSession
+      && existingSession.messages.length > 0
+      && (!loadedSession.messages || loadedSession.messages.length === 0)
+
     const mergedSession = existingSession
       ? {
           ...existingSession,
@@ -495,9 +569,13 @@ async function loadSessionMessages(
           // The `messages.length > 0` guard ensures Cmd+R reload works: after reload,
           // the atom starts with messages=[] from getSessions(), so IPC response
           // (which has full history from main process memory) must be used.
-          messages: existingSession.isProcessing && existingSession.messages.length > 0
+          // Also guard against sleep/wake edge case: the server may return
+          // empty messages if the session subprocess hasn't finished lazy-loading.
+          messages: preservedStaleMessages
             ? existingSession.messages
-            : loadedSession.messages,
+            : existingSession.isProcessing && existingSession.messages.length > 0
+              ? existingSession.messages
+              : loadedSession.messages,
           tokenUsage: loadedSession.tokenUsage ?? existingSession.tokenUsage,
           sessionFolderPath: loadedSession.sessionFolderPath ?? existingSession.sessionFolderPath,
         }
@@ -518,10 +596,14 @@ async function loadSessionMessages(
       }
     }
 
-    // Mark as loaded
-    const newLoadedSessions = new Set(get(loadedSessionsAtom))
-    newLoadedSessions.add(sessionId)
-    set(loadedSessionsAtom, newLoadedSessions)
+    // Mark as loaded only when we received a fresh payload.
+    // If we had to preserve stale in-memory messages because the backend returned
+    // an empty array during lazy-load recovery, keep the session reloadable.
+    if (!preservedStaleMessages) {
+      const newLoadedSessions = new Set(get(loadedSessionsAtom))
+      newLoadedSessions.add(sessionId)
+      set(loadedSessionsAtom, newLoadedSessions)
+    }
 
     return mergedSession
   })()

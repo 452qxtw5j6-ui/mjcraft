@@ -66,7 +66,7 @@ import { isMac, PATH_SEP, getPathBasename } from '@/lib/platform'
 import { applySmartTypography } from '@/lib/smart-typography'
 import { AttachmentPreview } from '../AttachmentPreview'
 import { ANTHROPIC_MODELS, getModelShortName, getModelDisplayName, getModelContextWindow, type ModelDefinition } from '@config/models'
-import { resolveEffectiveConnectionSlug, isCompatProvider } from '@config/llm-connections'
+import { resolveEffectiveConnectionSlug, isCompatProvider, isLocalConnection } from '@config/llm-connections'
 import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
 import { SourceAvatar } from '@/components/ui/source-avatar'
@@ -380,6 +380,7 @@ export function FreeFormInput({
   const connectionsByProvider = React.useMemo(() => {
     const groups: Record<string, typeof llmConnections> = {
       'Anthropic': [],
+      'Local': [],
       'Craft Agents Backend': [],
     }
     for (const conn of llmConnections) {
@@ -387,6 +388,8 @@ export function FreeFormInput({
       // Group by SDK: only 'anthropic' uses Claude Agent SDK
       if (provider === 'anthropic') {
         groups['Anthropic'].push(conn)
+      } else if (provider === 'pi_compat' && isLocalConnection(conn)) {
+        groups['Local'].push(conn)
       } else if (provider === 'pi' || provider === 'pi_compat') {
         groups['Craft Agents Backend'].push(conn)
       }
@@ -726,24 +729,44 @@ export function FreeFormInput({
 
     let hasExecuted = false
 
+    const isExpectedReconnectError = (error: unknown): boolean => {
+      const message = error instanceof Error ? error.message : String(error)
+      return message.includes('Connection closed')
+        || message.includes('Client disconnected')
+        || message.includes('transport')
+        || message.includes('socket')
+    }
+
     const executePendingPlan = async () => {
       if (hasExecuted) return
 
-      const pending = await window.electronAPI.getPendingPlanExecution(sessionId)
-      if (!pending || pending.awaitingCompaction) return
+      try {
+        const pending = await window.electronAPI.getPendingPlanExecution(sessionId)
+        if (!pending || pending.awaitingCompaction || pending.executionDispatched) return
 
-      // Compaction completed but we never sent the execution message (page reloaded).
-      // Send it now and clear the pending state.
-      hasExecuted = true
-      const executionMessage = buildPlanApprovalMessage({
-        planPath: pending.planPath,
-        draftInput: pending.draftInputSnapshot,
-      })
-      onSubmit(executionMessage, undefined)
+        // Mark dispatched before sending so reload recovery does not double-submit
+        // the same plan if onSubmit succeeds but cleanup fails during a reconnect.
+        await window.electronAPI.sessionCommand(sessionId, {
+          type: 'markPendingPlanExecutionDispatched',
+        })
 
-      await window.electronAPI.sessionCommand(sessionId, {
-        type: 'clearPendingPlanExecution',
-      })
+        // Compaction completed but we never sent the execution message (page reloaded).
+        // Send it now and clear the pending state.
+        hasExecuted = true
+        const executionMessage = buildPlanApprovalMessage({
+          planPath: pending.planPath,
+          draftInput: pending.draftInputSnapshot,
+        })
+        onSubmit(executionMessage, undefined)
+
+        await window.electronAPI.sessionCommand(sessionId, {
+          type: 'clearPendingPlanExecution',
+        })
+      } catch (error) {
+        if (!isExpectedReconnectError(error)) {
+          console.error('[FreeFormInput] Failed to resume pending plan execution:', error)
+        }
+      }
     }
 
     // Check immediately on mount (handles case where compaction already completed)
@@ -985,11 +1008,11 @@ export function FreeFormInput({
 
     // Store the prefill text (e.g., "Test" from "#Test") to pre-fill the popover
     // Format: "Add new label {prefill}" so user can just press enter or modify
-    setAddLabelPrefill(prefill ? `Add new label ${prefill}` : '')
+    setAddLabelPrefill(prefill ? t('labels.addNewLabel', { prefill }) : '')
 
     // Open the EditPopover for label creation
     setAddLabelPopoverOpen(true)
-  }, [workspaceRootPath, inlineLabel, syncToParent])
+  }, [workspaceRootPath, inlineLabel, syncToParent, t])
 
   // Memoize the add-label config so the EditPopover doesn't recreate on every render
   const addLabelEditConfig = React.useMemo(() => {
@@ -1784,16 +1807,14 @@ export function FreeFormInput({
           <FreeFormInputContextBadge
             icon={<Paperclip className="h-4 w-4" />}
             label={attachments.length > 0
-              ? attachments.length === 1
-                ? "1 file"
-                : `${attachments.length} files`
-              : "Attach"
+              ? t("chat.filesCount", { count: attachments.length })
+              : t("chat.attach")
             }
             isExpanded={false}
             hasSelection={attachments.length > 0}
             showChevron={false}
             onClick={handleAttachClick}
-            tooltip="Attach files"
+            tooltip={t("chat.attachFilesTooltip")}
             disabled={disabled}
           />
           {onSourcesChange && (
@@ -1836,11 +1857,11 @@ export function FreeFormInput({
                 }
                 label={
                   optimisticSourceSlugs.length === 0
-                    ? "Sources"
+                    ? t("chat.sourcesTooltip")
                     : (() => {
                         const enabledSources = sources.filter(s => optimisticSourceSlugs.includes(s.config.slug))
                         if (enabledSources.length === 1) return enabledSources[0].config.name
-                        return `${enabledSources.length} sources`
+                        return t("chat.sourcesCount", { count: enabledSources.length })
                       })()
                 }
                 isExpanded={false}
@@ -1849,7 +1870,7 @@ export function FreeFormInput({
                 isOpen={sourceDropdownOpen}
                 disabled={disabled}
                 onClick={() => setSourceDropdownOpen(prev => !prev)}
-                tooltip="Sources"
+                tooltip={t("chat.sourcesTooltip")}
               />
               <SourceSelectorPopover
                 open={sourceDropdownOpen}
@@ -1887,9 +1908,7 @@ export function FreeFormInput({
           <FreeFormInputContextBadge
             icon={<Paperclip className="h-4 w-4" />}
             label={attachments.length > 0
-              ? attachments.length === 1
-                ? "1 file"
-                : `${attachments.length} files`
+              ? t("chat.filesCount", { count: attachments.length })
               : t("chat.attachFiles")
             }
             isExpanded={isEmptySession}
@@ -2012,7 +2031,7 @@ export function FreeFormInput({
                     {connectionUnavailable ? (
                       <>
                         <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                        Unavailable
+                        {t('common.unavailable')}
                       </>
                     ) : (
                       <>
@@ -2025,7 +2044,7 @@ export function FreeFormInput({
                 </DropdownMenuTrigger>
               </TooltipTrigger>
               <TooltipContent side="top">
-Model
+                {t('common.model')}
               </TooltipContent>
             </Tooltip>
             <StyledDropdownMenuContent side="top" align="end" sideOffset={8} className="min-w-[260px]">
@@ -2033,9 +2052,9 @@ Model
               {connectionUnavailable ? (
                 <div className="flex flex-col items-center justify-center py-6 px-4 text-center">
                   <AlertCircle className="h-8 w-8 text-destructive mb-2" />
-                  <div className="font-medium text-sm mb-1">Connection Unavailable</div>
+                  <div className="font-medium text-sm mb-1">{t('chat.connectionUnavailable')}</div>
                   <div className="text-xs text-muted-foreground">
-                    The connection used by this session has been removed. Create a new session to continue.
+                    {t('chat.connectionUnavailableDescription')}
                   </div>
                 </div>
               ) : connectionDefaultModel ? (
@@ -2045,7 +2064,7 @@ Model
                 >
                   <div className="text-left">
                     <div className="font-medium text-sm">{stripPiPrefixForDisplay(connectionDefaultModel)}</div>
-                    <div className="text-xs text-muted-foreground">Connection default</div>
+                    <div className="text-xs text-muted-foreground">{t('chat.connectionDefault')}</div>
                   </div>
                   <Check className="h-3 w-3 text-foreground shrink-0 ml-3" />
                 </StyledDropdownMenuItem>
@@ -2076,7 +2095,7 @@ Model
                                 {isCurrentConnection && <Check className="h-3 w-3 text-foreground" />}
                               </div>
                               {!isAuthenticated && (
-                                <div className="text-xs text-muted-foreground">Not authenticated</div>
+                                <div className="text-xs text-muted-foreground">{t('settings.ai.notAuthenticated')}</div>
                               )}
                             </div>
                           </StyledDropdownMenuSubTrigger>
@@ -2272,7 +2291,7 @@ Model
               type="button"
               size="icon"
               variant="secondary"
-              aria-label="Stop response"
+              aria-label={t('chat.stopResponse')}
               className="send-btn h-7 w-7 rounded-full shrink-0 hover:bg-foreground/15 active:bg-foreground/20 ml-2"
               onClick={() => handleStop(false)}
             >
@@ -2282,7 +2301,7 @@ Model
             <Button
               type="submit"
               size="icon"
-              aria-label="Send message"
+              aria-label={t('shortcuts.sendMessage')}
               className="send-btn h-7 w-7 rounded-full shrink-0 ml-2"
               disabled={!hasContent || disabled || disableSend}
               data-tutorial="send-button"
